@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use std::{
     collections::{HashMap, VecDeque},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use uuid::Uuid;
 
@@ -17,7 +17,7 @@ use crate::{
 };
 
 pub struct CoreMMR {
-    store: Arc<dyn IStore>,
+    store: Arc<Mutex<dyn IStore>>,
     hasher: Box<dyn IHasher>,
     mmr_id: Option<String>,
     leaves_count: InStoreCounter,
@@ -27,17 +27,24 @@ pub struct CoreMMR {
 }
 
 impl CoreMMR {
-    pub fn new(store: Arc<dyn IStore>, hasher: Box<dyn IHasher>, mmr_id: Option<String>) -> Self {
+    pub fn new(
+        store: Arc<Mutex<dyn IStore + 'static>>,
+        hasher: Box<dyn IHasher>,
+        mmr_id: Option<String>,
+    ) -> Self {
         let mmr_id = mmr_id.unwrap_or_else(|| Uuid::new_v4().to_string());
         let leaves_count_key = format!("{}:{:?}", mmr_id, TreeMetadataKeys::LeafCount);
         let elements_count_key = format!("{}:{:?}", mmr_id, TreeMetadataKeys::ElementCount);
         let root_hash_key = format!("{}:{:?}", mmr_id, TreeMetadataKeys::RootHash);
         let hashes_key = format!("{}:hashes:", mmr_id);
 
-        let leaves_count = InStoreCounter::new(&store, leaves_count_key);
-        let elements_count = InStoreCounter::new(&store, elements_count_key);
-        let root_hash = InStoreTable::new(&store, root_hash_key);
-        let hashes = InStoreTable::new(&store, hashes_key);
+        // Wrap it in an Arc<Mutex<_>>
+        let shared_store = Arc::clone(&store);
+
+        let leaves_count = InStoreCounter::new(&shared_store, leaves_count_key);
+        let elements_count = InStoreCounter::new(&shared_store, elements_count_key);
+        let root_hash = InStoreTable::new(&shared_store, root_hash_key);
+        let hashes = InStoreTable::new(&shared_store, hashes_key);
 
         Self {
             leaves_count,
@@ -51,7 +58,7 @@ impl CoreMMR {
     }
 
     pub async fn create_with_genesis(
-        store: Arc<dyn IStore>,
+        store: Arc<Mutex<dyn IStore + 'static>>,
         hasher: Box<dyn IHasher>,
         mmr_id: Option<String>,
     ) -> Result<Self> {

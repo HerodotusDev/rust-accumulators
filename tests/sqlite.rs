@@ -15,8 +15,8 @@ fn set_and_get_many_values() {
     let mut store = SQLiteStore::new(":memory:").unwrap();
     let _ = store.init();
     let mut entries = HashMap::new();
-    entries.insert("key1", "value1");
-    entries.insert("key2", "value2");
+    entries.insert("key1".to_string(), "value1".to_string());
+    entries.insert("key2".to_string(), "value2".to_string());
 
     store.set_many(entries).unwrap();
 
@@ -30,10 +30,10 @@ fn get_many_values_in_correct_order() {
     let mut store = SQLiteStore::new(":memory:").unwrap();
     let _ = store.init();
     let mut entries = HashMap::new();
-    entries.insert("a", "value1");
-    entries.insert("b", "value2");
-    entries.insert("10", "value3");
-    entries.insert("5", "value4");
+    entries.insert("a".to_string(), "value1".to_string());
+    entries.insert("b".to_string(), "value2".to_string());
+    entries.insert("10".to_string(), "value3".to_string());
+    entries.insert("5".to_string(), "value4".to_string());
 
     store.set_many(entries).unwrap();
 

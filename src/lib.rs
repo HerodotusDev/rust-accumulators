@@ -1,6 +1,6 @@
 pub mod core;
-pub mod formatting;
+mod formatting;
 pub mod hash;
-pub mod proof;
+mod proof;
 pub mod store;
-pub mod utils;
+mod utils;

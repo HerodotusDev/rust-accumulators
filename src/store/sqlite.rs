@@ -48,7 +48,7 @@ impl IStore for SQLiteStore {
         Ok(())
     }
 
-    fn set_many(&mut self, entries: HashMap<&str, &str>) -> Result<()> {
+    fn set_many(&mut self, entries: HashMap<String, String>) -> Result<()> {
         let tx = self.db.transaction()?;
         for (key, value) in entries.iter() {
             tx.execute(
