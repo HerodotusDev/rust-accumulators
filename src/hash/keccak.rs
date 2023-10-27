@@ -8,12 +8,6 @@ pub struct KeccakHasher {
 }
 
 impl IHasher for KeccakHasher {
-    fn new() -> Self {
-        let mut options = HashMap::new();
-        options.insert("blockSizeBits".to_string(), DEFAULT_BLOCK_SIZE_BITS);
-        KeccakHasher { options }
-    }
-
     fn hash(&self, data: Vec<String>) -> String {
         if data.is_empty() {
             return hex::encode(Keccak256::digest(&[]));
@@ -42,5 +36,13 @@ impl IHasher for KeccakHasher {
         let genesis_str = "brave new world";
         let hex_string = hex::encode(genesis_str);
         self.hash_single(&hex_string)
+    }
+}
+
+impl KeccakHasher {
+    pub fn new() -> Self {
+        let mut options = HashMap::new();
+        options.insert("blockSizeBits".to_string(), DEFAULT_BLOCK_SIZE_BITS);
+        KeccakHasher { options }
     }
 }

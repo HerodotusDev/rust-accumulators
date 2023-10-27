@@ -10,12 +10,6 @@ pub struct StarkPedersenHasher {
 }
 
 impl IHasher for StarkPedersenHasher {
-    fn new() -> Self {
-        let mut options = HashMap::new();
-        options.insert("blockSizeBits".to_string(), 252);
-        StarkPedersenHasher { options }
-    }
-
     fn hash(&self, data: Vec<String>) -> String {
         if data.len() != 2 {
             panic!("Stark Pedersen Hasher only accepts two elements");
@@ -68,6 +62,14 @@ impl IHasher for StarkPedersenHasher {
             .collect::<Vec<String>>()
             .join("");
         self.hash_single(&hex_genesis)
+    }
+}
+
+impl StarkPedersenHasher {
+    pub fn new() -> Self {
+        let mut options = HashMap::new();
+        options.insert("blockSizeBits".to_string(), 252);
+        StarkPedersenHasher { options }
     }
 }
 

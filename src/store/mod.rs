@@ -1,7 +1,9 @@
 use rusqlite::Result;
 use std::collections::HashMap;
 
+pub mod counter;
 pub mod sqlite;
+pub mod table;
 
 pub trait IStore {
     fn get(&self, key: &str) -> Result<Option<String>>;
