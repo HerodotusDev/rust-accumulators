@@ -1,8 +1,6 @@
 use anyhow::{anyhow, Result};
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex},
-};
+use std::collections::{HashMap, VecDeque};
+use std::rc::Rc;
 use uuid::Uuid;
 
 use crate::{
@@ -16,54 +14,48 @@ use crate::{
     },
 };
 
-pub struct CoreMMR {
-    store: Arc<Mutex<dyn IStore>>,
-    hasher: Box<dyn IHasher>,
+pub struct CoreMMR<S, H> {
+    store: Rc<S>,
+    hasher: H,
     mmr_id: Option<String>,
-    leaves_count: InStoreCounter,
-    elements_count: InStoreCounter,
-    hashes: InStoreTable,
-    pub root_hash: InStoreTable,
+    leaves_count: InStoreCounter<S>,
+    elements_count: InStoreCounter<S>,
+    hashes: InStoreTable<S>,
+    pub root_hash: InStoreTable<S>,
 }
 
-impl CoreMMR {
-    pub fn new(
-        store: Arc<Mutex<dyn IStore + 'static>>,
-        hasher: Box<dyn IHasher>,
-        mmr_id: Option<String>,
-    ) -> Self {
+impl<S, H> CoreMMR<S, H>
+where
+    S: IStore,
+    H: IHasher,
+{
+    pub fn new(store: S, hasher: H, mmr_id: Option<String>) -> Self {
         let mmr_id = mmr_id.unwrap_or_else(|| Uuid::new_v4().to_string());
         let leaves_count_key = format!("{}:{:?}", mmr_id, TreeMetadataKeys::LeafCount);
         let elements_count_key = format!("{}:{:?}", mmr_id, TreeMetadataKeys::ElementCount);
         let root_hash_key = format!("{}:{:?}", mmr_id, TreeMetadataKeys::RootHash);
         let hashes_key = format!("{}:hashes:", mmr_id);
 
-        // Wrap it in an Arc<Mutex<_>>
-        let shared_store = Arc::clone(&store);
-
-        let leaves_count = InStoreCounter::new(&shared_store, leaves_count_key);
-        let elements_count = InStoreCounter::new(&shared_store, elements_count_key);
-        let root_hash = InStoreTable::new(&shared_store, root_hash_key);
-        let hashes = InStoreTable::new(&shared_store, hashes_key);
+        let store_rc = Rc::new(store);
+        let leaves_count = InStoreCounter::new(store_rc.clone(), leaves_count_key);
+        let elements_count = InStoreCounter::new(store_rc.clone(), elements_count_key);
+        let root_hash = InStoreTable::new(store_rc.clone(), root_hash_key);
+        let hashes = InStoreTable::new(store_rc.clone(), hashes_key);
 
         Self {
             leaves_count,
             elements_count,
             hashes,
             root_hash,
-            store,
+            store: store_rc,
             hasher,
             mmr_id: Some(mmr_id),
         }
     }
 
-    pub async fn create_with_genesis(
-        store: Arc<Mutex<dyn IStore + 'static>>,
-        hasher: Box<dyn IHasher>,
-        mmr_id: Option<String>,
-    ) -> Result<Self> {
+    pub async fn create_with_genesis(store: S, hasher: H, mmr_id: Option<String>) -> Result<Self> {
         let mut mmr = CoreMMR::new(store, hasher, mmr_id);
-        let elements_count: usize = mmr.elements_count.get().unwrap().parse().unwrap();
+        let elements_count: usize = mmr.elements_count.get().unwrap();
         if elements_count != 0 {
             return Err(anyhow!("Cannot call create_with_genesis on a non-empty MMR. Please provide an empty store or change the MMR id.".to_string()));
         }
@@ -76,19 +68,19 @@ impl CoreMMR {
             return Err(anyhow!("Element size is too big to hash with this hasher"));
         }
 
-        let elements_count: usize = self.elements_count.get().unwrap().parse().unwrap();
+        let elements_count: usize = self.elements_count.get().unwrap_or(0);
         let mut peaks = self
             .retrieve_peaks_hashes(find_peaks(elements_count), None)
             .await
             .unwrap();
-        let leaf_element_index = self.elements_count.increment().unwrap();
+        let leaf_element_index = self.elements_count.increment().unwrap_or(0);
 
         self.hashes
             .set(&value, Some(leaf_element_index.to_string()));
 
         peaks.push(value);
 
-        let leaves_count: usize = self.leaves_count.get().unwrap().parse().unwrap();
+        let leaves_count: usize = self.leaves_count.get().unwrap_or(0);
 
         let no_merges = leaf_count_to_append_no_merges(leaves_count);
 
@@ -118,7 +110,7 @@ impl CoreMMR {
         self.root_hash.set(&root_hash, None);
 
         // Return the new total number of leaves
-        let leaves = self.leaves_count.increment().unwrap();
+        let leaves = self.leaves_count.increment().unwrap_or(0);
 
         Ok(AppendResult {
             leaves_count: leaves,
@@ -137,7 +129,7 @@ impl CoreMMR {
             return Err("Index must be greater than 0".to_string());
         }
 
-        let element_count = self.elements_count.get().unwrap().parse().unwrap();
+        let element_count = self.elements_count.get().unwrap();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
         if element_index > tree_size {
@@ -179,7 +171,7 @@ impl CoreMMR {
         elements_ids: Vec<usize>,
         options: ProofOptions,
     ) -> Result<Vec<Proof>, String> {
-        let element_count = self.elements_count.get().unwrap().parse().unwrap();
+        let element_count = self.elements_count.get().unwrap();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
         for &element_id in &elements_ids {
@@ -240,7 +232,7 @@ impl CoreMMR {
         element_value: String,
         options: ProofOptions,
     ) -> Result<bool, String> {
-        let element_count = self.elements_count.get().unwrap().parse().unwrap();
+        let element_count = self.elements_count.get().unwrap();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
         if let Some(formatting_opts) = options.formatting_opts {
@@ -313,7 +305,7 @@ impl CoreMMR {
     }
 
     pub async fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String, String> {
-        let element_count = self.elements_count.get().unwrap().parse().unwrap();
+        let element_count = self.elements_count.get().unwrap();
         let tree_size = elements_count.unwrap_or_else(|| element_count);
         let peaks_idxs = find_peaks(tree_size);
         let peaks_hashes = self.retrieve_peaks_hashes(peaks_idxs.clone(), None).await?;

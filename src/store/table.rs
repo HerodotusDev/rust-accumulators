@@ -1,19 +1,20 @@
+use std::rc::Rc;
 use std::sync::Mutex;
 use std::{collections::HashMap, sync::Arc};
 
 use super::IStore;
 
-pub struct InStoreTable {
-    store: Arc<Mutex<dyn IStore>>,
+pub struct InStoreTable<S> {
+    store: Rc<S>,
     key: String,
 }
 
-impl InStoreTable {
-    pub fn new(store: &Arc<Mutex<dyn IStore>>, key: String) -> Self {
-        Self {
-            store: Arc::clone(store),
-            key,
-        }
+impl<S> InStoreTable<S>
+where
+    S: IStore,
+{
+    pub fn new(store: Rc<S>, key: String) -> Self {
+        Self { store, key }
     }
 
     fn get_full_key(&self, suffix: Option<String>) -> String {
@@ -21,8 +22,7 @@ impl InStoreTable {
     }
 
     pub async fn get(&self, suffix: Option<String>) -> Option<String> {
-        let store = self.store.lock().unwrap();
-        store.get(&self.get_full_key(suffix)).unwrap()
+        self.store.get(&self.get_full_key(suffix)).unwrap()
     }
 
     pub async fn get_many<T: ToString>(&self, suffixes: Vec<T>) -> HashMap<String, String> {
@@ -31,8 +31,7 @@ impl InStoreTable {
             .map(|s| self.get_full_key(Some(s.to_string())))
             .collect();
         let keys_ref: Vec<&str> = keys.iter().map(AsRef::as_ref).collect();
-        let store = self.store.lock().unwrap();
-        let result_map = store.get_many(keys_ref).unwrap();
+        let result_map = self.store.get_many(keys_ref).unwrap();
 
         let mut keyless = HashMap::new();
         for suffix in &suffixes {
@@ -46,12 +45,10 @@ impl InStoreTable {
         keyless
     }
     pub fn set(&self, value: &str, suffix: Option<String>) {
-        let mut store = self.store.lock().unwrap();
-        store.set(self.get_full_key(suffix).as_str(), value);
+        self.store.set(self.get_full_key(suffix).as_str(), value);
     }
 
     pub fn set_many(&self, entries: HashMap<String, String>) {
-        let mut store = self.store.lock().unwrap();
-        store.set_many(entries).unwrap();
+        self.store.set_many(entries).unwrap();
     }
 }

@@ -1,16 +1,17 @@
-use std::collections::HashMap;
-
+use parking_lot::Mutex;
 use rusqlite::{params, params_from_iter, Connection, Result};
+use std::collections::HashMap;
 
 use super::IStore;
 
 pub struct SQLiteStore {
-    db: Connection,
+    db: Mutex<Connection>,
 }
 
 impl IStore for SQLiteStore {
     fn get(&self, key: &str) -> Result<Option<String>> {
-        let mut stmt = self.db.prepare("SELECT value FROM store WHERE key = ?")?;
+        let binding = self.db.lock();
+        let mut stmt = binding.prepare("SELECT value FROM store WHERE key = ?")?;
         let mut rows = stmt.query(params![key])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row.get(0)?))
@@ -30,7 +31,8 @@ impl IStore for SQLiteStore {
             "SELECT key, value FROM store WHERE key IN ({})",
             placeholders_str
         );
-        let mut stmt = self.db.prepare(&query)?;
+        let binding = self.db.lock();
+        let mut stmt = binding.prepare(&query)?;
         let mut rows = stmt.query(params_from_iter(keys.iter()))?;
 
         while let Some(row) = rows.next()? {
@@ -41,15 +43,16 @@ impl IStore for SQLiteStore {
     }
 
     fn set(&self, key: &str, value: &str) -> Result<()> {
-        self.db.execute(
+        self.db.lock().execute(
             "INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)",
             params![key, value],
         )?;
         Ok(())
     }
 
-    fn set_many(&mut self, entries: HashMap<String, String>) -> Result<()> {
-        let tx = self.db.transaction()?;
+    fn set_many(&self, entries: HashMap<String, String>) -> Result<()> {
+        let mut binding = self.db.lock();
+        let tx = binding.transaction()?;
         for (key, value) in entries.iter() {
             tx.execute(
                 "INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)",
@@ -62,6 +65,7 @@ impl IStore for SQLiteStore {
 
     fn delete(&self, key: &str) -> Result<()> {
         self.db
+            .lock()
             .execute("DELETE FROM store WHERE key = ?", params![key])?;
         Ok(())
     }
@@ -75,7 +79,9 @@ impl IStore for SQLiteStore {
         let query = format!("DELETE FROM store WHERE key IN ({})", placeholders_str);
 
         // Bind the parameters and execute the query.
-        self.db.execute(&query, params_from_iter(keys.iter()))?;
+        self.db
+            .lock()
+            .execute(&query, params_from_iter(keys.iter()))?;
 
         Ok(())
     }
@@ -83,12 +89,12 @@ impl IStore for SQLiteStore {
 
 impl SQLiteStore {
     pub fn new(path: &str) -> Result<Self> {
-        let db = Connection::open(path)?;
+        let db = Mutex::new(Connection::open(path)?);
         Ok(SQLiteStore { db })
     }
 
     pub fn init(&self) -> Result<()> {
-        self.db.execute(
+        self.db.lock().execute(
             "CREATE TABLE IF NOT EXISTS store (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL

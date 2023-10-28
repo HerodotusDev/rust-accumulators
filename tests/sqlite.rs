@@ -1,5 +1,5 @@
-use mmr::store::{sqlite::SQLiteStore, IStore};
-use std::collections::HashMap;
+use mmr::store::{counter::InStoreCounter, sqlite::SQLiteStore, IStore};
+use std::{collections::HashMap, rc::Rc};
 
 #[test]
 fn set_and_get_value() {
@@ -57,4 +57,18 @@ fn should_delete_a_value() {
     let value = store.get("key").unwrap();
 
     assert_eq!(value, None);
+}
+
+#[test]
+fn test_in_store_counter() {
+    let store = SQLiteStore::new(":memory:").unwrap();
+    let _ = store.init();
+
+    // Create an in-store counter
+    let counter = InStoreCounter::new(Rc::new(store), "counter".to_string());
+    counter.set(10);
+    let value = counter.get().unwrap();
+    assert_eq!(value, 10);
+    let newcounter = counter.increment().unwrap();
+    assert_eq!(newcounter, 11);
 }

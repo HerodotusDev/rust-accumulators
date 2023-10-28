@@ -5,6 +5,7 @@ use starknet::core::{crypto::pedersen_hash, types::FieldElement};
 
 use super::IHasher;
 
+#[derive(Debug, Clone)]
 pub struct StarkPedersenHasher {
     options: HashMap<String, usize>,
 }

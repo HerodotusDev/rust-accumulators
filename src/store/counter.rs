@@ -1,38 +1,43 @@
-use super::IStore;
-use rusqlite::Result;
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 
-pub struct InStoreCounter {
-    store: Arc<Mutex<dyn IStore>>,
+use super::IStore;
+use rusqlite::Error as RusqliteError;
+use rusqlite::Result;
+
+pub struct InStoreCounter<S> {
+    store: Rc<S>,
     key: String,
 }
 
-impl InStoreCounter {
+impl<S> InStoreCounter<S>
+where
+    S: IStore,
+{
     // constructor
-    pub fn new(store: &Arc<Mutex<dyn IStore>>, key: String) -> Self {
-        Self {
-            store: Arc::clone(store),
-            key,
-        }
+    pub fn new(store: Rc<S>, key: String) -> Self {
+        Self { store, key }
     }
 
-    // get
-    pub fn get(&self) -> Result<String> {
-        let store = self.store.lock().unwrap();
-        Ok(store.get(&self.key)?.unwrap())
+    pub fn get(&self) -> Result<usize, RusqliteError> {
+        let current_count: usize = match self.store.get(&self.key)? {
+            Some(val) => val.parse().map_err(|_| rusqlite::Error::InvalidQuery)?,
+            None => return Err(rusqlite::Error::QueryReturnedNoRows),
+        };
+        Ok(current_count)
     }
 
     // set
     pub fn set(&self, count: usize) -> Result<()> {
-        let mut store = self.store.lock().unwrap();
-        store.set(&self.key, &count.to_string())?;
+        self.store.set(&self.key, &count.to_string())?;
         Ok(())
     }
 
     // increment
-    pub fn increment(&self) -> Result<usize> {
-        let mut store = self.store.lock().unwrap();
-        let current_count: usize = store.get(&self.key)?.unwrap().parse().unwrap();
+    pub fn increment(&self) -> Result<usize, rusqlite::Error> {
+        let current_count: usize = match self.store.get(&self.key)? {
+            Some(val) => val.parse().map_err(|_| rusqlite::Error::InvalidQuery)?,
+            None => return Err(rusqlite::Error::QueryReturnedNoRows),
+        };
         let new_count = current_count + 1;
         self.set(new_count)?;
         Ok(new_count)
