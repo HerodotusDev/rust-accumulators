@@ -5,9 +5,20 @@ use std::{collections::HashMap, rc::Rc};
 fn set_and_get_value() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let _ = store.init();
+    store
+        .set(
+            "6b9b77f2-a893-48bf-a52a-d5be5d0aaba3:RootHash",
+            "0x049ee3eba8c1600700ee1b87eb599f16716b0b1022947733551fde4050ca6804",
+        )
+        .unwrap();
     store.set("key", "value").unwrap();
     let value = store.get("key").unwrap();
     assert_eq!(value.unwrap(), "value");
+    let value1 = store.get("6b9b77f2-a893-48bf-a52a-d5be5d0aaba3:RootHash");
+    assert_eq!(
+        value1.unwrap(),
+        Some("0x049ee3eba8c1600700ee1b87eb599f16716b0b1022947733551fde4050ca6804".to_string())
+    );
 }
 
 #[test]

@@ -1,3 +1,4 @@
+use anyhow::Result;
 use std::collections::HashMap;
 
 use primitive_types::U256;
@@ -11,7 +12,7 @@ pub struct StarkPedersenHasher {
 }
 
 impl IHasher for StarkPedersenHasher {
-    fn hash(&self, data: Vec<String>) -> String {
+    fn hash(&self, data: Vec<String>) -> Result<String> {
         if data.len() != 2 {
             panic!("Stark Pedersen Hasher only accepts two elements");
         }
@@ -32,9 +33,10 @@ impl IHasher for StarkPedersenHasher {
             })
             .collect();
 
+        println!("x: {}, y: {}", &clean_data[0], &clean_data[1]);
         let result = pedersen_hash(
-            &FieldElement::from_dec_str(&clean_data[0]).unwrap(),
-            &FieldElement::from_dec_str(&clean_data[1]).unwrap(),
+            &FieldElement::from_dec_str(&clean_data[0]).unwrap_or_default(),
+            &FieldElement::from_dec_str(&clean_data[1]).unwrap_or_default(),
         )
         .to_string();
 
@@ -43,7 +45,7 @@ impl IHasher for StarkPedersenHasher {
         let hex_str = format!("{:064x}", computed_result);
         let padded_hex_str = format!("0x{}", hex_str);
 
-        padded_hex_str
+        Ok(padded_hex_str)
     }
 
     fn is_element_size_valid(&self, element: &str) -> bool {
@@ -51,7 +53,7 @@ impl IHasher for StarkPedersenHasher {
     }
 
     fn hash_single(&self, data: &str) -> String {
-        self.hash(vec![data.to_string(), "".to_string()])
+        self.hash(vec![data.to_string(), "".to_string()]).unwrap()
     }
 
     fn get_genesis(&self) -> String {

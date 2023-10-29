@@ -36,6 +36,8 @@ where
         let root_hash_key = format!("{}:{:?}", mmr_id, TreeMetadataKeys::RootHash);
         let hashes_key = format!("{}:hashes:", mmr_id);
 
+        println!("hash key: {}", hashes_key);
+
         let store_rc = Rc::new(store);
         let leaves_count = InStoreCounter::new(store_rc.clone(), leaves_count_key);
         let elements_count = InStoreCounter::new(store_rc.clone(), elements_count_key);
@@ -53,17 +55,20 @@ where
         }
     }
 
-    pub async fn create_with_genesis(store: S, hasher: H, mmr_id: Option<String>) -> Result<Self> {
+    pub fn create_with_genesis(store: S, hasher: H, mmr_id: Option<String>) -> Result<Self> {
         let mut mmr = CoreMMR::new(store, hasher, mmr_id);
-        let elements_count: usize = mmr.elements_count.get().unwrap();
+        let elements_count: usize = mmr.elements_count.get().unwrap_or(0);
         if elements_count != 0 {
             return Err(anyhow!("Cannot call create_with_genesis on a non-empty MMR. Please provide an empty store or change the MMR id.".to_string()));
         }
-        mmr.append(mmr.hasher.get_genesis()).await?;
+        let genesis = mmr.hasher.get_genesis();
+        println!("genesis hash :{}", genesis);
+        mmr.append(genesis);
         Ok(mmr)
     }
 
-    pub async fn append(&mut self, value: String) -> Result<AppendResult> {
+    pub fn append(&mut self, value: String) -> Result<AppendResult> {
+        println!("append value:{}", value);
         if !self.hasher.is_element_size_valid(&value) {
             return Err(anyhow!("Element size is too big to hash with this hasher"));
         }
@@ -71,7 +76,6 @@ where
         let elements_count: usize = self.elements_count.get().unwrap_or(0);
         let mut peaks = self
             .retrieve_peaks_hashes(find_peaks(elements_count), None)
-            .await
             .unwrap();
         let leaf_element_index = self.elements_count.increment().unwrap_or(0);
 
@@ -90,7 +94,7 @@ where
 
             let right_hash = peaks.pop().unwrap();
             let left_hash = peaks.pop().unwrap();
-            let parent_hash = self.hasher.hash(vec![left_hash, right_hash]);
+            let parent_hash = self.hasher.hash(vec![left_hash, right_hash]).unwrap();
 
             self.hashes
                 .set(&parent_hash, Some(last_element_idx.to_string()));
@@ -100,17 +104,16 @@ where
 
         self.elements_count.set(last_element_idx);
 
-        let bag = self.bag_the_peaks(None).await;
+        let bag = self.bag_the_peaks(None).unwrap();
 
         // Compute the new root hash
-        let root_hash = self
-            .calculate_root_hash(&bag.unwrap(), last_element_idx)
-            .await
-            .unwrap();
+        let root_hash = self.calculate_root_hash(&bag, last_element_idx).unwrap();
         self.root_hash.set(&root_hash, None);
 
         // Return the new total number of leaves
         let leaves = self.leaves_count.increment().unwrap_or(0);
+
+        println!("root hash :{}", root_hash);
 
         Ok(AppendResult {
             leaves_count: leaves,
@@ -120,20 +123,18 @@ where
         })
     }
 
-    pub async fn get_proof(
-        &self,
-        element_index: usize,
-        options: ProofOptions,
-    ) -> Result<Proof, String> {
+    pub fn get_proof(&self, element_index: usize, options: ProofOptions) -> Result<Proof> {
         if element_index == 0 {
-            return Err("Index must be greater than 0".to_string());
+            return Err(anyhow!("Index must be greater than 0".to_string()));
         }
 
         let element_count = self.elements_count.get().unwrap();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
         if element_index > tree_size {
-            return Err("Index must be less or equal to the tree size".to_string());
+            return Err(anyhow!(
+                "Index must be less or equal to the tree size".to_string()
+            ));
         }
 
         let peaks = find_peaks(tree_size);
@@ -143,12 +144,13 @@ where
             .formatting_opts
             .as_ref()
             .map(|opts| opts.peaks.clone());
-        let peaks_hashes = self.retrieve_peaks_hashes(peaks, formatting_opts).await?;
+        let peaks_hashes = self.retrieve_peaks_hashes(peaks, formatting_opts).unwrap();
 
         let mut siblings_hashes = self.hashes.get_many(siblings);
         let mut siblings_hashes_vec: Vec<String> = siblings_hashes.values().cloned().collect();
         if let Some(formatting_opts) = options.formatting_opts.as_ref() {
-            siblings_hashes_vec = format_proof(siblings_hashes_vec, formatting_opts.proof.clone())?;
+            siblings_hashes_vec =
+                format_proof(siblings_hashes_vec, formatting_opts.proof.clone()).unwrap();
         }
 
         let element_hash = self.hashes.get(Some(element_index.to_string())).unwrap();
@@ -162,20 +164,20 @@ where
         })
     }
 
-    pub async fn get_proofs(
+    pub fn get_proofs(
         &self,
         elements_ids: Vec<usize>,
         options: ProofOptions,
-    ) -> Result<Vec<Proof>, String> {
+    ) -> Result<Vec<Proof>> {
         let element_count = self.elements_count.get().unwrap();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
         for &element_id in &elements_ids {
             if element_id < 1 {
-                return Err("Index must be greater than 1".to_string());
+                return Err(anyhow!("Index must be greater than 1".to_string()));
             }
             if element_id > tree_size {
-                return Err("Index must be less than the tree size".to_string());
+                return Err(anyhow!("Index must be less than the tree size".to_string()));
             }
         }
 
@@ -186,7 +188,7 @@ where
             siblings_per_element.insert(element_id, find_siblings(element_id, tree_size).unwrap());
         }
 
-        let peaks_hashes = self.retrieve_peaks_hashes(peaks, None).await?;
+        let peaks_hashes = self.retrieve_peaks_hashes(peaks, None).unwrap();
         let sibling_hashes_to_get = array_deduplicate(
             siblings_per_element
                 .values()
@@ -228,7 +230,7 @@ where
         Ok(proofs)
     }
 
-    pub async fn verify_proof(
+    pub fn verify_proof(
         &self,
         mut proof: Proof,
         element_value: String,
@@ -278,21 +280,22 @@ where
             let is_right = leaf_index % 2 == 1;
             leaf_index /= 2;
 
-            hash = self.hasher.hash(if is_right {
-                vec![proof_hash.clone(), hash.clone()]
-            } else {
-                vec![hash.clone(), proof_hash.clone()]
-            });
+            hash = self
+                .hasher
+                .hash(if is_right {
+                    vec![proof_hash.clone(), hash.clone()]
+                } else {
+                    vec![hash.clone(), proof_hash.clone()]
+                })
+                .unwrap();
         }
 
-        let peak_hashes = self
-            .retrieve_peaks_hashes(find_peaks(tree_size), None)
-            .await?;
+        let peak_hashes = self.retrieve_peaks_hashes(find_peaks(tree_size), None)?;
 
         Ok(peak_hashes[peak_index] == hash)
     }
 
-    pub async fn retrieve_peaks_hashes(
+    pub fn retrieve_peaks_hashes(
         &self,
         peak_idxs: Vec<String>,
         formatting_opts: Option<PeaksFormattingOptions>,
@@ -306,11 +309,13 @@ where
         }
     }
 
-    pub async fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String, String> {
-        let element_count = self.elements_count.get().unwrap();
+    pub fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String> {
+        let element_count = self.elements_count.get().unwrap_or_default();
         let tree_size = elements_count.unwrap_or_else(|| element_count);
         let peaks_idxs = find_peaks(tree_size);
-        let peaks_hashes = self.retrieve_peaks_hashes(peaks_idxs.clone(), None).await?;
+        let peaks_hashes = self
+            .retrieve_peaks_hashes(peaks_idxs.clone(), None)
+            .unwrap();
 
         match peaks_idxs.len() {
             // Use original peaks_idxs here
@@ -322,24 +327,19 @@ where
                 let second_last = peaks_hashes.pop_back().unwrap();
                 let root0 = self.hasher.hash(vec![second_last, last]);
 
-                let root = peaks_hashes
-                    .into_iter()
-                    .rev()
-                    .fold(root0, |prev, cur| self.hasher.hash(vec![cur, prev]));
+                let root = peaks_hashes.into_iter().rev().fold(root0, |prev, cur| {
+                    self.hasher.hash(vec![cur, prev.unwrap()])
+                });
 
-                Ok(root)
+                root
             }
         }
     }
 
-    pub async fn calculate_root_hash(
-        &self,
-        bag: &str,
-        leaf_count: usize,
-    ) -> Result<String, String> {
+    pub fn calculate_root_hash(&self, bag: &str, leaf_count: usize) -> Result<String> {
         let leaf_count_str = leaf_count.to_string();
         let hash_result = self.hasher.hash(vec![leaf_count_str, bag.to_string()]);
 
-        Ok(hash_result)
+        hash_result
     }
 }

@@ -1,3 +1,4 @@
+use anyhow::Result;
 use sha3::{Digest, Keccak256};
 use std::collections::HashMap;
 
@@ -8,12 +9,12 @@ pub struct KeccakHasher {
 }
 
 impl IHasher for KeccakHasher {
-    fn hash(&self, data: Vec<String>) -> String {
+    fn hash(&self, data: Vec<String>) -> Result<String> {
         if data.is_empty() {
-            return hex::encode(Keccak256::digest(&[]));
+            return Ok(hex::encode(Keccak256::digest(&[])));
         }
         if data.len() == 1 {
-            return hex::encode(Keccak256::digest(data[0].as_bytes()));
+            return Ok(hex::encode(Keccak256::digest(data[0].as_bytes())));
         }
 
         let bytes: Vec<u8> = data
@@ -21,7 +22,7 @@ impl IHasher for KeccakHasher {
             .flat_map(|e| hex::decode(e).expect("Decoding failed"))
             .collect();
 
-        hex::encode(Keccak256::digest(&bytes))
+        Ok(hex::encode(Keccak256::digest(&bytes)))
     }
 
     fn is_element_size_valid(&self, element: &str) -> bool {
@@ -29,7 +30,7 @@ impl IHasher for KeccakHasher {
     }
 
     fn hash_single(&self, data: &str) -> String {
-        self.hash(vec![data.to_string()])
+        self.hash(vec![data.to_string()]).unwrap()
     }
 
     fn get_genesis(&self) -> String {

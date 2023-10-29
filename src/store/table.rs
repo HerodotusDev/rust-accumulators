@@ -21,7 +21,10 @@ where
     }
 
     pub fn get(&self, suffix: Option<String>) -> Option<String> {
-        self.store.get(&self.get_full_key(suffix)).unwrap()
+        let full_key = &self.get_full_key(suffix);
+        println!("full_key:{}", full_key);
+        println!("full_key value:{:?}", self.store.get(full_key));
+        self.store.get(full_key).unwrap_or_default()
     }
 
     pub fn get_many(&self, suffixes: Vec<String>) -> HashMap<String, String> {
@@ -32,7 +35,7 @@ where
 
         let keys_ref: Vec<&str> = keys_str.iter().map(AsRef::as_ref).collect();
 
-        let fetched = self.store.get_many(keys_ref).unwrap(); // Assuming get_many is async and returns a Result
+        let fetched = self.store.get_many(keys_ref).unwrap_or_default(); // Assuming get_many is async and returns a Result
 
         let mut keyless = HashMap::new();
         for (key, value) in fetched.iter() {
