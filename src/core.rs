@@ -145,17 +145,13 @@ where
             .map(|opts| opts.peaks.clone());
         let peaks_hashes = self.retrieve_peaks_hashes(peaks, formatting_opts).await?;
 
-        let mut siblings_hashes = self.hashes.get_many(siblings).await;
+        let mut siblings_hashes = self.hashes.get_many(siblings);
         let mut siblings_hashes_vec: Vec<String> = siblings_hashes.values().cloned().collect();
         if let Some(formatting_opts) = options.formatting_opts.as_ref() {
             siblings_hashes_vec = format_proof(siblings_hashes_vec, formatting_opts.proof.clone())?;
         }
 
-        let element_hash = self
-            .hashes
-            .get(Some(element_index.to_string()))
-            .await
-            .unwrap();
+        let element_hash = self.hashes.get(Some(element_index.to_string())).unwrap();
 
         Ok(Proof {
             element_index,
@@ -198,8 +194,14 @@ where
                 .collect(),
         );
 
-        let all_siblings_hashes = self.hashes.get_many(sibling_hashes_to_get).await;
-        let element_hashes = self.hashes.get_many(elements_ids.clone()).await;
+        let sibling_hashes_to_get_str: Vec<String> = sibling_hashes_to_get
+            .iter()
+            .map(|x| x.to_string())
+            .collect();
+        let elements_ids_str: Vec<String> = elements_ids.iter().map(|&x| x.to_string()).collect();
+
+        let all_siblings_hashes = self.hashes.get_many(sibling_hashes_to_get_str);
+        let element_hashes = self.hashes.get_many(elements_ids_str.clone());
 
         let mut proofs: Vec<Proof> = Vec::new();
         for &element_id in &elements_ids {
@@ -295,7 +297,7 @@ where
         peak_idxs: Vec<String>,
         formatting_opts: Option<PeaksFormattingOptions>,
     ) -> Result<Vec<String>, String> {
-        let hashes_result = self.hashes.get_many(peak_idxs).await;
+        let hashes_result = self.hashes.get_many(peak_idxs);
         let hashes: Vec<String> = hashes_result.values().cloned().collect();
 
         match formatting_opts {

@@ -1,6 +1,5 @@
+use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Mutex;
-use std::{collections::HashMap, sync::Arc};
 
 use super::IStore;
 
@@ -18,28 +17,32 @@ where
     }
 
     fn get_full_key(&self, suffix: Option<String>) -> String {
-        format!("{}{}", self.key, suffix.unwrap_or_default())
+        format!("{}{}", self.key, suffix.unwrap_or("".to_string()))
     }
 
-    pub async fn get(&self, suffix: Option<String>) -> Option<String> {
+    pub fn get(&self, suffix: Option<String>) -> Option<String> {
         self.store.get(&self.get_full_key(suffix)).unwrap()
     }
 
-    pub async fn get_many<T: ToString>(&self, suffixes: Vec<T>) -> HashMap<String, String> {
-        let keys: Vec<String> = suffixes
+    pub fn get_many(&self, suffixes: Vec<String>) -> HashMap<String, String> {
+        let keys_str: Vec<String> = suffixes
             .iter()
-            .map(|s| self.get_full_key(Some(s.to_string())))
+            .map(|suffix| self.get_full_key(Some(suffix.to_string())))
             .collect();
-        let keys_ref: Vec<&str> = keys.iter().map(AsRef::as_ref).collect();
-        let result_map = self.store.get_many(keys_ref).unwrap();
+
+        let keys_ref: Vec<&str> = keys_str.iter().map(AsRef::as_ref).collect();
+
+        let fetched = self.store.get_many(keys_ref).unwrap(); // Assuming get_many is async and returns a Result
 
         let mut keyless = HashMap::new();
-        for suffix in &suffixes {
-            let full_key = self.get_full_key(Some(suffix.to_string()));
-            if let Some(value) = result_map.get(&full_key) {
-                let keyless_key: String = full_key.split(':').skip(2).collect::<Vec<_>>().join(":");
-                keyless.insert(keyless_key, value.clone());
-            }
+        for (key, value) in fetched.iter() {
+            let new_key: String = if key.contains(":") {
+                key.split(":").skip(2).collect::<Vec<&str>>().join(":")
+            } else {
+                key.clone()
+            };
+            println!("newkey:{} old key:{} value:{}", new_key, key, value);
+            keyless.insert(new_key, value.clone());
         }
 
         keyless
@@ -49,6 +52,11 @@ where
     }
 
     pub fn set_many(&self, entries: HashMap<String, String>) {
-        self.store.set_many(entries).unwrap();
+        let mut store_entries = HashMap::new();
+        for (key, value) in entries.iter() {
+            let full_key = self.get_full_key(Some(key.to_string())); // Assume get_full_key is another function
+            store_entries.insert(full_key, value.clone());
+        }
+        self.store.set_many(store_entries).unwrap();
     }
 }
