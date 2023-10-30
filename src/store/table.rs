@@ -3,6 +3,22 @@ use std::rc::Rc;
 
 use super::IStore;
 
+pub trait ToKey {
+    fn to_key(&self) -> String;
+}
+
+impl ToKey for String {
+    fn to_key(&self) -> String {
+        self.clone()
+    }
+}
+
+impl ToKey for usize {
+    fn to_key(&self) -> String {
+        self.to_string()
+    }
+}
+
 pub struct InStoreTable<S> {
     store: Rc<S>,
     key: String,
@@ -27,10 +43,10 @@ where
         self.store.get(full_key).unwrap_or_default()
     }
 
-    pub fn get_many(&self, suffixes: Vec<String>) -> HashMap<String, String> {
+    pub fn get_many<T: ToKey>(&self, suffixes: Vec<T>) -> HashMap<String, String> {
         let keys_str: Vec<String> = suffixes
             .iter()
-            .map(|suffix| self.get_full_key(Some(suffix.to_string())))
+            .map(|suffix| self.get_full_key(Some(suffix.to_key())))
             .collect();
 
         let keys_ref: Vec<&str> = keys_str.iter().map(AsRef::as_ref).collect();
@@ -44,7 +60,7 @@ where
             } else {
                 key.clone()
             };
-            println!("newkey:{} old key:{} value:{}", new_key, key, value);
+            println!("new_key:{} old key:{} value:{}", new_key, key, value);
             keyless.insert(new_key, value.clone());
         }
 

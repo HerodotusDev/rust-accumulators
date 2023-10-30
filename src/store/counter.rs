@@ -1,8 +1,8 @@
 use std::rc::Rc;
 
 use super::IStore;
+use anyhow::{anyhow, Result};
 use rusqlite::Error as RusqliteError;
-use rusqlite::Result;
 
 pub struct InStoreCounter<S> {
     store: Rc<S>,
@@ -18,27 +18,28 @@ where
         Self { store, key }
     }
 
-    pub fn get(&self) -> Result<usize, RusqliteError> {
-        let current_count: usize = match self.store.get(&self.key)? {
-            Some(val) => val.parse().map_err(|_| rusqlite::Error::InvalidQuery)?,
-            None => return Err(rusqlite::Error::QueryReturnedNoRows),
-        };
-        Ok(current_count)
+    pub fn get(&self) -> Result<usize> {
+        let current_count = self
+            .store
+            .get(&self.key)
+            .unwrap()
+            .unwrap_or("0".to_string());
+        let count = current_count.parse::<usize>().unwrap();
+        Ok(count)
     }
 
     // set
     pub fn set(&self, count: usize) -> Result<()> {
+        println!("set count :{}", count);
         self.store.set(&self.key, &count.to_string())?;
         Ok(())
     }
 
     // increment
-    pub fn increment(&self) -> Result<usize, rusqlite::Error> {
-        let current_count: usize = match self.store.get(&self.key)? {
-            Some(val) => val.parse().map_err(|_| rusqlite::Error::InvalidQuery)?,
-            None => return Err(rusqlite::Error::QueryReturnedNoRows),
-        };
+    pub fn increment(&self) -> Result<usize> {
+        let current_count = self.get().unwrap();
         let new_count = current_count + 1;
+        println!("increment count :{}", new_count);
         self.set(new_count)?;
         Ok(new_count)
     }

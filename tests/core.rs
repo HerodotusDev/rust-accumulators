@@ -1,39 +1,54 @@
 use mmr::{
     core::CoreMMR,
-    hash::{stark_pedersen::StarkPedersenHasher, IHasher},
+    hash::{stark_pedersen::StarkPedersenHasher, stark_poseidon::StarkPoseidonHasher, IHasher},
+    helpers::AppendResult,
     store::sqlite::SQLiteStore,
-    utils::AppendResult,
 };
 
-// #[test]
-// fn test_new() {
-//     let leaves = vec!["1", "2", "3"];
-//     let rootAt6Leaves = "0x03203d652ecaf8ad941cbbccddcc0ce904d81e2c37e6dcff4377cf988dac493c";
+#[test]
+fn should_append_to_mmr() {
+    let store = SQLiteStore::new(":memory:").unwrap();
+    let hasher = StarkPoseidonHasher::new(Some(false));
+    let _ = store.init();
+    let mut mmr = CoreMMR::new(store, hasher, None);
+    mmr.append("1".to_string());
+    mmr.append("2".to_string());
+    mmr.append("3".to_string());
 
-//     // Arrange
-//     let store = SQLiteStore::new(":memory:").unwrap();
-//     let hasher = StarkPedersenHasher::new();
-//     let _ = store.init();
+    let root = mmr.bag_the_peaks(Some(3)).unwrap();
+    println!("root:{}", root);
+}
 
-//     // Act
-//     let mut core_mmr = CoreMMR::new(store, hasher, None);
-//     let mut appends_results: Vec<AppendResult> = Vec::new();
-//     for leaf in leaves {
-//         let result = core_mmr.append(leaf.to_string());
-//         match result {
-//             Ok(r) => appends_results.push(r),
-//             Err(e) => panic!("Append failed: {}", e),
-//         }
-//     }
-//     core_mmr.append("4".to_string());
-//     let element_index = core_mmr.append("5".to_string()).unwrap();
-//     core_mmr.append("6".to_string());
+#[test]
+fn should_append_duplicate_to_mmr() {
+    let store = SQLiteStore::new(":memory:").unwrap();
+    let hasher = StarkPoseidonHasher::new(Some(false));
+    let _ = store.init();
+    let mut mmr = CoreMMR::new(store, hasher, None);
+    mmr.append("4".to_string());
+    mmr.append("4".to_string());
 
-//     assert_eq!(
-//         core_mmr.bag_the_peaks(None).unwrap(),
-//         rootAt6Leaves.to_string()
-//     );
-// }
+    let root = mmr.bag_the_peaks(None).unwrap();
+    println!("root:{}", root);
+}
+
+#[test]
+fn test_new() {
+    // Arrange
+    let store = SQLiteStore::new(":memory:").unwrap();
+    let hasher = StarkPoseidonHasher::new(Some(false));
+    let _ = store.init();
+
+    // Act
+    let core_mmr = CoreMMR::create_with_genesis(store, hasher.clone(), None).unwrap();
+
+    assert_eq!(
+        core_mmr.root_hash.get(None).unwrap(),
+        hasher
+            .hash(vec!["1".to_string(), hasher.get_genesis()])
+            .unwrap()
+    );
+}
 
 // #[test]
 // fn test_genesis() {

@@ -6,12 +6,12 @@ use uuid::Uuid;
 use crate::{
     formatting::{format_peaks, format_proof, PeaksFormattingOptions},
     hash::IHasher,
-    proof::{Proof, ProofOptions},
-    store::{counter::InStoreCounter, table::InStoreTable, IStore},
-    utils::{
+    helpers::{
         array_deduplicate, element_index_to_leaf_index, find_peaks, find_siblings, get_peak_info,
         leaf_count_to_append_no_merges, AppendResult, TreeMetadataKeys,
     },
+    proof::{Proof, ProofOptions},
+    store::{counter::InStoreCounter, table::InStoreTable, IStore},
 };
 
 pub struct CoreMMR<S, H> {
@@ -63,7 +63,7 @@ where
         }
         let genesis = mmr.hasher.get_genesis();
         println!("genesis hash :{}", genesis);
-        mmr.append(genesis);
+        let _ = mmr.append(genesis);
         Ok(mmr)
     }
 
@@ -78,6 +78,8 @@ where
             .retrieve_peaks_hashes(find_peaks(elements_count), None)
             .unwrap();
         let leaf_element_index = self.elements_count.increment().unwrap_or(0);
+
+        println!("leaf_element_index value:{}", leaf_element_index);
 
         self.hashes
             .set(&value, Some(leaf_element_index.to_string()));
@@ -102,7 +104,7 @@ where
             peaks.push(parent_hash);
         }
 
-        self.elements_count.set(last_element_idx);
+        let _ = self.elements_count.set(last_element_idx);
 
         let bag = self.bag_the_peaks(None).unwrap();
 
@@ -210,7 +212,7 @@ where
             let siblings = siblings_per_element.get(&element_id).unwrap();
             let mut siblings_hashes: Vec<String> = siblings
                 .iter()
-                .map(|s| all_siblings_hashes.get(s).unwrap().clone())
+                .map(|s| all_siblings_hashes.get(&s.to_string()).unwrap().clone()) // Note the conversion here
                 .collect();
 
             if let Some(formatting_opts) = &options.formatting_opts {
@@ -235,7 +237,7 @@ where
         mut proof: Proof,
         element_value: String,
         options: ProofOptions,
-    ) -> Result<bool, String> {
+    ) -> Result<bool> {
         let element_count = self.elements_count.get().unwrap();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
@@ -263,10 +265,10 @@ where
         }
         let element_index = proof.element_index;
         if element_index <= 0 {
-            return Err("Index must be greater than 0".to_string());
+            return Err(anyhow!("Index must be greater than 0".to_string()));
         }
         if element_index > tree_size {
-            return Err("Index must be in the tree".to_string());
+            return Err(anyhow!("Index must be in the tree".to_string()));
         }
         let (peak_index, peak_height) = get_peak_info(tree_size, element_index);
         if proof.siblings_hashes.len() != peak_height {
@@ -297,9 +299,9 @@ where
 
     pub fn retrieve_peaks_hashes(
         &self,
-        peak_idxs: Vec<String>,
+        peak_idxs: Vec<usize>,
         formatting_opts: Option<PeaksFormattingOptions>,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<String>> {
         let hashes_result = self.hashes.get_many(peak_idxs);
         let hashes: Vec<String> = hashes_result.values().cloned().collect();
 

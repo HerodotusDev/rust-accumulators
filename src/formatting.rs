@@ -1,3 +1,5 @@
+use anyhow::anyhow;
+use anyhow::Result;
 /// Formatting
 #[derive(Clone)]
 pub struct FormattingOptions {
@@ -23,11 +25,11 @@ pub type PeaksFormattingOptions = FormattingOptions;
 pub fn format_peaks(
     mut peaks: Vec<String>,
     formatting_opts: &PeaksFormattingOptions,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>> {
     if peaks.len() > formatting_opts.output_size {
-        return Err(
-            "Formatting: Expected peaks output size is smaller than the actual size".to_string(),
-        );
+        return Err(anyhow!(
+            "Formatting: Expected peaks output size is smaller than the actual size".to_string()
+        ));
     }
 
     let expected_peaks_size_remainder = formatting_opts.output_size - peaks.len();
