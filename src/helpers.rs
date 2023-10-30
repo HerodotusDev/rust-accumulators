@@ -1,3 +1,4 @@
+use anyhow::{anyhow, Result};
 use std::collections::HashSet;
 use std::hash::Hash;
 
@@ -17,15 +18,15 @@ pub struct AppendResult {
     pub root_hash: String,
 }
 
-pub fn find_peaks(mut elements_count: usize) -> Vec<String> {
-    let mut mountain_elements_count = (1 << (elements_count as f64).log2().ceil() as usize) - 1;
+pub fn find_peaks(mut elements_count: usize) -> Vec<usize> {
+    let mut mountain_elements_count = (1 << bit_length(elements_count)) - 1;
     let mut mountain_index_shift = 0;
-    let mut peaks: Vec<String> = Vec::new();
+    let mut peaks: Vec<usize> = Vec::new();
 
     while mountain_elements_count > 0 {
         if mountain_elements_count <= elements_count {
             mountain_index_shift += mountain_elements_count;
-            peaks.push(mountain_index_shift.to_string());
+            peaks.push(mountain_index_shift);
             elements_count -= mountain_elements_count;
         }
         mountain_elements_count >>= 1;
@@ -50,27 +51,24 @@ fn count_trailing_ones(mut num: usize) -> usize {
     count
 }
 
-pub fn find_siblings(
-    element_index: usize,
-    elements_count: usize,
-) -> Result<Vec<String>, &'static str> {
-    let leaf_index = element_index_to_leaf_index(element_index)?;
+pub fn find_siblings(element_index: usize, elements_count: usize) -> Result<Vec<usize>> {
+    let mut leaf_index = element_index_to_leaf_index(element_index)?;
     let mut height = 0;
     let mut siblings = Vec::new();
     let mut current_element_index = element_index;
 
     while current_element_index <= elements_count {
-        let siblings_offset = (1 << (height + 1)) - 1;
+        let siblings_offset = (2 << height) - 1;
         if leaf_index % 2 == 1 {
             // right child
-            siblings.push((current_element_index - siblings_offset).to_string());
+            siblings.push(current_element_index - siblings_offset);
             current_element_index += 1;
         } else {
             // left child
-            siblings.push((current_element_index + siblings_offset).to_string());
+            siblings.push(current_element_index + siblings_offset);
             current_element_index += siblings_offset + 1;
         }
-        leaf_index / 2;
+        leaf_index = leaf_index / 2;
         height += 1;
     }
 
@@ -78,17 +76,17 @@ pub fn find_siblings(
     Ok(siblings)
 }
 
-pub fn element_index_to_leaf_index(element_index: usize) -> Result<usize, &'static str> {
+pub fn element_index_to_leaf_index(element_index: usize) -> Result<usize> {
     if element_index == 0 {
-        return Err("Invalid element index");
+        return Err(anyhow!("Invalid element index"));
     }
     match elements_count_to_leaf_count(element_index - 1) {
         Ok(val) => Ok(val),
-        Err(_) => Err("Invalid element index"),
+        Err(_) => Err(anyhow!("Invalid element index")),
     }
 }
 
-fn elements_count_to_leaf_count(elements_count: usize) -> Result<usize, &'static str> {
+pub fn elements_count_to_leaf_count(elements_count: usize) -> Result<usize> {
     let mut leaf_count = 0;
     let mut mountain_leaf_count = 1 << bit_length(elements_count);
     let mut current_elements_count = elements_count;
@@ -103,7 +101,7 @@ fn elements_count_to_leaf_count(elements_count: usize) -> Result<usize, &'static
     }
 
     if current_elements_count > 0 {
-        return Err("Invalid elements count");
+        return Err(anyhow!("Invalid elements count"));
     }
 
     Ok(leaf_count)
@@ -118,8 +116,8 @@ pub fn array_deduplicate<T: Eq + Hash>(array: Vec<T>) -> Vec<T> {
     set.into_iter().collect::<Vec<T>>()
 }
 
-pub fn get_peak_info(elements_count: usize, mut element_index: usize) -> (usize, usize) {
-    let mut mountain_height = (elements_count as f64).log2().ceil() as usize;
+pub fn get_peak_info(mut elements_count: usize, mut element_index: usize) -> (usize, usize) {
+    let mut mountain_height = bit_length(elements_count);
     let mut mountain_elements_count = (1 << mountain_height) - 1;
     let mut mountain_index = 0;
 
@@ -128,6 +126,7 @@ pub fn get_peak_info(elements_count: usize, mut element_index: usize) -> (usize,
             if element_index <= mountain_elements_count {
                 return (mountain_index, mountain_height - 1);
             }
+            elements_count -= mountain_elements_count;
             element_index -= mountain_elements_count;
             mountain_index += 1;
         }
