@@ -73,7 +73,7 @@ impl IHasher for StarkPoseidonHasher {
 
 impl StarkPoseidonHasher {
     pub fn new(should_pad: Option<bool>) -> Self {
-        StarkPoseidonHasher {
+        Self {
             block_size_bits: 252,
             should_pad: should_pad.unwrap_or(false),
         }

@@ -19,23 +19,6 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn should_compute_a_hash_2() {
-    //     let hasher = StarkPedersenHasher::new();
-    //     let a = "1".to_string();
-    //     let b = "0x049ee3eba8c1600700ee1b87eb599f16716b0b1022947733551fde4050ca6804".to_string();
-
-    //     assert_eq!(hasher.is_element_size_valid(&a), true);
-    //     assert_eq!(hasher.is_element_size_valid(&b), true);
-
-    //     let result = hasher.hash(vec![a, b]);
-
-    //     assert_eq!(
-    //         result,
-    //         "0x049ee3eba8c1600700ee1b87eb599f16716b0b1022947733551fde4050ca6804".to_string()
-    //     );
-    // }
-
     #[test]
     #[should_panic]
     fn should_throw() {

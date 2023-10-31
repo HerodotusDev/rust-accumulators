@@ -58,13 +58,7 @@ impl IHasher for StarkPedersenHasher {
 
     fn get_genesis(&self) -> String {
         let genesis_str = "brave new world";
-        let hex_genesis = genesis_str
-            .as_bytes()
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<Vec<String>>()
-            .join("");
-        self.hash_single(&hex_genesis)
+        self.hash_single(&genesis_str)
     }
 }
 

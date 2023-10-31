@@ -17,3 +17,5 @@ primitive-types = "0.10"
 uuid = { version = "1.4.1", features = ["v4"] }
 parking_lot = "0.12.1"
 starknet-crypto = "0.6.0"
+num-bigint = "0.4.4"
+num-traits = "0.2.17"

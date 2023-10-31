@@ -1,8 +1,7 @@
 use std::rc::Rc;
 
 use super::IStore;
-use anyhow::{anyhow, Result};
-use rusqlite::Error as RusqliteError;
+use anyhow::Result;
 
 pub struct InStoreCounter<S> {
     store: Rc<S>,
