@@ -78,7 +78,7 @@ fn test_in_store_counter() {
     // Create an in-store counter
     let counter = InStoreCounter::new(Rc::new(store), "counter".to_string());
     let _ = counter.set(10);
-    let value = counter.get().unwrap();
+    let value = counter.get();
     assert_eq!(value, 10);
     let newcounter = counter.increment().unwrap();
     assert_eq!(newcounter, 11);
@@ -91,8 +91,8 @@ fn test_get_none_in_store_table() {
 
     // Create an in-store counter
     let table = InStoreTable::new(Rc::new(store), "table".to_string());
-    table.set("value1", None);
-    let value = table.get(None);
+    table.set::<usize>("value1", None);
+    let value = table.get::<usize>(None);
     assert_eq!(value.unwrap(), "value1".to_string());
 }
 

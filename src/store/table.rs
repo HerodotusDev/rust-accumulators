@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::rc::Rc;
 
 use super::IStore;
@@ -32,12 +33,20 @@ where
         Self { store, key }
     }
 
-    fn get_full_key(&self, suffix: Option<String>) -> String {
-        format!("{}{}", self.key, suffix.unwrap_or("".to_string()))
+    fn get_full_key<T: ToKey + Display>(&self, suffix: Option<T>) -> String {
+        let new_suffix = match suffix {
+            Some(suffix) => suffix.to_key(),
+            None => "".to_string(),
+        };
+        format!("{}{}", self.key.to_key(), new_suffix)
     }
 
-    pub fn get(&self, suffix: Option<String>) -> Option<String> {
-        let full_key = &self.get_full_key(suffix);
+    pub fn get<T: ToKey>(&self, suffix: Option<T>) -> Option<String> {
+        let new_suffix = match suffix {
+            Some(suffix) => Some(suffix.to_key()),
+            None => None,
+        };
+        let full_key = &self.get_full_key(new_suffix);
         println!("full_key:{}", full_key);
         println!("full_key value:{:?}", self.store.get(full_key));
         self.store.get(full_key).unwrap_or_default()
@@ -66,8 +75,8 @@ where
 
         keyless
     }
-    pub fn set(&self, value: &str, suffix: Option<String>) {
-        self.store.set(self.get_full_key(suffix).as_str(), value);
+    pub fn set<T: ToKey + Display>(&self, value: &str, suffix: Option<T>) {
+        let _ = self.store.set(self.get_full_key(suffix).as_str(), value);
     }
 
     pub fn set_many(&self, entries: HashMap<String, String>) {

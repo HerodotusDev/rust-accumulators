@@ -57,7 +57,7 @@ where
 
     pub fn create_with_genesis(store: S, hasher: H, mmr_id: Option<String>) -> Result<Self> {
         let mut mmr = CoreMMR::new(store, hasher, mmr_id);
-        let elements_count: usize = mmr.elements_count.get().unwrap_or(0);
+        let elements_count: usize = mmr.elements_count.get();
         if elements_count != 0 {
             return Err(anyhow!("Cannot call create_with_genesis on a non-empty MMR. Please provide an empty store or change the MMR id.".to_string()));
         }
@@ -73,20 +73,17 @@ where
             return Err(anyhow!("Element size is too big to hash with this hasher"));
         }
 
-        let elements_count: usize = self.elements_count.get().unwrap_or(0);
-        let mut peaks = self
-            .retrieve_peaks_hashes(find_peaks(elements_count), None)
-            .unwrap();
-        let leaf_element_index = self.elements_count.increment().unwrap_or(0);
+        let elements_count = self.elements_count.get();
+        let mut peaks = self.retrieve_peaks_hashes(find_peaks(elements_count), None)?;
 
-        println!("leaf_element_index value:{}", leaf_element_index);
+        let leaf_element_index = self.elements_count.increment()?;
 
         self.hashes
             .set(&value, Some(leaf_element_index.to_string()));
 
         peaks.push(value);
 
-        let leaves_count: usize = self.leaves_count.get().unwrap_or(0);
+        let leaves_count = self.leaves_count.get();
 
         let no_merges = leaf_count_to_append_no_merges(leaves_count);
 
@@ -94,9 +91,9 @@ where
         for _ in 0..no_merges {
             last_element_idx += 1;
 
-            let right_hash = peaks.pop().unwrap();
-            let left_hash = peaks.pop().unwrap();
-            let parent_hash = self.hasher.hash(vec![left_hash, right_hash]).unwrap();
+            let right_hash = peaks.pop().ok_or(anyhow!("No right hash present"))?;
+            let left_hash = peaks.pop().ok_or(anyhow!("No left hash present"))?;
+            let parent_hash = self.hasher.hash(vec![left_hash, right_hash])?;
 
             self.hashes
                 .set(&parent_hash, Some(last_element_idx.to_string()));
@@ -104,17 +101,17 @@ where
             peaks.push(parent_hash);
         }
 
-        let _ = self.elements_count.set(last_element_idx);
+        self.elements_count.set(last_element_idx)?;
 
-        let bag = self.bag_the_peaks(None).unwrap();
+        let bag = self.bag_the_peaks(None)?;
 
         // Compute the new root hash
-        let root_hash = self.calculate_root_hash(&bag, last_element_idx).unwrap();
-        self.root_hash.set(&root_hash, None);
+        let root_hash = self.calculate_root_hash(&bag, last_element_idx)?;
+        self.root_hash.set::<usize>(&root_hash, None);
 
-        // Return the new total number of leaves
-        let leaves = self.leaves_count.increment().unwrap_or(0);
+        let leaves = self.leaves_count.increment()?;
 
+        println!("leaves :{}", leaves);
         println!("root hash :{}", root_hash);
 
         Ok(AppendResult {
@@ -130,7 +127,7 @@ where
             return Err(anyhow!("Index must be greater than 0".to_string()));
         }
 
-        let element_count = self.elements_count.get().unwrap();
+        let element_count = self.elements_count.get();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
         if element_index > tree_size {
@@ -171,7 +168,7 @@ where
         elements_ids: Vec<usize>,
         options: ProofOptions,
     ) -> Result<Vec<Proof>> {
-        let element_count = self.elements_count.get().unwrap();
+        let element_count = self.elements_count.get();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
         for &element_id in &elements_ids {
@@ -238,7 +235,7 @@ where
         element_value: String,
         options: ProofOptions,
     ) -> Result<bool> {
-        let element_count = self.elements_count.get().unwrap();
+        let element_count = self.elements_count.get();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
         if let Some(formatting_opts) = options.formatting_opts {
@@ -304,6 +301,9 @@ where
     ) -> Result<Vec<String>> {
         let hashes_result = self.hashes.get_many(peak_idxs);
         let hashes: Vec<String> = hashes_result.values().cloned().collect();
+        for hash in hashes.iter() {
+            println!("Retrieved {:?} peak hashes", hash);
+        }
 
         match formatting_opts {
             Some(opts) => format_peaks(hashes, &opts),
@@ -312,12 +312,15 @@ where
     }
 
     pub fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String> {
-        let element_count = self.elements_count.get().unwrap_or_default();
-        let tree_size = elements_count.unwrap_or_else(|| element_count);
+        let element_count_from_store = self.elements_count.get();
+        let tree_size = elements_count.unwrap_or_else(|| element_count_from_store);
         let peaks_idxs = find_peaks(tree_size);
+        println!("peaks_idxs: {:?}", peaks_idxs);
         let peaks_hashes = self
             .retrieve_peaks_hashes(peaks_idxs.clone(), None)
             .unwrap();
+
+        println!("peaks_hashes: {:?}", peaks_hashes);
 
         match peaks_idxs.len() {
             // Use original peaks_idxs here
@@ -339,9 +342,7 @@ where
     }
 
     pub fn calculate_root_hash(&self, bag: &str, leaf_count: usize) -> Result<String> {
-        let leaf_count_str = leaf_count.to_string();
-        let hash_result = self.hasher.hash(vec![leaf_count_str, bag.to_string()]);
-
-        hash_result
+        self.hasher
+            .hash(vec![leaf_count.to_string(), bag.to_string()])
     }
 }

@@ -10,6 +10,7 @@ pub enum TreeMetadataKeys {
 }
 
 /// Append Result
+#[derive(Debug, PartialEq, Eq)]
 pub struct AppendResult {
     pub leaves_count: usize,
     pub elements_count: usize,

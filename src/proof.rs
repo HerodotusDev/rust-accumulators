@@ -1,5 +1,6 @@
 use super::formatting::{PeaksFormattingOptions, ProofFormattingOptions};
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct Proof {
     /// The index of the proven element.
     /// For example: 1
