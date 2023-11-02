@@ -107,6 +107,24 @@ fn should_append_to_mmr() {
             },
         )
         .unwrap();
+
+    assert_eq!(
+        proof1,
+        Proof {
+            element_index: 1,
+            element_hash: "1".to_string(),
+            siblings_hashes: vec![
+                "2".to_string(),
+                "0x384f427301be8e1113e6dd91088cb46e25a8f6426a997b2f842a39596bf45f4".to_string()
+            ],
+            peaks_hashes: vec![
+                "0x43c59debacab61e73dec9edd73da27738a8be14c1e123bb38f9634220323c4f".to_string(),
+                "8".to_string()
+            ],
+            elements_count: 8
+        }
+    );
+
     mmr.verify_proof(
         proof1,
         "1".to_string(),
@@ -126,6 +144,24 @@ fn should_append_to_mmr() {
             },
         )
         .unwrap();
+
+    assert_eq!(
+        proof2,
+        Proof {
+            element_index: 2,
+            element_hash: "2".to_string(),
+            siblings_hashes: vec![
+                "1".to_string(),
+                "0x384f427301be8e1113e6dd91088cb46e25a8f6426a997b2f842a39596bf45f4".to_string()
+            ],
+            peaks_hashes: vec![
+                "0x43c59debacab61e73dec9edd73da27738a8be14c1e123bb38f9634220323c4f".to_string(),
+                "8".to_string()
+            ],
+            elements_count: 8
+        }
+    );
+
     mmr.verify_proof(
         proof2,
         "2".to_string(),
@@ -145,6 +181,24 @@ fn should_append_to_mmr() {
             },
         )
         .unwrap();
+
+    assert_eq!(
+        proof4,
+        Proof {
+            element_index: 4,
+            element_hash: "4".to_string(),
+            siblings_hashes: vec![
+                "5".to_string(),
+                "0x5d44a3decb2b2e0cc71071f7b802f45dd792d064f0fc7316c46514f70f9891a".to_string()
+            ],
+            peaks_hashes: vec![
+                "0x43c59debacab61e73dec9edd73da27738a8be14c1e123bb38f9634220323c4f".to_string(),
+                "8".to_string()
+            ],
+            elements_count: 8
+        }
+    );
+
     mmr.verify_proof(
         proof4,
         "4".to_string(),
@@ -165,23 +219,32 @@ fn should_append_to_mmr() {
         )
         .unwrap();
 
-    // assert_eq!(
-    //     proof5,
-    //     Proof {
-    //         element_index: 5,
-    //         element_hash: "0x2367a3a530bece934bc90c95820d6757e492a135ba3708021b9672b4e068004"
-    //             .to_string(),
-    //         siblings_hashes: vec![
-    //             "0x1e356bc787ac099b765784e95dc8b3ef3c79de820efc4ca6dd5a3fd581d4c8f".to_string(),
-    //             "0x380afcc28e5a9c5a0e446c4b21f5b67d65a06e683773764cab6d0d5ef79034a".to_string()
-    //         ],
-    //         peaks_hashes: vec![
-    //             "0x3e4f949d5da2a812f6cad2dac70fdbe996d0c2d44836606ff50943fb859ee93".to_string(),
-    //             "0x4760ab91edf8458183ebda97c5b3a93978f7c145fd28e6d4f1ad9aaae4441f".to_string()
-    //         ],
-    //         elements_count: 8
-    //     }
-    // )
+    assert_eq!(
+        proof5,
+        Proof {
+            element_index: 5,
+            element_hash: "5".to_string(),
+            siblings_hashes: vec![
+                "4".to_string(),
+                "0x5d44a3decb2b2e0cc71071f7b802f45dd792d064f0fc7316c46514f70f9891a".to_string()
+            ],
+            peaks_hashes: vec![
+                "0x43c59debacab61e73dec9edd73da27738a8be14c1e123bb38f9634220323c4f".to_string(),
+                "8".to_string()
+            ],
+            elements_count: 8
+        }
+    );
+
+    mmr.verify_proof(
+        proof5,
+        "5".to_string(),
+        ProofOptions {
+            elements_count: None,
+            formatting_opts: None,
+        },
+    )
+    .unwrap();
 }
 
 #[test]
