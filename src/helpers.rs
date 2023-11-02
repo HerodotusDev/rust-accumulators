@@ -45,7 +45,7 @@ pub fn leaf_count_to_append_no_merges(leaf_count: usize) -> usize {
 }
 fn count_trailing_ones(mut num: usize) -> usize {
     let mut count = 0;
-    while num != 0 && (num & 1) == 1 {
+    while num != 0 && num & 1 == 1 {
         num >>= 1;
         count += 1;
     }

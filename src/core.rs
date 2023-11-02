@@ -17,7 +17,7 @@ use crate::{
 pub struct CoreMMR<S, H> {
     store: Rc<S>,
     hasher: H,
-    mmr_id: Option<String>,
+    mmr_id: String,
     leaves_count: InStoreCounter<S>,
     elements_count: InStoreCounter<S>,
     hashes: InStoreTable<S>,
@@ -36,7 +36,7 @@ where
         let root_hash_key = format!("{}:{:?}", mmr_id, TreeMetadataKeys::RootHash);
         let hashes_key = format!("{}:hashes:", mmr_id);
 
-        println!("hash key: {}", hashes_key);
+        println!("root hash key: {}", root_hash_key);
 
         let store_rc = Rc::new(store);
         let leaves_count = InStoreCounter::new(store_rc.clone(), leaves_count_key);
@@ -51,7 +51,7 @@ where
             root_hash,
             store: store_rc,
             hasher,
-            mmr_id: Some(mmr_id),
+            mmr_id,
         }
     }
 
@@ -76,34 +76,36 @@ where
         let elements_count = self.elements_count.get();
         let mut peaks = self.retrieve_peaks_hashes(find_peaks(elements_count), None)?;
 
-        let leaf_element_index = self.elements_count.increment()?;
+        let mut last_element_idx = self.elements_count.increment()?;
+        let leaf_element_index = last_element_idx;
 
-        self.hashes
-            .set(&value, Some(leaf_element_index.to_string()));
+        //? Store the hash in the database
+        self.hashes.set(&value, Some(last_element_idx));
 
         peaks.push(value);
 
-        let leaves_count = self.leaves_count.get();
+        let no_merges = leaf_count_to_append_no_merges(self.leaves_count.get());
 
-        let no_merges = leaf_count_to_append_no_merges(leaves_count);
+        println!("no merges {}", no_merges);
 
-        let mut last_element_idx = leaf_element_index;
         for _ in 0..no_merges {
             last_element_idx += 1;
 
             let right_hash = peaks.pop().ok_or(anyhow!("No right hash present"))?;
             let left_hash = peaks.pop().ok_or(anyhow!("No left hash present"))?;
+
             let parent_hash = self.hasher.hash(vec![left_hash, right_hash])?;
 
-            self.hashes
-                .set(&parent_hash, Some(last_element_idx.to_string()));
-
+            self.hashes.set(&parent_hash, Some(last_element_idx));
+            println!("parent hash : {}", parent_hash);
             peaks.push(parent_hash);
         }
 
         self.elements_count.set(last_element_idx)?;
 
         let bag = self.bag_the_peaks(None)?;
+        println!("bag :{}", bag);
+        println!("last_element_idx :{}", last_element_idx);
 
         // Compute the new root hash
         let root_hash = self.calculate_root_hash(&bag, last_element_idx)?;
@@ -300,10 +302,8 @@ where
         formatting_opts: Option<PeaksFormattingOptions>,
     ) -> Result<Vec<String>> {
         let hashes_result = self.hashes.get_many(peak_idxs);
+        println!("hashes_result: {:?}", hashes_result);
         let hashes: Vec<String> = hashes_result.values().cloned().collect();
-        for hash in hashes.iter() {
-            println!("Retrieved {:?} peak hashes", hash);
-        }
 
         match formatting_opts {
             Some(opts) => format_peaks(hashes, &opts),
@@ -312,8 +312,7 @@ where
     }
 
     pub fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String> {
-        let element_count_from_store = self.elements_count.get();
-        let tree_size = elements_count.unwrap_or_else(|| element_count_from_store);
+        let tree_size = elements_count.unwrap_or_else(|| self.elements_count.get());
         let peaks_idxs = find_peaks(tree_size);
         println!("peaks_idxs: {:?}", peaks_idxs);
         let peaks_hashes = self

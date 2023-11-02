@@ -30,6 +30,18 @@ mod tests {
         );
     }
 
+    // #[test]
+    // fn try_one() {
+    //     let hasher = StarkPoseidonHasher::new(Some(false));
+
+    //     assert_eq!(
+    //         hasher
+    //             .hash(vec!["0x0".to_string(), "1".to_string()])
+    //             .unwrap(),
+    //         "0x293d3e8a80f400daaaffdd5932e2bcc8814bab8f414a75dcacf87318f8b14c5".to_string()
+    //     );
+    // }
+
     #[test]
     fn should_throw() {
         let hasher = StarkPoseidonHasher::new(Some(false));
