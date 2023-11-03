@@ -40,9 +40,14 @@ pub fn find_peaks(mut elements_count: usize) -> Vec<usize> {
     peaks
 }
 
+pub fn leaf_count_to_peaks_count(leaf_count: usize) -> u32 {
+    leaf_count.count_ones()
+}
+
 pub fn leaf_count_to_append_no_merges(leaf_count: usize) -> usize {
     count_trailing_ones(leaf_count)
 }
+
 fn count_trailing_ones(mut num: usize) -> usize {
     let mut count = 0;
     while num != 0 && num & 1 == 1 {
@@ -134,4 +139,22 @@ pub fn get_peak_info(mut elements_count: usize, mut element_index: usize) -> (us
         mountain_elements_count >>= 1;
         mountain_height -= 1;
     }
+}
+
+pub fn mmr_size_to_leaf_count(mmr_size: usize) -> usize {
+    let mut remaining_size = mmr_size;
+    let bits = bit_length(remaining_size + 1);
+    let mut mountain_tips = 1 << (bits - 1); // Using bitwise shift to calculate 2^(bits-1)
+    let mut leaf_count = 0;
+
+    while mountain_tips != 0 {
+        let mountain_size = 2 * mountain_tips - 1;
+        if mountain_size <= remaining_size {
+            remaining_size -= mountain_size;
+            leaf_count += mountain_tips;
+        }
+        mountain_tips >>= 1; // Using bitwise shift for division by 2
+    }
+
+    leaf_count
 }

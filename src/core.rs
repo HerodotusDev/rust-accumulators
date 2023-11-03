@@ -3,6 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use uuid::Uuid;
 
+use crate::helpers::{leaf_count_to_peaks_count, mmr_size_to_leaf_count};
 use crate::{
     formatting::{format_peaks, format_proof, PeaksFormattingOptions},
     hash::IHasher,
@@ -70,7 +71,13 @@ where
         }
 
         let elements_count = self.elements_count.get();
+
         let mut peaks = self.retrieve_peaks_hashes(find_peaks(elements_count), None)?;
+
+        let leaf_count = mmr_size_to_leaf_count(elements_count);
+        if leaf_count_to_peaks_count(leaf_count) as usize != peaks.len() {
+            return Err(anyhow!("Invalid peaks count".to_string()));
+        };
 
         let mut last_element_idx = self.elements_count.increment()?;
         let leaf_element_index = last_element_idx;
@@ -127,6 +134,11 @@ where
         }
 
         let peaks = find_peaks(tree_size);
+
+        let leaf_count = mmr_size_to_leaf_count(tree_size);
+        if leaf_count_to_peaks_count(leaf_count) as usize != peaks.len() {
+            return Err(anyhow!("Invalid peaks count".to_string()));
+        };
 
         let siblings = find_siblings(element_index, tree_size).unwrap();
 
@@ -233,6 +245,12 @@ where
     ) -> Result<bool> {
         let element_count = self.elements_count.get();
         let tree_size = options.elements_count.unwrap_or(element_count);
+
+        let leaf_count = mmr_size_to_leaf_count(tree_size);
+        let peaks_count = leaf_count_to_peaks_count(leaf_count);
+        if peaks_count as usize != proof.peaks_hashes.len() {
+            return Err(anyhow!("Invalid peaks count".to_string()));
+        }
 
         if let Some(formatting_opts) = options.formatting_opts {
             let proof_format_null_value = &formatting_opts.proof.null_value;
