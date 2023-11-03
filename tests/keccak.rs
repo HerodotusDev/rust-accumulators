@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use mmr::hash::{keccak::KeccakHasher, IHasher};
+    use accumulators::hash::{keccak::KeccakHasher, IHasher};
 
     #[test]
     fn genesis() {

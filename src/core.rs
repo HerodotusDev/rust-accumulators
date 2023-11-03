@@ -135,11 +135,6 @@ where
 
         let peaks = find_peaks(tree_size);
 
-        let leaf_count = mmr_size_to_leaf_count(tree_size);
-        if leaf_count_to_peaks_count(leaf_count) as usize != peaks.len() {
-            return Err(anyhow!("Invalid peaks count".to_string()));
-        };
-
         let siblings = find_siblings(element_index, tree_size).unwrap();
 
         let formatting_opts = options
@@ -154,7 +149,7 @@ where
             .iter()
             .filter_map(|&idx| siblings_hashes.get(&idx.to_string()).cloned())
             .collect();
-        // let mut siblings_hashes_vec: Vec<String> = siblings_hashes.values().cloned().collect();
+
         if let Some(formatting_opts) = options.formatting_opts.as_ref() {
             siblings_hashes_vec =
                 format_proof(siblings_hashes_vec, formatting_opts.proof.clone()).unwrap();

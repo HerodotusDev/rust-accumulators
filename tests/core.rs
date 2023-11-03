@@ -1,6 +1,6 @@
 use std::vec;
 
-use mmr::{
+use accumulators::{
     core::CoreMMR,
     hash::{stark_poseidon::StarkPoseidonHasher, IHasher},
     helpers::AppendResult,

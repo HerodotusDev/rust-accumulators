@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use mmr::hash::{stark_pedersen::StarkPedersenHasher, IHasher};
+    use accumulators::hash::{stark_pedersen::StarkPedersenHasher, IHasher};
 
     #[test]
     fn should_compute_a_hash() {

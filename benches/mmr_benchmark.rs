@@ -1,9 +1,9 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use mmr::{
+use accumulators::{
     core::CoreMMR,
     hash::{stark_poseidon::StarkPoseidonHasher, IHasher},
     store::sqlite::SQLiteStore,
 };
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 fn prepare_mmr(count: usize) -> CoreMMR<SQLiteStore, StarkPoseidonHasher> {
     let hasher = StarkPoseidonHasher::new(Some(false));
