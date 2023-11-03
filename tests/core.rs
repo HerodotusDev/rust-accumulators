@@ -62,6 +62,7 @@ fn should_append_to_mmr() {
                 .to_string(),
         }
     );
+
     assert_eq!(
         mmr.bag_the_peaks(None).unwrap(),
         "0x6f31a64a67c46b553960ae6b72bcf9fa3ccc6a4d6344e3799412e2c73a059b2"
@@ -95,7 +96,7 @@ fn should_append_to_mmr() {
 
     assert_eq!(
         mmr.bag_the_peaks(None).unwrap(),
-        "0x2241b3b7f1c4b9cf63e670785891de91f7237b1388f6635c1898ae397ad32dd"
+        "0x49da356656c3153d59f9be39143daebfc12e05b6a93ab4ccfa866a890ad78f"
     );
 
     let proof1 = mmr

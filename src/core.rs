@@ -139,20 +139,27 @@ where
         }
 
         let peaks = find_peaks(tree_size);
+        println!(" peaks: {:?}", peaks);
         let siblings = find_siblings(element_index, tree_size).unwrap();
-
+        println!(" siblings: {:?}", siblings);
         let formatting_opts = options
             .formatting_opts
             .as_ref()
             .map(|opts| opts.peaks.clone());
         let peaks_hashes = self.retrieve_peaks_hashes(peaks, formatting_opts).unwrap();
 
-        let mut siblings_hashes = self.hashes.get_many(siblings);
-        let mut siblings_hashes_vec: Vec<String> = siblings_hashes.values().cloned().collect();
+        let siblings_hashes = self.hashes.get_many(siblings.clone());
+        println!("siblings hashes: {:?}", siblings_hashes);
+        let mut siblings_hashes_vec: Vec<String> = siblings
+            .iter()
+            .filter_map(|&idx| siblings_hashes.get(&idx.to_string()).cloned())
+            .collect();
+        // let mut siblings_hashes_vec: Vec<String> = siblings_hashes.values().cloned().collect();
         if let Some(formatting_opts) = options.formatting_opts.as_ref() {
             siblings_hashes_vec =
                 format_proof(siblings_hashes_vec, formatting_opts.proof.clone()).unwrap();
         }
+        println!("siblings hashes vec: {:?}", siblings_hashes_vec);
 
         let element_hash = self.hashes.get(Some(element_index.to_string())).unwrap();
 
@@ -301,9 +308,14 @@ where
         peak_idxs: Vec<usize>,
         formatting_opts: Option<PeaksFormattingOptions>,
     ) -> Result<Vec<String>> {
-        let hashes_result = self.hashes.get_many(peak_idxs);
+        let hashes_result = self.hashes.get_many(peak_idxs.clone());
         println!("hashes_result: {:?}", hashes_result);
-        let hashes: Vec<String> = hashes_result.values().cloned().collect();
+
+        // Assuming hashes_result is a HashMap<String, String>
+        let hashes: Vec<String> = peak_idxs
+            .iter()
+            .filter_map(|&idx| hashes_result.get(&idx.to_string()).cloned())
+            .collect();
 
         match formatting_opts {
             Some(opts) => format_peaks(hashes, &opts),
