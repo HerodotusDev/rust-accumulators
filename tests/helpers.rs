@@ -2,7 +2,7 @@
 mod tests {
     use std::vec;
 
-    use accumulators::helpers::{
+    use accumulators::mmr::helpers::{
         element_index_to_leaf_index, elements_count_to_leaf_count, find_peaks, find_siblings,
         get_peak_info,
     };

@@ -1,4 +1,4 @@
-use super::IHasher;
+use super::super::IHasher;
 use anyhow::{anyhow, Result};
 use starknet::core::types::FieldElement;
 use starknet_crypto::{poseidon_hash, poseidon_hash_many, poseidon_hash_single};

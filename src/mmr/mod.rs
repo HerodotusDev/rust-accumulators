@@ -3,17 +3,24 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use uuid::Uuid;
 
-use crate::helpers::{leaf_count_to_peaks_count, mmr_size_to_leaf_count};
-use crate::{
+use crate::hasher::IHasher;
+use crate::store::{counter::InStoreCounter, table::InStoreTable, IStore};
+
+pub mod formatting;
+pub mod helpers;
+
+use self::{
     formatting::{format_peaks, format_proof, PeaksFormattingOptions},
-    hash::IHasher,
     helpers::{
         array_deduplicate, element_index_to_leaf_index, find_peaks, find_siblings, get_peak_info,
-        leaf_count_to_append_no_merges, AppendResult, TreeMetadataKeys,
+        leaf_count_to_append_no_merges, leaf_count_to_peaks_count, mmr_size_to_leaf_count,
+        AppendResult, Proof, ProofOptions, TreeMetadataKeys,
     },
-    proof::{Proof, ProofOptions},
-    store::{counter::InStoreCounter, table::InStoreTable, IStore},
 };
+
+mod mmrs;
+#[cfg(feature = "infinitely_stackable_mmr")]
+pub use self::mmrs::infinitely_stackable;
 
 pub struct CoreMMR<S, H> {
     pub store: Rc<S>,

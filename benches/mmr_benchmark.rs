@@ -1,5 +1,5 @@
 use accumulators::{
-    core::CoreMMR, hash::stark_poseidon::StarkPoseidonHasher, store::sqlite::SQLiteStore,
+    hasher::stark_poseidon::StarkPoseidonHasher, mmr::CoreMMR, store::sqlite::SQLiteStore,
 };
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 

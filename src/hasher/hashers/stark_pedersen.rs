@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use primitive_types::U256;
 use starknet::core::{crypto::pedersen_hash, types::FieldElement};
 
-use super::IHasher;
+use super::super::IHasher;
 
 #[derive(Debug, Clone)]
 pub struct StarkPedersenHasher {

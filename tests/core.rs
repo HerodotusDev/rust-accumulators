@@ -1,10 +1,11 @@
 use std::vec;
 
 use accumulators::{
-    core::CoreMMR,
-    hash::{stark_poseidon::StarkPoseidonHasher, IHasher},
-    helpers::AppendResult,
-    proof::{Proof, ProofOptions},
+    hasher::{stark_poseidon::StarkPoseidonHasher, IHasher},
+    mmr::{
+        helpers::{AppendResult, Proof, ProofOptions},
+        CoreMMR,
+    },
     store::sqlite::SQLiteStore,
 };
 

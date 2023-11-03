@@ -1,9 +1,12 @@
-use rusqlite::Result;
+use anyhow::Result;
 use std::collections::HashMap;
 
 pub mod counter;
-pub mod sqlite;
 pub mod table;
+
+mod stores;
+#[cfg(feature = "sqlite")]
+pub use self::stores::sqlite;
 
 pub trait IStore {
     fn get(&self, key: &str) -> Result<Option<String>>;

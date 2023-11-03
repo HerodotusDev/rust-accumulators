@@ -27,3 +27,17 @@ rand = "0.8.5"
 [[bench]]
 name = "mmr_benchmark"
 harness = false
+
+[features]
+default = ["store", "hasher"]
+all = ["store", "sqlite", "hasher", "keccak", "poseidon", "pedersen", "mmr", "infinitely_stackable_mmr", "merkle_tree", "incremental_merkle_tree"]
+store = []
+sqlite = ["store"]
+hasher = []
+keccak = ["hasher"]
+poseidon = ["hasher"]
+pedersen = ["hasher"]
+mmr = ["hasher", "store"]
+infinitely_stackable_mmr = ["mmr"]
+merkle_tree = ["hasher", "store"]
+incremental_merkle_tree = ["merkle_tree"]

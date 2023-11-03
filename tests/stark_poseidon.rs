@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use accumulators::hash::{stark_poseidon::StarkPoseidonHasher, IHasher};
+    use accumulators::hasher::{stark_poseidon::StarkPoseidonHasher, IHasher};
 
     #[test]
     fn should_compute_a_hash() {

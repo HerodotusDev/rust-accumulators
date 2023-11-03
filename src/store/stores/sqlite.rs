@@ -1,8 +1,9 @@
+use anyhow::Result;
 use parking_lot::Mutex;
-use rusqlite::{params, params_from_iter, Connection, Result};
+use rusqlite::{params, params_from_iter, Connection};
 use std::collections::HashMap;
 
-use super::IStore;
+use super::super::IStore;
 
 pub struct SQLiteStore {
     db: Mutex<Connection>,

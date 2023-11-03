@@ -3,7 +3,7 @@ use num_bigint::BigInt;
 use num_traits::{identities::Zero, Num};
 use sha3::{Digest, Keccak256};
 
-use super::IHasher;
+use super::super::IHasher;
 
 pub struct KeccakHasher {
     block_size_bits: usize,
