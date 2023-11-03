@@ -36,8 +36,6 @@ where
         let root_hash_key = format!("{}:{:?}", mmr_id, TreeMetadataKeys::RootHash);
         let hashes_key = format!("{}:hashes:", mmr_id);
 
-        println!("root hash key: {}", root_hash_key);
-
         let store_rc = Rc::new(store);
         let leaves_count = InStoreCounter::new(store_rc.clone(), leaves_count_key);
         let elements_count = InStoreCounter::new(store_rc.clone(), elements_count_key);
@@ -62,13 +60,11 @@ where
             return Err(anyhow!("Cannot call create_with_genesis on a non-empty MMR. Please provide an empty store or change the MMR id.".to_string()));
         }
         let genesis = mmr.hasher.get_genesis();
-        println!("genesis hash :{}", genesis);
         let _ = mmr.append(genesis);
         Ok(mmr)
     }
 
     pub fn append(&mut self, value: String) -> Result<AppendResult> {
-        println!("append value:{}", value);
         if !self.hasher.is_element_size_valid(&value) {
             return Err(anyhow!("Element size is too big to hash with this hasher"));
         }
@@ -86,8 +82,6 @@ where
 
         let no_merges = leaf_count_to_append_no_merges(self.leaves_count.get());
 
-        println!("no merges {}", no_merges);
-
         for _ in 0..no_merges {
             last_element_idx += 1;
 
@@ -97,24 +91,18 @@ where
             let parent_hash = self.hasher.hash(vec![left_hash, right_hash])?;
 
             self.hashes.set(&parent_hash, Some(last_element_idx));
-            println!("parent hash : {}", parent_hash);
             peaks.push(parent_hash);
         }
 
         self.elements_count.set(last_element_idx)?;
 
         let bag = self.bag_the_peaks(None)?;
-        println!("bag :{}", bag);
-        println!("last_element_idx :{}", last_element_idx);
 
         // Compute the new root hash
         let root_hash = self.calculate_root_hash(&bag, last_element_idx)?;
         self.root_hash.set::<usize>(&root_hash, None);
 
         let leaves = self.leaves_count.increment()?;
-
-        println!("leaves :{}", leaves);
-        println!("root hash :{}", root_hash);
 
         Ok(AppendResult {
             leaves_count: leaves,
@@ -139,9 +127,9 @@ where
         }
 
         let peaks = find_peaks(tree_size);
-        println!(" peaks: {:?}", peaks);
+
         let siblings = find_siblings(element_index, tree_size).unwrap();
-        println!(" siblings: {:?}", siblings);
+
         let formatting_opts = options
             .formatting_opts
             .as_ref()
@@ -149,7 +137,7 @@ where
         let peaks_hashes = self.retrieve_peaks_hashes(peaks, formatting_opts).unwrap();
 
         let siblings_hashes = self.hashes.get_many(siblings.clone());
-        println!("siblings hashes: {:?}", siblings_hashes);
+
         let mut siblings_hashes_vec: Vec<String> = siblings
             .iter()
             .filter_map(|&idx| siblings_hashes.get(&idx.to_string()).cloned())
@@ -159,7 +147,6 @@ where
             siblings_hashes_vec =
                 format_proof(siblings_hashes_vec, formatting_opts.proof.clone()).unwrap();
         }
-        println!("siblings hashes vec: {:?}", siblings_hashes_vec);
 
         let element_hash = self.hashes.get(Some(element_index.to_string())).unwrap();
 
@@ -309,8 +296,6 @@ where
         formatting_opts: Option<PeaksFormattingOptions>,
     ) -> Result<Vec<String>> {
         let hashes_result = self.hashes.get_many(peak_idxs.clone());
-        println!("hashes_result: {:?}", hashes_result);
-
         // Assuming hashes_result is a HashMap<String, String>
         let hashes: Vec<String> = peak_idxs
             .iter()
@@ -326,12 +311,10 @@ where
     pub fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String> {
         let tree_size = elements_count.unwrap_or_else(|| self.elements_count.get());
         let peaks_idxs = find_peaks(tree_size);
-        println!("peaks_idxs: {:?}", peaks_idxs);
+
         let peaks_hashes = self
             .retrieve_peaks_hashes(peaks_idxs.clone(), None)
             .unwrap();
-
-        println!("peaks_hashes: {:?}", peaks_hashes);
 
         match peaks_idxs.len() {
             // Use original peaks_idxs here

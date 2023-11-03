@@ -29,7 +29,6 @@ where
 
     // set
     pub fn set(&self, count: usize) -> Result<()> {
-        println!("set count :{}", count);
         self.store.set(&self.key, &count.to_string())?;
         Ok(())
     }
@@ -38,7 +37,6 @@ where
     pub fn increment(&self) -> Result<usize> {
         let current_count = self.get();
         let new_count = current_count + 1;
-        println!("increment count :{}", new_count);
         self.set(new_count)?;
         Ok(new_count)
     }

@@ -24,9 +24,6 @@ impl IHasher for KeccakHasher {
                 let no_prefix = if e.starts_with("0x") { &e[2..] } else { e };
 
                 let n = BigInt::from_str_radix(no_prefix, 16).unwrap_or(BigInt::zero());
-
-                println!("n: {}, e:{}", n, e);
-
                 let hex = format!("{:0>64x}", n);
 
                 for byte_pair in hex.as_str().as_bytes().chunks(2) {

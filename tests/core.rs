@@ -258,7 +258,6 @@ fn should_append_duplicate_to_mmr() {
     mmr.append("4".to_string());
 
     let root = mmr.bag_the_peaks(None).unwrap();
-    println!("root:{}", root);
 }
 
 #[test]

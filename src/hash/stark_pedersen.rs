@@ -33,7 +33,6 @@ impl IHasher for StarkPedersenHasher {
             })
             .collect();
 
-        println!("x: {}, y: {}", &clean_data[0], &clean_data[1]);
         let result = pedersen_hash(
             &FieldElement::from_dec_str(&clean_data[0]).unwrap_or_default(),
             &FieldElement::from_dec_str(&clean_data[1]).unwrap_or_default(),

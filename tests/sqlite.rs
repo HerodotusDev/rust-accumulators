@@ -113,9 +113,6 @@ fn test_get_many_none_in_store_table() {
     assert_eq!(value.unwrap(), "value2".to_string());
 
     let values = table.get_many(vec!["key1".to_string(), "key2".to_string()]);
-    for (key, value) in values.iter() {
-        println!(" key:{} value:{}", key, value);
-    }
     assert_eq!(values.get("tablekey1"), Some(&"value1".to_string()));
     assert_eq!(values.get("tablekey2"), Some(&"value2".to_string()));
 }

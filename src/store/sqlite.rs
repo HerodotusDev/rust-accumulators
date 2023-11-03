@@ -10,9 +10,7 @@ pub struct SQLiteStore {
 
 impl IStore for SQLiteStore {
     fn get(&self, key: &str) -> Result<Option<String>> {
-        println!("get key:{}", key);
         let binding = self.db.lock();
-        println!("is this?");
         let mut stmt = binding.prepare("SELECT value FROM store WHERE key = ?")?;
 
         let mut rows = stmt.query(params![key])?;
@@ -47,7 +45,6 @@ impl IStore for SQLiteStore {
     }
 
     fn set(&self, key: &str, value: &str) -> Result<()> {
-        println!("set key:{} value:{}", key, value);
         self.db.lock().execute(
             "INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)",
             params![key, value],
@@ -56,7 +53,6 @@ impl IStore for SQLiteStore {
     }
 
     fn set_many(&self, entries: HashMap<String, String>) -> Result<()> {
-        println!("set_many");
         let mut binding = self.db.lock();
         let tx = binding.transaction()?;
         for (key, value) in entries.iter() {

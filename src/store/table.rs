@@ -47,8 +47,6 @@ where
             None => None,
         };
         let full_key = &self.get_full_key(new_suffix);
-        println!("full_key:{}", full_key);
-        println!("full_key value:{:?}", self.store.get(full_key));
         self.store.get(full_key).unwrap_or_default()
     }
 
@@ -69,7 +67,6 @@ where
             } else {
                 key.clone()
             };
-            println!("new_key:{} old key:{} value:{}", new_key, key, value);
             keyless.insert(new_key, value.clone());
         }
 
