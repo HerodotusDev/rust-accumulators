@@ -19,7 +19,7 @@ pub struct CoreMMR<S, H> {
     hasher: H,
     mmr_id: String,
     leaves_count: InStoreCounter<S>,
-    elements_count: InStoreCounter<S>,
+    pub elements_count: InStoreCounter<S>,
     hashes: InStoreTable<S>,
     pub root_hash: InStoreTable<S>,
 }
