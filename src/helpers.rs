@@ -69,7 +69,7 @@ pub fn find_siblings(element_index: usize, elements_count: usize) -> Result<Vec<
             siblings.push(current_element_index + siblings_offset);
             current_element_index += siblings_offset + 1;
         }
-        leaf_index = leaf_index / 2;
+        leaf_index /= 2;
         height += 1;
     }
 

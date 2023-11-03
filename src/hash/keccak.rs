@@ -14,14 +14,14 @@ impl IHasher for KeccakHasher {
         let mut keccak = Keccak256::new();
 
         if data.is_empty() {
-            keccak.update(&[]);
+            keccak.update([]);
         } else if data.len() == 1 {
             keccak.update(data[0].as_bytes());
         } else {
             let mut result: Vec<u8> = Vec::new();
 
             for e in data.iter() {
-                let no_prefix = if e.starts_with("0x") { &e[2..] } else { e };
+                let no_prefix = e.strip_prefix("0x").unwrap_or(e);
 
                 let n = BigInt::from_str_radix(no_prefix, 16).unwrap_or(BigInt::zero());
                 let hex = format!("{:0>64x}", n);
@@ -49,7 +49,7 @@ impl IHasher for KeccakHasher {
 
     fn get_genesis(&self) -> String {
         let genesis_str = "brave new world";
-        self.hash_single(&genesis_str)
+        self.hash_single(genesis_str)
     }
 }
 
@@ -61,12 +61,14 @@ impl KeccakHasher {
     }
 }
 
+impl Default for KeccakHasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn byte_size(hex: &str) -> usize {
-    let hex = if hex.starts_with("0x") {
-        &hex[2..]
-    } else {
-        hex
-    };
+    let hex = hex.strip_prefix("0x").unwrap_or(hex);
 
     hex.len() / 2
 }

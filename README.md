@@ -10,6 +10,8 @@
 
 ```
 
+[![Cargo Test](https://github.com/HerodotusDev/rust-mmr/actions/workflows/ci.yml/badge.svg)](https://github.com/HerodotusDev/rust-mmr/actions/workflows/ci.yml)
+
 ## Example
 
 ```rust

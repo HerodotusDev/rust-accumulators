@@ -11,7 +11,7 @@ pub struct StarkPoseidonHasher {
 
 impl IHasher for StarkPoseidonHasher {
     fn hash(&self, data: Vec<String>) -> Result<String> {
-        let size_error_index = data.iter().position(|e| !self.is_element_size_valid(&e));
+        let size_error_index = data.iter().position(|e| !self.is_element_size_valid(e));
 
         if let Some(index) = size_error_index {
             return Err(anyhow!(
@@ -31,13 +31,8 @@ impl IHasher for StarkPoseidonHasher {
                     "Stark Poseidon Hasher only accepts arrays of size 1 or greater".to_string()
                 ))
             }
-            1 => hash_core = poseidon_hash_single(field_elements[0].clone().into()),
-            2 => {
-                hash_core = poseidon_hash(
-                    field_elements[0].clone().into(),
-                    field_elements[1].clone().into(),
-                )
-            }
+            1 => hash_core = poseidon_hash_single(field_elements[0]),
+            2 => hash_core = poseidon_hash(field_elements[0], field_elements[1]),
             _ => {
                 hash_core = poseidon_hash_many(&field_elements);
             }
@@ -81,8 +76,8 @@ impl StarkPoseidonHasher {
 }
 
 fn byte_size(hex: &str) -> usize {
-    let hex = if hex.starts_with("0x") {
-        &hex[2..]
+    let hex = if let Some(stripped) = hex.strip_prefix("0x") {
+        stripped
     } else {
         hex
     };

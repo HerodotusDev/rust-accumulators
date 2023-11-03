@@ -15,12 +15,12 @@ use crate::{
 };
 
 pub struct CoreMMR<S, H> {
-    store: Rc<S>,
-    hasher: H,
-    mmr_id: String,
-    leaves_count: InStoreCounter<S>,
+    pub store: Rc<S>,
+    pub hasher: H,
+    pub mmr_id: String,
+    pub leaves_count: InStoreCounter<S>,
     pub elements_count: InStoreCounter<S>,
-    hashes: InStoreTable<S>,
+    pub hashes: InStoreTable<S>,
     pub root_hash: InStoreTable<S>,
 }
 
@@ -257,7 +257,7 @@ where
                 .truncate(proof.peaks_hashes.len() - peaks_null_values_count);
         }
         let element_index = proof.element_index;
-        if element_index <= 0 {
+        if element_index == 0 {
             return Err(anyhow!("Index must be greater than 0".to_string()));
         }
         if element_index > tree_size {
@@ -326,11 +326,9 @@ where
                 let second_last = peaks_hashes.pop_back().unwrap();
                 let root0 = self.hasher.hash(vec![second_last, last]);
 
-                let root = peaks_hashes.into_iter().rev().fold(root0, |prev, cur| {
+                peaks_hashes.into_iter().rev().fold(root0, |prev, cur| {
                     self.hasher.hash(vec![cur, prev.unwrap()])
-                });
-
-                root
+                })
             }
         }
     }

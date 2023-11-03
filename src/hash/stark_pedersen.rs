@@ -25,10 +25,10 @@ impl IHasher for StarkPedersenHasher {
         let clean_data: Vec<String> = data
             .iter()
             .map(|s| {
-                if s.starts_with("0x") {
-                    U256::from_str_radix(&s[2..], 16).unwrap().to_string()
+                if let Some(stripped) = s.strip_prefix("0x") {
+                    U256::from_str_radix(stripped, 16).unwrap().to_string()
                 } else {
-                    s.clone()
+                    U256::from_str_radix(s, 16).unwrap().to_string()
                 }
             })
             .collect();
@@ -39,8 +39,7 @@ impl IHasher for StarkPedersenHasher {
         )
         .to_string();
 
-        let computed_result =
-            U256::from_dec_str(&result.trim()).expect("Failed to convert to U256");
+        let computed_result = U256::from_dec_str(result.trim()).expect("Failed to convert to U256");
         let hex_str = format!("{:064x}", computed_result);
         let padded_hex_str = format!("0x{}", hex_str);
 
@@ -57,7 +56,7 @@ impl IHasher for StarkPedersenHasher {
 
     fn get_genesis(&self) -> String {
         let genesis_str = "brave new world";
-        self.hash_single(&genesis_str)
+        self.hash_single(genesis_str)
     }
 }
 
@@ -69,9 +68,15 @@ impl StarkPedersenHasher {
     }
 }
 
+impl Default for StarkPedersenHasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn byte_size(hex: &str) -> usize {
-    let hex = if hex.starts_with("0x") {
-        &hex[2..]
+    let hex = if let Some(stripped) = hex.strip_prefix("0x") {
+        stripped
     } else {
         hex
     };

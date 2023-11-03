@@ -42,10 +42,7 @@ where
     }
 
     pub fn get<T: ToKey>(&self, suffix: Option<T>) -> Option<String> {
-        let new_suffix = match suffix {
-            Some(suffix) => Some(suffix.to_key()),
-            None => None,
-        };
+        let new_suffix = suffix.map(|suffix| suffix.to_key());
         let full_key = &self.get_full_key(new_suffix);
         self.store.get(full_key).unwrap_or_default()
     }
@@ -62,8 +59,8 @@ where
 
         let mut keyless = HashMap::new();
         for (key, value) in fetched.iter() {
-            let new_key: String = if key.contains(":") {
-                key.split(":").skip(2).collect::<Vec<&str>>().join(":")
+            let new_key: String = if key.contains(':') {
+                key.split(':').skip(2).collect::<Vec<&str>>().join(":")
             } else {
                 key.clone()
             };

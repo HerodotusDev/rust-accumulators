@@ -23,8 +23,7 @@ where
             .get(&self.key)
             .unwrap()
             .unwrap_or("0".to_string());
-        let count = current_count.parse::<usize>().unwrap();
-        count
+        current_count.parse::<usize>().unwrap()
     }
 
     // set

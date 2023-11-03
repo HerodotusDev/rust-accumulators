@@ -29,8 +29,8 @@ pub struct ProofOptions {
 }
 
 pub struct PeaksOptions {
-    elements_count: Option<usize>,
-    formatting_opts: Option<PeaksFormattingOptions>,
+    pub elements_count: Option<usize>,
+    pub formatting_opts: Option<PeaksFormattingOptions>,
 }
 
 pub struct FormattingOptionsBundle {
