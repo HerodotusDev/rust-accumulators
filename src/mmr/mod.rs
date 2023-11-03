@@ -3,8 +3,8 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use uuid::Uuid;
 
-use crate::hasher::IHasher;
-use crate::store::{counter::InStoreCounter, table::InStoreTable, IStore};
+use crate::hasher::Hasher;
+use crate::store::{counter::InStoreCounter, table::InStoreTable, Store};
 
 pub mod formatting;
 pub mod helpers;
@@ -22,7 +22,7 @@ mod mmrs;
 #[cfg(feature = "infinitely_stackable_mmr")]
 pub use self::mmrs::infinitely_stackable;
 
-pub struct CoreMMR<S, H> {
+pub struct MMR<S, H> {
     pub store: Rc<S>,
     pub hasher: H,
     pub mmr_id: String,
@@ -32,10 +32,10 @@ pub struct CoreMMR<S, H> {
     pub root_hash: InStoreTable<S>,
 }
 
-impl<S, H> CoreMMR<S, H>
+impl<S, H> MMR<S, H>
 where
-    S: IStore,
-    H: IHasher,
+    S: Store,
+    H: Hasher,
 {
     pub fn new(store: S, hasher: H, mmr_id: Option<String>) -> Self {
         let mmr_id = mmr_id.unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -62,7 +62,7 @@ where
     }
 
     pub fn create_with_genesis(store: S, hasher: H, mmr_id: Option<String>) -> Result<Self> {
-        let mut mmr = CoreMMR::new(store, hasher, mmr_id);
+        let mut mmr = MMR::new(store, hasher, mmr_id);
         let elements_count: usize = mmr.elements_count.get();
         if elements_count != 0 {
             return Err(anyhow!("Cannot call create_with_genesis on a non-empty MMR. Please provide an empty store or change the MMR id.".to_string()));

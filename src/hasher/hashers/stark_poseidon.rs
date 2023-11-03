@@ -1,4 +1,4 @@
-use super::super::IHasher;
+use super::super::Hasher;
 use anyhow::{anyhow, Result};
 use starknet::core::types::FieldElement;
 use starknet_crypto::{poseidon_hash, poseidon_hash_many, poseidon_hash_single};
@@ -9,7 +9,7 @@ pub struct StarkPoseidonHasher {
     should_pad: bool,
 }
 
-impl IHasher for StarkPoseidonHasher {
+impl Hasher for StarkPoseidonHasher {
     fn hash(&self, data: Vec<String>) -> Result<String> {
         let size_error_index = data.iter().position(|e| !self.is_element_size_valid(e));
 

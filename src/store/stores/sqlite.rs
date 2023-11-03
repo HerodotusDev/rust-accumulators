@@ -3,13 +3,13 @@ use parking_lot::Mutex;
 use rusqlite::{params, params_from_iter, Connection};
 use std::collections::HashMap;
 
-use super::super::IStore;
+use super::super::Store;
 
 pub struct SQLiteStore {
     db: Mutex<Connection>,
 }
 
-impl IStore for SQLiteStore {
+impl Store for SQLiteStore {
     fn get(&self, key: &str) -> Result<Option<String>> {
         let binding = self.db.lock();
         let mut stmt = binding.prepare("SELECT value FROM store WHERE key = ?")?;

@@ -8,7 +8,7 @@ mod stores;
 #[cfg(feature = "sqlite")]
 pub use self::stores::sqlite;
 
-pub trait IStore {
+pub trait Store {
     fn get(&self, key: &str) -> Result<Option<String>>;
     fn get_many(&self, keys: Vec<&str>) -> Result<HashMap<String, String>>;
     fn set(&self, key: &str, value: &str) -> Result<()>;

@@ -4,14 +4,14 @@ use std::collections::HashMap;
 use primitive_types::U256;
 use starknet::core::{crypto::pedersen_hash, types::FieldElement};
 
-use super::super::IHasher;
+use super::super::Hasher;
 
 #[derive(Debug, Clone)]
 pub struct StarkPedersenHasher {
     options: HashMap<String, usize>,
 }
 
-impl IHasher for StarkPedersenHasher {
+impl Hasher for StarkPedersenHasher {
     fn hash(&self, data: Vec<String>) -> Result<String> {
         if data.len() != 2 {
             panic!("Stark Pedersen Hasher only accepts two elements");

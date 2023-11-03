@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use super::IStore;
+use super::Store;
 use anyhow::Result;
 
 pub struct InStoreCounter<S> {
@@ -10,7 +10,7 @@ pub struct InStoreCounter<S> {
 
 impl<S> InStoreCounter<S>
 where
-    S: IStore,
+    S: Store,
 {
     // constructor
     pub fn new(store: Rc<S>, key: String) -> Self {

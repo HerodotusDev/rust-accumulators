@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::rc::Rc;
 
-use super::IStore;
+use super::Store;
 
 pub trait ToKey {
     fn to_key(&self) -> String;
@@ -27,7 +27,7 @@ pub struct InStoreTable<S> {
 
 impl<S> InStoreTable<S>
 where
-    S: IStore,
+    S: Store,
 {
     pub fn new(store: Rc<S>, key: String) -> Self {
         Self { store, key }

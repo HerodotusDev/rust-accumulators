@@ -1,5 +1,5 @@
 use accumulators::store::{
-    counter::InStoreCounter, sqlite::SQLiteStore, table::InStoreTable, IStore,
+    counter::InStoreCounter, sqlite::SQLiteStore, table::InStoreTable, Store,
 };
 use std::{collections::HashMap, rc::Rc};
 
