@@ -1,7 +1,5 @@
 use accumulators::{
-    core::CoreMMR,
-    hash::{stark_poseidon::StarkPoseidonHasher, IHasher},
-    store::sqlite::SQLiteStore,
+    core::CoreMMR, hash::stark_poseidon::StarkPoseidonHasher, store::sqlite::SQLiteStore,
 };
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
@@ -14,8 +12,7 @@ fn prepare_mmr(count: usize) -> CoreMMR<SQLiteStore, StarkPoseidonHasher> {
     let mut mmr = CoreMMR::new(store, hasher.clone(), None);
 
     for i in 0..count {
-        let value = hasher.hash_single(&i.to_string());
-        let _ = mmr.append(value).unwrap();
+        let _ = mmr.append(i.to_string()).unwrap();
     }
 
     mmr
