@@ -1,4 +1,6 @@
-use mmr::store::{counter::InStoreCounter, sqlite::SQLiteStore, table::InStoreTable, IStore};
+use accumulators::store::{
+    counter::InStoreCounter, sqlite::SQLiteStore, table::InStoreTable, IStore,
+};
 use std::{collections::HashMap, rc::Rc};
 
 #[test]
