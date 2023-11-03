@@ -113,7 +113,7 @@ mod tests {
             ("49:33", vec![32, 37, 45]),
         ];
         for (test, expected) in tests.iter() {
-            let parts: Vec<_> = test.split(":").collect();
+            let parts: Vec<_> = test.split(':').collect();
             let mmr_size: usize = parts[0].parse().unwrap();
             let element_index: usize = parts[1].parse().unwrap();
             assert_eq!(find_siblings(element_index, mmr_size).unwrap(), *expected);

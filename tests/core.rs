@@ -254,10 +254,10 @@ fn should_append_duplicate_to_mmr() {
     let hasher = StarkPoseidonHasher::new(Some(false));
     let _ = store.init();
     let mut mmr = CoreMMR::new(store, hasher, None);
-    mmr.append("4".to_string());
-    mmr.append("4".to_string());
+    let _ = mmr.append("4".to_string());
+    let _ = mmr.append("4".to_string());
 
-    let root = mmr.bag_the_peaks(None).unwrap();
+    let _root = mmr.bag_the_peaks(None).unwrap();
 }
 
 #[test]
