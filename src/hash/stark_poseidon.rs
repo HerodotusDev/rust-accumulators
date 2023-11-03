@@ -59,8 +59,10 @@ impl IHasher for StarkPoseidonHasher {
         let hex: String = genesis_str
             .as_bytes()
             .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect();
+            .fold(String::new(), |mut f, &b| {
+                f.push_str(&format!("{:02x}", b));
+                f
+            });
         let hex_with_prefix = format!("0x{}", hex);
         self.hash_single(&hex_with_prefix)
     }
