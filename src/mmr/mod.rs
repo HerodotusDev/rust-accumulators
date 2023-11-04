@@ -81,11 +81,6 @@ where
 
         let mut peaks = self.retrieve_peaks_hashes(find_peaks(elements_count), None)?;
 
-        let leaf_count = mmr_size_to_leaf_count(elements_count);
-        if leaf_count_to_peaks_count(leaf_count) as usize != peaks.len() {
-            return Err(anyhow!("Invalid peaks count".to_string()));
-        };
-
         let mut last_element_idx = self.elements_count.increment()?;
         let leaf_element_index = last_element_idx;
 
