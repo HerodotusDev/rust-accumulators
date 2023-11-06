@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use indexmap::IndexMap;
 use std::{collections::HashMap, rc::Rc};
 
 use uuid::Uuid;
@@ -188,6 +189,71 @@ where
         self.nodes.set_many(kv_updates);
         self.root_hash.set::<String>(&current_value, None);
         Ok(current_value)
+    }
+
+    pub fn get_inclusion_multi_proof(&self, indexes_to_prove: Vec<usize>) -> Result<Vec<String>> {
+        let tree_depth = self.get_tree_depth();
+
+        let mut proof: IndexMap<String, bool> = indexes_to_prove
+            .iter()
+            .map(|&idx| (format!("{}:{}", tree_depth, idx), false))
+            .collect();
+
+        let mut current_level = proof.clone();
+        for curr_depth in (1..=tree_depth).rev() {
+            let mut next_level = IndexMap::new();
+
+            let mut ordered_proof_keys = Vec::new();
+            for (index, _) in &current_level {
+                let key = format!("{}:{}", tree_depth, index);
+                if proof.contains_key(&key) {
+                    ordered_proof_keys.push(key);
+                }
+            }
+
+            for kv in current_level.keys() {
+                let kv_parts: Vec<&str> = kv.split(':').collect();
+                let current_node_idx = kv_parts[1].parse::<usize>().expect("Invalid index");
+                let child_idx = current_node_idx / 2;
+
+                if next_level.contains_key(&format!("{}:{}", curr_depth - 1, child_idx)) {
+                    continue;
+                }
+
+                let neighbour_idx = if current_node_idx % 2 == 0 {
+                    current_node_idx + 1
+                } else {
+                    current_node_idx - 1
+                };
+
+                if !proof.contains_key(&format!("{}:{}", curr_depth, neighbour_idx)) {
+                    proof.insert(format!("{}:{}", curr_depth, neighbour_idx), true);
+                }
+
+                next_level.insert(format!("{}:{}", curr_depth - 1, child_idx), false);
+            }
+            next_level.iter().for_each(|(k, v)| {
+                proof.insert(k.to_string(), *v);
+            });
+
+            current_level = next_level;
+        }
+
+        let kv_entries: Vec<String> = proof
+            .iter()
+            .filter_map(|(kv, &is_needed)| if is_needed { Some(kv.clone()) } else { None })
+            .collect();
+
+        let nodes_hash_map = self.nodes.get_many(kv_entries.clone());
+
+        let mut nodes_values: Vec<String> = Vec::with_capacity(kv_entries.len());
+        for kv in kv_entries {
+            if let Some(node) = nodes_hash_map.get(&kv) {
+                nodes_values.push(node.clone());
+            }
+        }
+
+        Ok(nodes_values)
     }
 
     fn get_tree_depth(&self) -> usize {
