@@ -51,9 +51,35 @@ fn verify_proof() {
     let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None);
 
     let path = tree.get_inclusion_proof(10).unwrap();
-    let valid_proof = tree.verify_proof(10, "0x0", path.clone()).unwrap();
+    let valid_proof = tree.verify_proof(10, "0x0", &path).unwrap();
     assert_eq!(valid_proof, true);
 
-    let invalid_proof = tree.verify_proof(10, "0x1", path).unwrap();
+    let invalid_proof = tree.verify_proof(10, "0x1", &path).unwrap();
     assert_eq!(invalid_proof, false);
+}
+
+#[test]
+fn update() {
+    let store = SQLiteStore::new(":memory:").unwrap();
+    let hasher = StarkPoseidonHasher::new(Some(false));
+    store.init().expect("Failed to init store");
+    let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None);
+
+    let path = tree.get_inclusion_proof(7).unwrap();
+    let valid_proof = tree.verify_proof(7, "0x0", &path).unwrap();
+    assert_eq!(valid_proof, true);
+
+    tree.update(7, "0x0".to_string(), "0x1".to_string(), path.clone())
+        .unwrap();
+
+    let invalid_proof = tree.verify_proof(7, "0x0", &path).unwrap();
+    assert_eq!(invalid_proof, false);
+
+    let updated_proof = tree.verify_proof(7, "0x1", &path).unwrap();
+    assert_eq!(updated_proof, true);
+
+    assert_eq!(
+        tree.get_root(),
+        "0x53228c039bc23bffa7a0ba7a864088f98c92dbc41c3737b681cdd7b1bcfe1f2"
+    );
 }

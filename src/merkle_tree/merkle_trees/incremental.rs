@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use std::{collections::HashMap, rc::Rc};
 
 use uuid::Uuid;
@@ -118,7 +118,7 @@ where
         Ok(ordered_nodes)
     }
 
-    pub fn verify_proof(&self, index: usize, value: &str, proof: Vec<String>) -> Result<bool> {
+    pub fn verify_proof(&self, index: usize, value: &str, proof: &Vec<String>) -> Result<bool> {
         let mut current_index = index;
         let mut current_value = value.to_string();
 
@@ -126,11 +126,11 @@ where
             let is_current_index_even = current_index % 2 == 0;
             current_value = if is_current_index_even {
                 self.hasher
-                    .hash(vec![current_value.to_string(), p])
+                    .hash(vec![current_value.to_string(), p.to_string()])
                     .unwrap()
             } else {
                 self.hasher
-                    .hash(vec![p, current_value.to_string()])
+                    .hash(vec![p.to_string(), current_value.to_string()])
                     .unwrap()
             };
             current_index /= 2;
@@ -138,6 +138,56 @@ where
 
         let root = self.root_hash.get::<String>(None).unwrap();
         Ok(root == current_value)
+    }
+
+    pub fn update(
+        &self,
+        index: usize,
+        old_value: String,
+        new_value: String,
+        proof: Vec<String>,
+    ) -> Result<String> {
+        let is_proof_valid = self.verify_proof(index, &old_value, &proof).unwrap();
+        if !is_proof_valid {
+            bail!("Invalid proof");
+        }
+
+        let mut kv_updates: HashMap<String, String> = HashMap::new();
+        let mut current_index = index;
+        let mut current_depth = self.get_tree_depth();
+        let mut current_value = new_value;
+
+        kv_updates.insert(
+            format!("{}:{}", current_depth, current_index),
+            current_value.clone(),
+        );
+        for p in proof {
+            let is_current_index_even = current_index % 2 == 0;
+
+            current_value = if is_current_index_even {
+                self.hasher
+                    .hash(vec![current_value.to_string(), p.to_string()])
+                    .unwrap()
+            } else {
+                self.hasher
+                    .hash(vec![p.to_string(), current_value.to_string()])
+                    .unwrap()
+            };
+
+            current_depth -= 1;
+            current_index /= 2;
+            if current_depth == 0 {
+                break;
+            }
+            kv_updates.insert(
+                format!("{}:{}", current_depth, current_index),
+                current_value.clone(),
+            );
+        }
+
+        self.nodes.set_many(kv_updates);
+        self.root_hash.set::<String>(&current_value, None);
+        Ok(current_value)
     }
 
     fn get_tree_depth(&self) -> usize {
