@@ -83,3 +83,16 @@ fn update() {
         "0x53228c039bc23bffa7a0ba7a864088f98c92dbc41c3737b681cdd7b1bcfe1f2"
     );
 }
+
+#[test]
+fn invalid_update() {
+    let store = SQLiteStore::new(":memory:").unwrap();
+    let hasher = StarkPoseidonHasher::new(Some(false));
+    store.init().expect("Failed to init store");
+    let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None);
+    let path = tree.get_inclusion_proof(7).unwrap();
+    let empty_root = tree.get_root();
+    let result = tree.update(7, "0x1".to_string(), "0x2".to_string(), path.clone());
+    assert!(result.is_err());
+    assert_eq!(tree.get_root(), empty_root);
+}
