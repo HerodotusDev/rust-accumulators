@@ -1,3 +1,4 @@
+use anyhow::Result;
 use std::{collections::HashMap, rc::Rc};
 
 use uuid::Uuid;
@@ -83,6 +84,60 @@ where
 
     pub fn get_root(&self) -> String {
         self.root_hash.get::<String>(None).unwrap()
+    }
+
+    pub fn get_inclusion_proof(&self, index: usize) -> Result<Vec<String>> {
+        let mut required_nodes_by_height = Vec::new();
+        let tree_depth = self.get_tree_depth();
+        let mut current_index = index;
+
+        for i in (1..=tree_depth).rev() {
+            let is_current_index_even = current_index % 2 == 0;
+            let neighbour = if is_current_index_even {
+                current_index + 1
+            } else {
+                current_index - 1
+            };
+            current_index /= 2;
+            required_nodes_by_height.push((i, neighbour));
+        }
+
+        let kv_entries: Vec<String> = required_nodes_by_height
+            .iter()
+            .map(|(height, index)| format!("{}:{}", height, index))
+            .collect();
+
+        let nodes_hash_map = self.nodes.get_many(kv_entries);
+
+        let mut ordered_nodes = Vec::with_capacity(required_nodes_by_height.len());
+        for (height, index) in required_nodes_by_height {
+            if let Some(node) = nodes_hash_map.get(&format!("{}:{}", height, index)) {
+                ordered_nodes.push(node.clone());
+            }
+        }
+        Ok(ordered_nodes)
+    }
+
+    pub fn verify_proof(&self, index: usize, value: &str, proof: Vec<String>) -> Result<bool> {
+        let mut current_index = index;
+        let mut current_value = value.to_string();
+
+        for p in proof {
+            let is_current_index_even = current_index % 2 == 0;
+            current_value = if is_current_index_even {
+                self.hasher
+                    .hash(vec![current_value.to_string(), p])
+                    .unwrap()
+            } else {
+                self.hasher
+                    .hash(vec![p, current_value.to_string()])
+                    .unwrap()
+            };
+            current_index /= 2;
+        }
+
+        let root = self.root_hash.get::<String>(None).unwrap();
+        Ok(root == current_value)
     }
 
     fn get_tree_depth(&self) -> usize {
