@@ -2,6 +2,10 @@
 
 [![Cargo Test](https://github.com/HerodotusDev/rust-mmr/actions/workflows/ci.yml/badge.svg)](https://github.com/HerodotusDev/rust-mmr/actions/workflows/ci.yml)
 
+## TODO: Description of available accumulators, stores, hashers, etc.
+
+## TODO: How to use with features, what features are available, etc.
+
 ## Reference
 
 - [accumulators - CoreMMR](https://github.com/HerodotusDev/accumulators)
