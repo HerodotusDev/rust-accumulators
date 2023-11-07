@@ -114,7 +114,7 @@ where
         let mut ordered_nodes = Vec::with_capacity(required_nodes_by_height.len());
         for (height, index) in required_nodes_by_height {
             if let Some(node) = nodes_hash_map.get(&format!("{}:{}", height, index)) {
-                ordered_nodes.push(node.clone());
+                ordered_nodes.push(node.to_string());
             }
         }
         Ok(ordered_nodes)
@@ -242,7 +242,13 @@ where
 
         let kv_entries: Vec<String> = proof
             .iter()
-            .filter_map(|(kv, &is_needed)| if is_needed { Some(kv.clone()) } else { None })
+            .filter_map(|(kv, &is_needed)| {
+                if is_needed {
+                    Some(kv.to_string())
+                } else {
+                    None
+                }
+            })
             .collect();
 
         let nodes_hash_map = self.nodes.get_many(kv_entries.clone());
@@ -250,7 +256,7 @@ where
         let mut nodes_values: Vec<String> = Vec::with_capacity(kv_entries.len());
         for kv in kv_entries {
             if let Some(node) = nodes_hash_map.get(&kv) {
-                nodes_values.push(node.clone());
+                nodes_values.push(node.to_string());
             }
         }
 
@@ -300,11 +306,9 @@ where
             }
 
             let hash = if is_even {
-                self.hasher
-                    .hash(vec![value.clone(), wanted_value.clone()])?
+                self.hasher.hash(vec![value, wanted_value])?
             } else {
-                self.hasher
-                    .hash(vec![wanted_value.clone(), value.clone()])?
+                self.hasher.hash(vec![wanted_value, value])?
             };
 
             new_indexes.push(index / 2);
