@@ -21,3 +21,12 @@ Incremental Merkle Tree is a structure that contains a constant amount of hashes
     let invalid_proof = tree.verify_proof(10, "0x1", &path).unwrap();
     assert_eq!(invalid_proof, false);
 ```
+
+### Benchmark
+
+```sh
+Incremental Merkle Tree insertion/times/10000
+                        time:   [154.39 ms 154.89 ms 155.38 ms]
+Incremental Merkle Tree insertion/times/1000000
+                        time:   [17.946 s 18.027 s 18.125 s]
+```
