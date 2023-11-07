@@ -52,10 +52,10 @@ fn verify_proof() {
 
     let path = tree.get_inclusion_proof(10).unwrap();
     let valid_proof = tree.verify_proof(10, "0x0", &path).unwrap();
-    assert_eq!(valid_proof, true);
+    assert!(valid_proof);
 
     let invalid_proof = tree.verify_proof(10, "0x1", &path).unwrap();
-    assert_eq!(invalid_proof, false);
+    assert!(!invalid_proof);
 }
 
 #[test]
@@ -67,16 +67,16 @@ fn update() {
 
     let path = tree.get_inclusion_proof(7).unwrap();
     let valid_proof = tree.verify_proof(7, "0x0", &path).unwrap();
-    assert_eq!(valid_proof, true);
+    assert!(valid_proof);
 
     tree.update(7, "0x0".to_string(), "0x1".to_string(), path.clone())
         .unwrap();
 
     let invalid_proof = tree.verify_proof(7, "0x0", &path).unwrap();
-    assert_eq!(invalid_proof, false);
+    assert!(!invalid_proof);
 
     let updated_proof = tree.verify_proof(7, "0x1", &path).unwrap();
-    assert_eq!(updated_proof, true);
+    assert!(updated_proof);
 
     assert_eq!(
         tree.get_root(),

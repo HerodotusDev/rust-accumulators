@@ -10,8 +10,7 @@ fn prepare_incremental(count: usize) -> IncrementalMerkleTree<SQLiteStore, Stark
     let store = SQLiteStore::new(":memory:").unwrap();
     store.init().expect("Failed to init store");
 
-    let tree = IncrementalMerkleTree::initialize(count, "0x0".to_string(), hasher, store, None);
-    tree
+    IncrementalMerkleTree::initialize(count, "0x0".to_string(), hasher, store, None)
 }
 
 fn bench(c: &mut Criterion) {
