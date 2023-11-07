@@ -114,10 +114,10 @@ fn generate_and_verify_multi_proof() {
         let _ = tree.update(i, default_hash.clone(), new_value, path);
     }
 
-    let test = vec![0, 2, 7, 14, 31, 63];
-    let _ = test.iter().map(|x| format!("0x{}", x)).collect::<Vec<_>>();
+    let mut test = vec![0, 2, 7, 14, 31, 63];
+    let mut test_values = test.iter().map(|x| format!("0x{}", x)).collect::<Vec<_>>();
 
-    let multiproof = tree.get_inclusion_multi_proof(test).unwrap();
+    let mut multiproof = tree.get_inclusion_multi_proof(test.clone()).unwrap();
 
     assert_eq!(
         multiproof,
@@ -140,4 +140,8 @@ fn generate_and_verify_multi_proof() {
             "0x6daedd1626c776eadcd90f017bb95ce29d14975425257907ef2ec8b67f960eb"
         ]
     );
+
+    let is_valid = tree.verify_multi_proof(&mut test, &mut test_values, &mut multiproof);
+
+    assert!(is_valid);
 }

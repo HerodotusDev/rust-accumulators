@@ -1,4 +1,5 @@
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
+
 use indexmap::IndexMap;
 use std::{collections::HashMap, rc::Rc};
 
@@ -254,6 +255,70 @@ where
         }
 
         Ok(nodes_values)
+    }
+
+    pub fn verify_multi_proof(
+        &self,
+        indexes: &mut Vec<usize>,
+        values: &mut Vec<String>,
+        proof: &mut Vec<String>,
+    ) -> bool {
+        let root = self.root_hash.get::<String>(None).unwrap();
+        let calculated_root = self
+            .calculate_multiproof_root_hash(indexes, values, proof)
+            .unwrap();
+
+        root == calculated_root
+    }
+
+    fn calculate_multiproof_root_hash(
+        &self,
+        indexes: &mut Vec<usize>,
+        values: &mut Vec<String>,
+        proof: &mut Vec<String>,
+    ) -> Result<String> {
+        let mut new_indexes = Vec::new();
+        let mut new_values = Vec::new();
+
+        while !indexes.is_empty() {
+            let index = indexes.remove(0);
+            let value = values.remove(0);
+            let is_even = index % 2 == 0;
+            let wanted_index = if is_even { index + 1 } else { index - 1 };
+            let wanted_value_position = indexes.iter().position(|&x| x == wanted_index);
+
+            let wanted_value = match wanted_value_position {
+                Some(pos) => {
+                    indexes.remove(pos);
+                    values.remove(pos)
+                }
+                None => proof.remove(0),
+            };
+
+            if wanted_value.is_empty() {
+                return Err(anyhow!("Wanted value not found"));
+            }
+
+            let hash = if is_even {
+                self.hasher
+                    .hash(vec![value.clone(), wanted_value.clone()])?
+            } else {
+                self.hasher
+                    .hash(vec![wanted_value.clone(), value.clone()])?
+            };
+
+            new_indexes.push(index / 2);
+
+            new_values.push(hash);
+        }
+
+        if !proof.is_empty() || new_indexes.len() > 1 {
+            return self.calculate_multiproof_root_hash(&mut new_indexes, &mut new_values, proof);
+        }
+
+        new_values
+            .pop()
+            .ok_or_else(|| anyhow!("No root hash found".to_string()))
     }
 
     fn get_tree_depth(&self) -> usize {
