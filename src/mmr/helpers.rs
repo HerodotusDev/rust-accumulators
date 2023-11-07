@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashSet;
+use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 
 use super::formatting::{PeaksFormattingOptions, ProofFormattingOptions};
@@ -47,6 +48,16 @@ pub enum TreeMetadataKeys {
     LeafCount,
     ElementCount,
     RootHash,
+}
+
+impl Display for TreeMetadataKeys {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TreeMetadataKeys::LeafCount => write!(f, "leaf_count"),
+            TreeMetadataKeys::ElementCount => write!(f, "elements_count"),
+            TreeMetadataKeys::RootHash => write!(f, "root_hash"),
+        }
+    }
 }
 
 /// Append Result

@@ -15,6 +15,8 @@ fn should_append_to_mmr() {
 
     let mut mmr = MMR::new(store, hasher.clone(), None);
 
+    println!("✅ mmr: {:?}", mmr.hashes.key);
+
     // Act
     // let mut mmr = CoreMMR::create_with_genesis(store, hasher.clone(), None).unwrap();
     let append_result1 = mmr.append("1".to_string()).unwrap();

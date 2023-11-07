@@ -39,9 +39,9 @@ where
 {
     pub fn new(store: S, hasher: H, mmr_id: Option<String>) -> Self {
         let mmr_id = mmr_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-        let leaves_count_key = format!("{}:{:?}", mmr_id, TreeMetadataKeys::LeafCount);
-        let elements_count_key = format!("{}:{:?}", mmr_id, TreeMetadataKeys::ElementCount);
-        let root_hash_key = format!("{}:{:?}", mmr_id, TreeMetadataKeys::RootHash);
+        let leaves_count_key = format!("{}:{}", mmr_id, TreeMetadataKeys::LeafCount);
+        let elements_count_key = format!("{}:{}", mmr_id, TreeMetadataKeys::ElementCount);
+        let root_hash_key = format!("{}:{}", mmr_id, TreeMetadataKeys::RootHash);
         let hashes_key = format!("{}:hashes:", mmr_id);
 
         let store_rc = Rc::new(store);

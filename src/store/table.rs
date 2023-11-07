@@ -22,7 +22,7 @@ impl ToKey for usize {
 
 pub struct InStoreTable<S> {
     store: Rc<S>,
-    key: String,
+    pub key: String,
 }
 
 impl<S> InStoreTable<S>
@@ -33,24 +33,24 @@ where
         Self { store, key }
     }
 
-    fn get_full_key<T: ToKey + Display>(&self, suffix: Option<T>) -> String {
-        let new_suffix = match suffix {
-            Some(suffix) => suffix.to_key(),
+    fn get_full_key<T: ToKey + Display>(&self, sub_key: Option<T>) -> String {
+        let new_sub_key = match sub_key {
+            Some(sub_key) => sub_key.to_key(),
             None => "".to_string(),
         };
-        format!("{}{}", self.key.to_key(), new_suffix)
+        format!("{}{}", self.key.to_key(), new_sub_key)
     }
 
-    pub fn get<T: ToKey>(&self, suffix: Option<T>) -> Option<String> {
-        let new_suffix = suffix.map(|suffix| suffix.to_key());
-        let full_key = &self.get_full_key(new_suffix);
+    pub fn get<T: ToKey>(&self, sub_key: Option<T>) -> Option<String> {
+        let new_sub_key = sub_key.map(|sub_key| sub_key.to_key());
+        let full_key = &self.get_full_key(new_sub_key);
         self.store.get(full_key).unwrap_or_default()
     }
 
-    pub fn get_many<T: ToKey>(&self, suffixes: Vec<T>) -> HashMap<String, String> {
-        let keys_str: Vec<String> = suffixes
+    pub fn get_many<T: ToKey>(&self, sub_keyes: Vec<T>) -> HashMap<String, String> {
+        let keys_str: Vec<String> = sub_keyes
             .iter()
-            .map(|suffix| self.get_full_key(Some(suffix.to_key())))
+            .map(|sub_key| self.get_full_key(Some(sub_key.to_key())))
             .collect();
 
         let keys_ref: Vec<&str> = keys_str.iter().map(AsRef::as_ref).collect();
@@ -69,8 +69,9 @@ where
 
         keyless
     }
-    pub fn set<T: ToKey + Display>(&self, value: &str, suffix: Option<T>) {
-        let _ = self.store.set(self.get_full_key(suffix).as_str(), value);
+
+    pub fn set<T: ToKey + Display>(&self, value: &str, sub_key: Option<T>) {
+        let _ = self.store.set(self.get_full_key(sub_key).as_str(), value);
     }
 
     pub fn set_many(&self, entries: HashMap<String, String>) {
