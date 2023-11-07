@@ -2,48 +2,9 @@
 
 [![Cargo Test](https://github.com/HerodotusDev/rust-mmr/actions/workflows/ci.yml/badge.svg)](https://github.com/HerodotusDev/rust-mmr/actions/workflows/ci.yml)
 
-## Example
+## TODO: Description of available accumulators, stores, hashers, etc.
 
-```rust
-use accumulators::{
-    hasher::{stark_poseidon::StarkPoseidonHasher, Hasher},
-    mmr::{
-        helpers::{AppendResult, Proof, ProofOptions},
-        MMR,
-    },
-    store::sqlite::SQLiteStore,
-};
-
-let store = SQLiteStore::new(":memory:").unwrap();
-let hasher = StarkPoseidonHasher::new(Some(false));
-store.init().expect("Failed to init store");
-
-let mut mmr = MMR::new(store, hasher.clone(), None);
-
-let _ = mmr.append("1".to_string()).unwrap();
-let _ = mmr.append("2".to_string()).unwrap();
-let _ = mmr.append("3".to_string()).unwrap();
-let append_result = mmr.append("4".to_string()).unwrap();
-
-let proof4 = mmr
-    .get_proof(append_result.element_index,
-    ProofOptions {
-            elements_count: None,
-            formatting_opts: None,
-        },
-    )
-    .unwrap();
-
-mmr.verify_proof(
-    proof4,
-    "4".to_string(),
-    ProofOptions {
-        elements_count: None,
-        formatting_opts: None,
-    },
-)
-.unwrap(); //return true
-```
+## TODO: How to use with features, what features are available, etc.
 
 ## Reference
 
