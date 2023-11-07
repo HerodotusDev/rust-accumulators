@@ -26,6 +26,10 @@ criterion = { version = "0.4", features = ["html_reports"] }  # Benchmarking
 name = "mmr_benchmark"
 harness = false
 
+[[bench]]
+name = "incremental_benchmark"
+harness = false
+
 [features]
 default = ["store", "hasher"]
 all = ["store", "sqlite", "hasher", "keccak", "poseidon", "pedersen", "mmr", "infinitely_stackable_mmr", "merkle_tree", "incremental_merkle_tree"]
