@@ -2,7 +2,10 @@ use std::rc::Rc;
 
 use crate::{
     hasher::Hasher,
-    mmr::{helpers::elements_count_to_leaf_count, MMR},
+    mmr::{
+        helpers::{elements_count_to_leaf_count, TreeMetadataKeys},
+        MMR,
+    },
     store::{
         table::{InStoreTable, SubKey, SubMMR},
         Store,
@@ -37,13 +40,47 @@ where
     H: Hasher,
 {
     fn get_full_key_and_store(table: &InStoreTable, sub_key: SubKey) -> (Rc<dyn Store>, String) {
-        panic!("Not implemented")
+        let (mmr_id, key) =
+            MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
+
+        match key {
+            TreeMetadataKeys::Hashes => {}
+            //? If the key is not hashes, we don't need to do anything
+            _ => return table.default_get_full_key_and_store(sub_key),
+        }
+
+        let element_index = match sub_key {
+            SubKey::Usize(element_index) => element_index,
+            //? If the sub_key is not an element index, we don't need to do anything
+            _ => return table.default_get_full_key_and_store(sub_key),
+        };
+
+        let mut sub_mmrs = table
+            .sub_mmrs
+            .as_ref()
+            .expect("Sub MMRs are not set")
+            .iter();
+
+        let mut use_mmr = None;
+        for sub_mmr in sub_mmrs {
+            // TODO check if it shouldn't be >=
+            if element_index > sub_mmr.size {
+                break;
+            }
+            use_mmr = Some(sub_mmr);
+        }
+
+        (
+            use_mmr.unwrap().hashes.store.clone(),
+            InStoreTable::get_full_key(&use_mmr.unwrap().hashes.key, &sub_key.to_string()),
+        )
     }
 
     fn get_full_keys_and_stores(
         table: &InStoreTable,
         sub_keys: Vec<SubKey>,
     ) -> Vec<(Rc<dyn Store>, Vec<String>)> {
+        println!("{:?}", sub_keys);
         panic!("Not implemented")
     }
 }

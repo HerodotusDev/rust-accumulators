@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use super::Store;
 
+#[derive(Debug)]
 pub enum SubKey {
     String(String),
     Usize(usize),
@@ -38,6 +39,7 @@ pub type GetFullKeyAndStoreFn = fn(&InStoreTable, SubKey) -> (Rc<dyn Store>, Str
 pub type GetFullKeysAndStoresFn =
     fn(&InStoreTable, Vec<SubKey>) -> Vec<(Rc<dyn Store>, Vec<String>)>;
 
+#[cfg(feature = "infinitely_stackable_mmr")]
 pub struct SubMMR {
     pub size: usize,
     pub hashes: InStoreTable,
@@ -80,7 +82,7 @@ impl InStoreTable {
         format!("{}{}", key, sub_key)
     }
 
-    fn default_get_full_key_and_store(&self, sub_key: SubKey) -> (Rc<dyn Store>, String) {
+    pub fn default_get_full_key_and_store(&self, sub_key: SubKey) -> (Rc<dyn Store>, String) {
         let new_sub_key = sub_key.to_string();
         (
             self.store.clone(),
@@ -88,7 +90,7 @@ impl InStoreTable {
         )
     }
 
-    fn default_get_full_keys_and_stores(
+    pub fn default_get_full_keys_and_stores(
         &self,
         sub_keys: Vec<SubKey>,
     ) -> Vec<(Rc<dyn Store>, Vec<String>)> {

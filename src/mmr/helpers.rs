@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
+use std::str::FromStr;
 
 use super::formatting::{PeaksFormattingOptions, ProofFormattingOptions};
 
@@ -48,6 +49,21 @@ pub enum TreeMetadataKeys {
     LeafCount,
     ElementCount,
     RootHash,
+    Hashes,
+}
+
+impl FromStr for TreeMetadataKeys {
+    fn from_str(text: &str) -> Result<Self> {
+        match text {
+            "leaf_count" => Ok(TreeMetadataKeys::LeafCount),
+            "elements_count" => Ok(TreeMetadataKeys::ElementCount),
+            "root_hash" => Ok(TreeMetadataKeys::RootHash),
+            "hashes" => Ok(TreeMetadataKeys::Hashes),
+            _ => Err(anyhow!("Invalid tree metadata key")),
+        }
+    }
+
+    type Err = anyhow::Error;
 }
 
 impl Display for TreeMetadataKeys {
@@ -56,6 +72,7 @@ impl Display for TreeMetadataKeys {
             TreeMetadataKeys::LeafCount => write!(f, "leaf_count"),
             TreeMetadataKeys::ElementCount => write!(f, "elements_count"),
             TreeMetadataKeys::RootHash => write!(f, "root_hash"),
+            TreeMetadataKeys::Hashes => write!(f, "hashes"),
         }
     }
 }

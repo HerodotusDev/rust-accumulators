@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
+use std::str::FromStr;
 use uuid::Uuid;
 
 use crate::hasher::Hasher;
@@ -85,8 +86,15 @@ where
             format!("{}:{}", mmr_id, TreeMetadataKeys::LeafCount),
             format!("{}:{}", mmr_id, TreeMetadataKeys::ElementCount),
             format!("{}:{}", mmr_id, TreeMetadataKeys::RootHash),
-            format!("{}:hashes:", mmr_id),
+            format!("{}:{}:", mmr_id, TreeMetadataKeys::Hashes),
         )
+    }
+
+    pub fn decode_store_key(store_key: &str) -> Option<(String, TreeMetadataKeys)> {
+        let mut parts = store_key.split(':');
+        let mmr_id = parts.next()?.to_string();
+        let key = TreeMetadataKeys::from_str(parts.next()?).expect("Invalid tree metadata key");
+        Some((mmr_id, key))
     }
 
     pub fn get_stores(
