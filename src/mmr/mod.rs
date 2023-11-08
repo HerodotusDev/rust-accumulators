@@ -22,19 +22,24 @@ mod mmrs;
 #[cfg(feature = "infinitely_stackable_mmr")]
 pub use self::mmrs::infinitely_stackable;
 
-pub struct MMR<S, H> {
+pub struct MMR<S, H>
+where
+    S: Store,
+    H: Hasher,
+{
     pub store: Rc<S>,
     pub hasher: H,
     pub mmr_id: String,
-    pub leaves_count: InStoreCounter<S>,
-    pub elements_count: InStoreCounter<S>,
-    pub hashes: InStoreTable<S>,
-    pub root_hash: InStoreTable<S>,
+    pub leaves_count: InStoreCounter,
+    pub elements_count: InStoreCounter,
+    pub hashes: InStoreTable,
+    pub root_hash: InStoreTable,
+    pub transform_subkey: Option<Box<dyn Fn(String) -> String>>,
 }
 
 impl<S, H> MMR<S, H>
 where
-    S: Store,
+    S: Store + 'static,
     H: Hasher,
 {
     pub fn new(store: S, hasher: H, mmr_id: Option<String>) -> Self {
@@ -45,10 +50,10 @@ where
         let hashes_key = format!("{}:hashes:", mmr_id);
 
         let store_rc = Rc::new(store);
-        let leaves_count = InStoreCounter::new(store_rc.clone(), leaves_count_key);
-        let elements_count = InStoreCounter::new(store_rc.clone(), elements_count_key);
-        let root_hash = InStoreTable::new(store_rc.clone(), root_hash_key);
-        let hashes = InStoreTable::new(store_rc.clone(), hashes_key);
+        let leaves_count = InStoreCounter::new(leaves_count_key);
+        let elements_count = InStoreCounter::new(elements_count_key);
+        let root_hash = InStoreTable::new(root_hash_key);
+        let hashes = InStoreTable::new(hashes_key);
 
         Self {
             leaves_count,
@@ -58,12 +63,13 @@ where
             store: store_rc,
             hasher,
             mmr_id,
+            transform_subkey: None,
         }
     }
 
     pub fn create_with_genesis(store: S, hasher: H, mmr_id: Option<String>) -> Result<Self> {
         let mut mmr = MMR::new(store, hasher, mmr_id);
-        let elements_count: usize = mmr.elements_count.get();
+        let elements_count: usize = mmr.elements_count.get(mmr.store.clone());
         if elements_count != 0 {
             return Err(anyhow!("Cannot call create_with_genesis on a non-empty MMR. Please provide an empty store or change the MMR id.".to_string()));
         }
@@ -77,19 +83,20 @@ where
             return Err(anyhow!("Element size is too big to hash with this hasher"));
         }
 
-        let elements_count = self.elements_count.get();
+        let elements_count = self.elements_count.get(self.store.clone());
 
         let mut peaks = self.retrieve_peaks_hashes(find_peaks(elements_count), None)?;
 
-        let mut last_element_idx = self.elements_count.increment()?;
+        let mut last_element_idx = self.elements_count.increment(self.store.clone())?;
         let leaf_element_index = last_element_idx;
 
         //? Store the hash in the database
-        self.hashes.set(&value, Some(last_element_idx));
+        self.hashes
+            .set(self.store.clone(), &value, Some(last_element_idx));
 
         peaks.push(value);
 
-        let no_merges = leaf_count_to_append_no_merges(self.leaves_count.get());
+        let no_merges = leaf_count_to_append_no_merges(self.leaves_count.get(self.store.clone()));
 
         for _ in 0..no_merges {
             last_element_idx += 1;
@@ -99,19 +106,22 @@ where
 
             let parent_hash = self.hasher.hash(vec![left_hash, right_hash])?;
 
-            self.hashes.set(&parent_hash, Some(last_element_idx));
+            self.hashes
+                .set(self.store.clone(), &parent_hash, Some(last_element_idx));
             peaks.push(parent_hash);
         }
 
-        self.elements_count.set(last_element_idx)?;
+        self.elements_count
+            .set(self.store.clone(), last_element_idx)?;
 
         let bag = self.bag_the_peaks(None)?;
 
         // Compute the new root hash
         let root_hash = self.calculate_root_hash(&bag, last_element_idx)?;
-        self.root_hash.set::<usize>(&root_hash, None);
+        self.root_hash
+            .set::<usize>(self.store.clone(), &root_hash, None);
 
-        let leaves = self.leaves_count.increment()?;
+        let leaves = self.leaves_count.increment(self.store.clone())?;
 
         Ok(AppendResult {
             leaves_count: leaves,
@@ -126,7 +136,7 @@ where
             return Err(anyhow!("Index must be greater than 0".to_string()));
         }
 
-        let element_count = self.elements_count.get();
+        let element_count = self.elements_count.get(self.store.clone());
         let tree_size = options.elements_count.unwrap_or(element_count);
 
         if element_index > tree_size {
@@ -145,7 +155,7 @@ where
             .map(|opts| opts.peaks.clone());
         let peaks_hashes = self.retrieve_peaks_hashes(peaks, formatting_opts).unwrap();
 
-        let siblings_hashes = self.hashes.get_many(siblings.clone());
+        let siblings_hashes = self.hashes.get_many(self.store.clone(), siblings.clone());
 
         let mut siblings_hashes_vec: Vec<String> = siblings
             .iter()
@@ -157,7 +167,10 @@ where
                 format_proof(siblings_hashes_vec, formatting_opts.proof.clone()).unwrap();
         }
 
-        let element_hash = self.hashes.get(Some(element_index.to_string())).unwrap();
+        let element_hash = self
+            .hashes
+            .get(self.store.clone(), Some(element_index.to_string()))
+            .unwrap();
 
         Ok(Proof {
             element_index,
@@ -173,7 +186,7 @@ where
         elements_ids: Vec<usize>,
         options: ProofOptions,
     ) -> Result<Vec<Proof>> {
-        let element_count = self.elements_count.get();
+        let element_count = self.elements_count.get(self.store.clone());
         let tree_size = options.elements_count.unwrap_or(element_count);
 
         for &element_id in &elements_ids {
@@ -206,8 +219,12 @@ where
             .collect();
         let elements_ids_str: Vec<String> = elements_ids.iter().map(|&x| x.to_string()).collect();
 
-        let all_siblings_hashes = self.hashes.get_many(sibling_hashes_to_get_str);
-        let element_hashes = self.hashes.get_many(elements_ids_str.clone());
+        let all_siblings_hashes = self
+            .hashes
+            .get_many(self.store.clone(), sibling_hashes_to_get_str);
+        let element_hashes = self
+            .hashes
+            .get_many(self.store.clone(), elements_ids_str.clone());
 
         let mut proofs: Vec<Proof> = Vec::new();
         for &element_id in &elements_ids {
@@ -240,7 +257,7 @@ where
         element_value: String,
         options: ProofOptions,
     ) -> Result<bool> {
-        let element_count = self.elements_count.get();
+        let element_count = self.elements_count.get(self.store.clone());
         let tree_size = options.elements_count.unwrap_or(element_count);
 
         let leaf_count = mmr_size_to_leaf_count(tree_size);
@@ -310,7 +327,7 @@ where
         peak_idxs: Vec<usize>,
         formatting_opts: Option<PeaksFormattingOptions>,
     ) -> Result<Vec<String>> {
-        let hashes_result = self.hashes.get_many(peak_idxs.clone());
+        let hashes_result = self.hashes.get_many(self.store.clone(), peak_idxs.clone());
         // Assuming hashes_result is a HashMap<String, String>
         let hashes: Vec<String> = peak_idxs
             .iter()
@@ -324,7 +341,8 @@ where
     }
 
     pub fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String> {
-        let tree_size = elements_count.unwrap_or_else(|| self.elements_count.get());
+        let tree_size =
+            elements_count.unwrap_or_else(|| self.elements_count.get(self.store.clone()));
         let peaks_idxs = find_peaks(tree_size);
 
         let peaks_hashes = self

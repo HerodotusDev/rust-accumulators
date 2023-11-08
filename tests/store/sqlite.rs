@@ -75,13 +75,14 @@ fn should_delete_a_value() {
 fn test_in_store_counter() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let _ = store.init();
+    let store = Rc::new(store);
 
     // Create an in-store counter
-    let counter = InStoreCounter::new(Rc::new(store), "counter".to_string());
-    let _ = counter.set(10);
-    let value = counter.get();
+    let counter = InStoreCounter::new("counter".to_string());
+    let _ = counter.set(store.clone(), 10);
+    let value = counter.get(store.clone());
     assert_eq!(value, 10);
-    let newcounter = counter.increment().unwrap();
+    let newcounter = counter.increment(store.clone()).unwrap();
     assert_eq!(newcounter, 11);
 }
 
@@ -89,11 +90,12 @@ fn test_in_store_counter() {
 fn test_get_none_in_store_table() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let _ = store.init();
+    let store = Rc::new(store);
 
     // Create an in-store counter
-    let table = InStoreTable::new(Rc::new(store), "table".to_string());
-    table.set::<usize>("value1", None);
-    let value = table.get::<usize>(None);
+    let table = InStoreTable::new("table".to_string());
+    table.set::<usize>(store.clone(), "value1", None);
+    let value = table.get::<usize>(store.clone(), None);
     assert_eq!(value.unwrap(), "value1".to_string());
 }
 
@@ -101,19 +103,20 @@ fn test_get_none_in_store_table() {
 fn test_get_many_none_in_store_table() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let _ = store.init();
+    let store = Rc::new(store);
 
     // Create an in-store counter
-    let table = InStoreTable::new(Rc::new(store), "table".to_string());
+    let table = InStoreTable::new("table".to_string());
     let mut entries = HashMap::new();
     entries.insert("key1".to_string(), "value1".to_string());
     entries.insert("key2".to_string(), "value2".to_string());
-    table.set_many(entries);
-    let value = table.get(Some("key1".to_string()));
+    table.set_many(store.clone(), entries);
+    let value = table.get(store.clone(), Some("key1".to_string()));
     assert_eq!(value.unwrap(), "value1".to_string());
-    let value = table.get(Some("key2".to_string()));
+    let value = table.get(store.clone(), Some("key2".to_string()));
     assert_eq!(value.unwrap(), "value2".to_string());
 
-    let values = table.get_many(vec!["key1".to_string(), "key2".to_string()]);
+    let values = table.get_many(store.clone(), vec!["key1".to_string(), "key2".to_string()]);
     assert_eq!(values.get("tablekey1"), Some(&"value1".to_string()));
     assert_eq!(values.get("tablekey2"), Some(&"value2".to_string()));
 }
@@ -122,10 +125,11 @@ fn test_get_many_none_in_store_table() {
 fn test_get_some_in_store_table() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let _ = store.init();
+    let store = Rc::new(store);
 
     // Create an in-store counter
-    let table = InStoreTable::new(Rc::new(store), "table".to_string());
-    table.set("value1", Some("suffix1".to_string()));
-    let value = table.get(Some("suffix1".to_string()));
+    let table = InStoreTable::new("table".to_string());
+    table.set(store.clone(), "value1", Some("suffix1".to_string()));
+    let value = table.get(store.clone(), Some("suffix1".to_string()));
     assert_eq!(value.unwrap(), "value1".to_string());
 }

@@ -15,8 +15,6 @@ fn should_append_to_mmr() {
 
     let mut mmr = MMR::new(store, hasher.clone(), None);
 
-    println!("✅ mmr: {:?}", mmr.hashes.key);
-
     // Act
     // let mut mmr = CoreMMR::create_with_genesis(store, hasher.clone(), None).unwrap();
     let append_result1 = mmr.append("1".to_string()).unwrap();
@@ -272,7 +270,10 @@ fn test_new() {
     let core_mmr = MMR::create_with_genesis(store, hasher.clone(), None).unwrap();
 
     assert_eq!(
-        core_mmr.root_hash.get::<usize>(None).unwrap(),
+        core_mmr
+            .root_hash
+            .get::<usize>(core_mmr.store.clone(), None)
+            .unwrap(),
         hasher
             .hash(vec!["1".to_string(), hasher.get_genesis()])
             .unwrap()
