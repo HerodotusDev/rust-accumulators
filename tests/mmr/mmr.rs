@@ -270,10 +270,7 @@ fn test_new() {
     let core_mmr = MMR::create_with_genesis(store, hasher.clone(), None).unwrap();
 
     assert_eq!(
-        core_mmr
-            .root_hash
-            .get(core_mmr.store.clone(), SubKey::None)
-            .unwrap(),
+        core_mmr.root_hash.get(SubKey::None).unwrap(),
         hasher
             .hash(vec!["1".to_string(), hasher.get_genesis()])
             .unwrap()

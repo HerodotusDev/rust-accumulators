@@ -81,11 +81,11 @@ fn test_in_store_counter() {
     let store = Rc::new(store);
 
     // Create an in-store counter
-    let counter = InStoreCounter::new("counter".to_string());
-    let _ = counter.set(store.clone(), 10);
-    let value = counter.get(store.clone());
+    let counter = InStoreCounter::new(store.clone(), "counter".to_string());
+    let _ = counter.set(10);
+    let value = counter.get();
     assert_eq!(value, 10);
-    let newcounter = counter.increment(store.clone()).unwrap();
+    let newcounter = counter.increment().unwrap();
     assert_eq!(newcounter, 11);
 }
 
@@ -96,9 +96,9 @@ fn test_get_none_in_store_table() {
     let store = Rc::new(store);
 
     // Create an in-store counter
-    let table = InStoreTable::new("table".to_string());
-    table.set(store.clone(), "value1", SubKey::None);
-    let value = table.get(store.clone(), SubKey::None);
+    let table = InStoreTable::new(store.clone(), "table".to_string());
+    table.set("value1", SubKey::None);
+    let value = table.get(SubKey::None);
     assert_eq!(value.unwrap(), "value1".to_string());
 }
 
@@ -109,23 +109,20 @@ fn test_get_many_none_in_store_table() {
     let store = Rc::new(store);
 
     // Create an in-store counter
-    let table = InStoreTable::new("table".to_string());
+    let table = InStoreTable::new(store.clone(), "table".to_string());
     let mut entries = HashMap::new();
-    entries.insert("key1".to_string(), "value1".to_string());
-    entries.insert("key2".to_string(), "value2".to_string());
-    table.set_many(store.clone(), entries);
-    let value = table.get(store.clone(), SubKey::String("key1".to_string()));
+    entries.insert(SubKey::String("key1".to_string()), "value1".to_string());
+    entries.insert(SubKey::String("key2".to_string()), "value2".to_string());
+    table.set_many(entries);
+    let value = table.get(SubKey::String("key1".to_string()));
     assert_eq!(value.unwrap(), "value1".to_string());
-    let value = table.get(store.clone(), SubKey::String("key2".to_string()));
+    let value = table.get(SubKey::String("key2".to_string()));
     assert_eq!(value.unwrap(), "value2".to_string());
 
-    let values = table.get_many(
-        store.clone(),
-        vec![
-            SubKey::String("key1".to_string()),
-            SubKey::String("key2".to_string()),
-        ],
-    );
+    let values = table.get_many(vec![
+        SubKey::String("key1".to_string()),
+        SubKey::String("key2".to_string()),
+    ]);
     assert_eq!(values.get("tablekey1"), Some(&"value1".to_string()));
     assert_eq!(values.get("tablekey2"), Some(&"value2".to_string()));
 }
@@ -137,12 +134,8 @@ fn test_get_some_in_store_table() {
     let store = Rc::new(store);
 
     // Create an in-store counter
-    let table = InStoreTable::new("table".to_string());
-    table.set(
-        store.clone(),
-        "value1",
-        SubKey::String("suffix1".to_string()),
-    );
-    let value = table.get(store.clone(), SubKey::String("suffix1".to_string()));
+    let table = InStoreTable::new(store.clone(), "table".to_string());
+    table.set("value1", SubKey::String("suffix1".to_string()));
+    let value = table.get(SubKey::String("suffix1".to_string()));
     assert_eq!(value.unwrap(), "value1".to_string());
 }
