@@ -2,7 +2,7 @@ use accumulators::{
     hasher::{stark_poseidon::StarkPoseidonHasher, Hasher},
     mmr::{
         helpers::{AppendResult, Proof, ProofOptions},
-        MMR,
+        CoreMMR, MMR,
     },
     store::{sqlite::SQLiteStore, table::SubKey},
 };

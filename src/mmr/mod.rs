@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use uuid::Uuid;
@@ -26,9 +26,28 @@ mod mmrs;
 #[cfg(feature = "infinitely_stackable_mmr")]
 pub use self::mmrs::infinitely_stackable;
 
+pub trait CoreMMR {
+    fn append(&mut self, value: String) -> Result<AppendResult>;
+    fn get_proof(&self, element_index: usize, options: ProofOptions) -> Result<Proof>;
+    fn get_proofs(&self, elements_ids: Vec<usize>, options: ProofOptions) -> Result<Vec<Proof>>;
+    fn verify_proof(
+        &self,
+        proof: Proof,
+        element_value: String,
+        options: ProofOptions,
+    ) -> Result<bool>;
+    fn retrieve_peaks_hashes(
+        &self,
+        peak_idxs: Vec<usize>,
+        formatting_opts: Option<PeaksFormattingOptions>,
+    ) -> Result<Vec<String>>;
+    fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String>;
+    fn calculate_root_hash(&self, bag: &str, leaf_count: usize) -> Result<String>;
+}
+
 pub struct MMR<S, H>
 where
-    S: Store,
+    S: Store + ?Sized,
     H: Hasher,
 {
     pub store: Rc<S>,
@@ -72,18 +91,23 @@ where
     pub fn create_with_genesis(store: S, hasher: H, mmr_id: Option<String>) -> Result<Self> {
         let mut mmr = MMR::new(store, hasher, mmr_id);
         let elements_count: usize = mmr.elements_count.get();
-        if elements_count != 0 {
-            return Err(anyhow!("Cannot call create_with_genesis on a non-empty MMR. Please provide an empty store or change the MMR id.".to_string()));
-        }
+        assert_eq!(elements_count, 0, "Cannot call create_with_genesis on a non-empty MMR. Please provide an empty store or change the MMR id.");
         let genesis = mmr.hasher.get_genesis();
         let _ = mmr.append(genesis);
         Ok(mmr)
     }
+}
 
-    pub fn append(&mut self, value: String) -> Result<AppendResult> {
-        if !self.hasher.is_element_size_valid(&value) {
-            return Err(anyhow!("Element size is too big to hash with this hasher"));
-        }
+impl<S, H> CoreMMR for MMR<S, H>
+where
+    S: Store + ?Sized,
+    H: Hasher,
+{
+    fn append(&mut self, value: String) -> Result<AppendResult> {
+        assert!(
+            self.hasher.is_element_size_valid(&value),
+            "Element size is too big to hash with this hasher"
+        );
 
         let elements_count = self.elements_count.get();
 
@@ -102,8 +126,8 @@ where
         for _ in 0..no_merges {
             last_element_idx += 1;
 
-            let right_hash = peaks.pop().ok_or(anyhow!("No right hash present"))?;
-            let left_hash = peaks.pop().ok_or(anyhow!("No left hash present"))?;
+            let right_hash = peaks.pop().expect("No right hash present");
+            let left_hash = peaks.pop().expect("No left hash present");
 
             let parent_hash = self.hasher.hash(vec![left_hash, right_hash])?;
 
@@ -130,19 +154,17 @@ where
         })
     }
 
-    pub fn get_proof(&self, element_index: usize, options: ProofOptions) -> Result<Proof> {
-        if element_index == 0 {
-            return Err(anyhow!("Index must be greater than 0".to_string()));
-        }
+    fn get_proof(&self, element_index: usize, options: ProofOptions) -> Result<Proof> {
+        assert_ne!(element_index, 0, "Index must be greater than 0");
 
         let element_count = self.elements_count.get();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
-        if element_index > tree_size {
-            return Err(anyhow!(
-                "Index must be less or equal to the tree size".to_string()
-            ));
-        }
+        // FIXME: If the error is correct this should be <= not <, either change this or the error
+        assert!(
+            element_index < tree_size,
+            "Index must be less or equal to the tree size"
+        );
 
         let peaks = find_peaks(tree_size);
 
@@ -183,21 +205,18 @@ where
         })
     }
 
-    pub fn get_proofs(
-        &self,
-        elements_ids: Vec<usize>,
-        options: ProofOptions,
-    ) -> Result<Vec<Proof>> {
+    fn get_proofs(&self, elements_ids: Vec<usize>, options: ProofOptions) -> Result<Vec<Proof>> {
         let element_count = self.elements_count.get();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
         for &element_id in &elements_ids {
-            if element_id < 1 {
-                return Err(anyhow!("Index must be greater than 1".to_string()));
-            }
-            if element_id > tree_size {
-                return Err(anyhow!("Index must be less than the tree size".to_string()));
-            }
+            // FIXME: If the error is correct this should be < not <=, either change this or the error
+            assert!(element_id >= 1, "Index must be greater than 1");
+            // FIXME: If the error is correct this should be < not <=, either change this or the error
+            assert!(
+                element_id <= tree_size,
+                "Index must be less than the tree size"
+            )
         }
 
         let peaks = find_peaks(tree_size);
@@ -247,7 +266,7 @@ where
         Ok(proofs)
     }
 
-    pub fn verify_proof(
+    fn verify_proof(
         &self,
         mut proof: Proof,
         element_value: String,
@@ -258,9 +277,12 @@ where
 
         let leaf_count = mmr_size_to_leaf_count(tree_size);
         let peaks_count = leaf_count_to_peaks_count(leaf_count);
-        if peaks_count as usize != proof.peaks_hashes.len() {
-            return Err(anyhow!("Invalid peaks count".to_string()));
-        }
+
+        assert_eq!(
+            peaks_count as usize,
+            proof.peaks_hashes.len(),
+            "Invalid peaks count"
+        );
 
         if let Some(formatting_opts) = options.formatting_opts {
             let proof_format_null_value = &formatting_opts.proof.null_value;
@@ -285,12 +307,10 @@ where
                 .truncate(proof.peaks_hashes.len() - peaks_null_values_count);
         }
         let element_index = proof.element_index;
-        if element_index == 0 {
-            return Err(anyhow!("Index must be greater than 0".to_string()));
-        }
-        if element_index > tree_size {
-            return Err(anyhow!("Index must be in the tree".to_string()));
-        }
+
+        assert_ne!(element_index, 0, "Index must be greater than 0");
+        assert!(element_index <= tree_size, "Index must be in the tree");
+
         let (peak_index, peak_height) = get_peak_info(tree_size, element_index);
         if proof.siblings_hashes.len() != peak_height {
             return Ok(false);
@@ -318,7 +338,7 @@ where
         Ok(peak_hashes[peak_index] == hash)
     }
 
-    pub fn retrieve_peaks_hashes(
+    fn retrieve_peaks_hashes(
         &self,
         peak_idxs: Vec<usize>,
         formatting_opts: Option<PeaksFormattingOptions>,
@@ -338,7 +358,7 @@ where
         }
     }
 
-    pub fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String> {
+    fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String> {
         let tree_size = elements_count.unwrap_or_else(|| self.elements_count.get());
         let peaks_idxs = find_peaks(tree_size);
 
@@ -363,7 +383,7 @@ where
         }
     }
 
-    pub fn calculate_root_hash(&self, bag: &str, leaf_count: usize) -> Result<String> {
+    fn calculate_root_hash(&self, bag: &str, leaf_count: usize) -> Result<String> {
         self.hasher
             .hash(vec![leaf_count.to_string(), bag.to_string()])
     }
