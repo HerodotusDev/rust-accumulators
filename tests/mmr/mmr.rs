@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use accumulators::{
     hasher::{stark_poseidon::StarkPoseidonHasher, Hasher},
     mmr::{
@@ -12,8 +14,9 @@ fn should_append_to_mmr() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
     store.init().expect("Failed to init store");
+    let store = Rc::new(store);
 
-    let mut mmr = MMR::new(store, hasher.clone(), None);
+    let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
 
     // Act
     // let mut mmr = CoreMMR::create_with_genesis(store, hasher.clone(), None).unwrap();
@@ -252,6 +255,8 @@ fn should_append_duplicate_to_mmr() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
     let _ = store.init();
+    let store = Rc::new(store);
+
     let mut mmr = MMR::new(store, hasher, None);
     let _ = mmr.append("4".to_string());
     let _ = mmr.append("4".to_string());
@@ -265,6 +270,7 @@ fn test_new() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
     let _ = store.init();
+    let store = Rc::new(store);
 
     // Act
     let core_mmr = MMR::create_with_genesis(store, hasher.clone(), None).unwrap();

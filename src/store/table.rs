@@ -38,6 +38,11 @@ pub type GetFullKeyAndStoreFn = fn(&InStoreTable, SubKey) -> (Rc<dyn Store>, Str
 pub type GetFullKeysAndStoresFn =
     fn(&InStoreTable, Vec<SubKey>) -> Vec<(Rc<dyn Store>, Vec<String>)>;
 
+pub struct SubMMR {
+    pub size: usize,
+    pub hashes: InStoreTable,
+}
+
 pub struct InStoreTable {
     /// Always use this store for setters
     ///
@@ -55,6 +60,8 @@ pub struct InStoreTable {
     ///
     /// The default implementation is to use the store and key provided by the InStoreTable
     pub get_full_keys_and_stores: GetFullKeysAndStoresFn,
+    #[cfg(feature = "infinitely_stackable_mmr")]
+    pub sub_mmrs: Option<Vec<SubMMR>>,
 }
 
 impl InStoreTable {
@@ -64,6 +71,8 @@ impl InStoreTable {
             key,
             get_full_key_and_store: Self::default_get_full_key_and_store,
             get_full_keys_and_stores: Self::default_get_full_keys_and_stores,
+            #[cfg(feature = "infinitely_stackable_mmr")]
+            sub_mmrs: None,
         }
     }
 

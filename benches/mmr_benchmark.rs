@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use accumulators::{
     hasher::stark_poseidon::StarkPoseidonHasher,
     mmr::{CoreMMR, MMR},
@@ -5,11 +7,12 @@ use accumulators::{
 };
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
-fn prepare_mmr(count: usize) -> MMR<SQLiteStore, StarkPoseidonHasher> {
+fn prepare_mmr(count: usize) -> MMR<StarkPoseidonHasher> {
     let hasher = StarkPoseidonHasher::new(Some(false));
 
     let store = SQLiteStore::new(":memory:").unwrap();
     store.init().expect("Failed to init store");
+    let store = Rc::new(store);
 
     let mut mmr = MMR::new(store, hasher.clone(), None);
 

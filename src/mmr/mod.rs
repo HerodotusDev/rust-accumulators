@@ -22,6 +22,7 @@ use self::{
     },
 };
 
+#[cfg(feature = "infinitely_stackable_mmr")]
 mod mmrs;
 #[cfg(feature = "infinitely_stackable_mmr")]
 pub use self::mmrs::infinitely_stackable;
@@ -45,12 +46,11 @@ pub trait CoreMMR {
     fn calculate_root_hash(&self, bag: &str, leaf_count: usize) -> Result<String>;
 }
 
-pub struct MMR<S, H>
+pub struct MMR<H>
 where
-    S: Store + ?Sized,
     H: Hasher,
 {
-    pub store: Rc<S>,
+    pub store: Rc<dyn Store>,
     pub hasher: H,
     pub mmr_id: String,
     pub leaves_count: InStoreCounter,
@@ -59,36 +59,56 @@ where
     pub root_hash: InStoreTable,
 }
 
-impl<S, H> MMR<S, H>
+impl<H> MMR<H>
 where
-    S: Store + 'static,
     H: Hasher,
 {
-    pub fn new(store: S, hasher: H, mmr_id: Option<String>) -> Self {
+    pub fn new(store: Rc<dyn Store>, hasher: H, mmr_id: Option<String>) -> Self {
         let mmr_id = mmr_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-        let leaves_count_key = format!("{}:{}", mmr_id, TreeMetadataKeys::LeafCount);
-        let elements_count_key = format!("{}:{}", mmr_id, TreeMetadataKeys::ElementCount);
-        let root_hash_key = format!("{}:{}", mmr_id, TreeMetadataKeys::RootHash);
-        let hashes_key = format!("{}:hashes:", mmr_id);
 
-        let store_rc = Rc::new(store);
-        let leaves_count = InStoreCounter::new(store_rc.clone(), leaves_count_key);
-        let elements_count = InStoreCounter::new(store_rc.clone(), elements_count_key);
-        let root_hash = InStoreTable::new(store_rc.clone(), root_hash_key);
-        let hashes = InStoreTable::new(store_rc.clone(), hashes_key);
+        let (leaves_count, elements_count, root_hash, hashes) =
+            MMR::<H>::get_stores(&mmr_id, store.clone());
 
         Self {
             leaves_count,
             elements_count,
             hashes,
             root_hash,
-            store: store_rc,
+            store,
             hasher,
             mmr_id,
         }
     }
 
-    pub fn create_with_genesis(store: S, hasher: H, mmr_id: Option<String>) -> Result<Self> {
+    pub fn get_store_keys(mmr_id: &str) -> (String, String, String, String) {
+        (
+            format!("{}:{}", mmr_id, TreeMetadataKeys::LeafCount),
+            format!("{}:{}", mmr_id, TreeMetadataKeys::ElementCount),
+            format!("{}:{}", mmr_id, TreeMetadataKeys::RootHash),
+            format!("{}:hashes:", mmr_id),
+        )
+    }
+
+    pub fn get_stores(
+        mmr_id: &str,
+        store_rc: Rc<dyn Store>,
+    ) -> (InStoreCounter, InStoreCounter, InStoreTable, InStoreTable) {
+        let (leaves_count_key, elements_count_key, root_hash_key, hashes_key) =
+            MMR::<H>::get_store_keys(mmr_id);
+
+        (
+            InStoreCounter::new(store_rc.clone(), leaves_count_key),
+            InStoreCounter::new(store_rc.clone(), elements_count_key),
+            InStoreTable::new(store_rc.clone(), root_hash_key),
+            InStoreTable::new(store_rc.clone(), hashes_key),
+        )
+    }
+
+    pub fn create_with_genesis(
+        store: Rc<dyn Store>,
+        hasher: H,
+        mmr_id: Option<String>,
+    ) -> Result<Self> {
         let mut mmr = MMR::new(store, hasher, mmr_id);
         let elements_count: usize = mmr.elements_count.get();
         assert_eq!(elements_count, 0, "Cannot call create_with_genesis on a non-empty MMR. Please provide an empty store or change the MMR id.");
@@ -98,9 +118,8 @@ where
     }
 }
 
-impl<S, H> CoreMMR for MMR<S, H>
+impl<H> CoreMMR for MMR<H>
 where
-    S: Store + ?Sized,
     H: Hasher,
 {
     fn append(&mut self, value: String) -> Result<AppendResult> {
