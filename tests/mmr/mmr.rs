@@ -4,7 +4,7 @@ use accumulators::{
         helpers::{AppendResult, Proof, ProofOptions},
         MMR,
     },
-    store::sqlite::SQLiteStore,
+    store::{sqlite::SQLiteStore, table::SubKey},
 };
 
 #[test]
@@ -272,7 +272,7 @@ fn test_new() {
     assert_eq!(
         core_mmr
             .root_hash
-            .get::<usize>(core_mmr.store.clone(), None)
+            .get(core_mmr.store.clone(), SubKey::None)
             .unwrap(),
         hasher
             .hash(vec!["1".to_string(), hasher.get_genesis()])

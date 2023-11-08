@@ -1,5 +1,8 @@
 use accumulators::store::{
-    counter::InStoreCounter, sqlite::SQLiteStore, table::InStoreTable, Store,
+    counter::InStoreCounter,
+    sqlite::SQLiteStore,
+    table::{InStoreTable, SubKey},
+    Store,
 };
 use std::{collections::HashMap, rc::Rc};
 
@@ -94,8 +97,8 @@ fn test_get_none_in_store_table() {
 
     // Create an in-store counter
     let table = InStoreTable::new("table".to_string());
-    table.set::<usize>(store.clone(), "value1", None);
-    let value = table.get::<usize>(store.clone(), None);
+    table.set(store.clone(), "value1", SubKey::None);
+    let value = table.get(store.clone(), SubKey::None);
     assert_eq!(value.unwrap(), "value1".to_string());
 }
 
@@ -111,12 +114,18 @@ fn test_get_many_none_in_store_table() {
     entries.insert("key1".to_string(), "value1".to_string());
     entries.insert("key2".to_string(), "value2".to_string());
     table.set_many(store.clone(), entries);
-    let value = table.get(store.clone(), Some("key1".to_string()));
+    let value = table.get(store.clone(), SubKey::String("key1".to_string()));
     assert_eq!(value.unwrap(), "value1".to_string());
-    let value = table.get(store.clone(), Some("key2".to_string()));
+    let value = table.get(store.clone(), SubKey::String("key2".to_string()));
     assert_eq!(value.unwrap(), "value2".to_string());
 
-    let values = table.get_many(store.clone(), vec!["key1".to_string(), "key2".to_string()]);
+    let values = table.get_many(
+        store.clone(),
+        vec![
+            SubKey::String("key1".to_string()),
+            SubKey::String("key2".to_string()),
+        ],
+    );
     assert_eq!(values.get("tablekey1"), Some(&"value1".to_string()));
     assert_eq!(values.get("tablekey2"), Some(&"value2".to_string()));
 }
@@ -129,7 +138,11 @@ fn test_get_some_in_store_table() {
 
     // Create an in-store counter
     let table = InStoreTable::new("table".to_string());
-    table.set(store.clone(), "value1", Some("suffix1".to_string()));
-    let value = table.get(store.clone(), Some("suffix1".to_string()));
+    table.set(
+        store.clone(),
+        "value1",
+        SubKey::String("suffix1".to_string()),
+    );
+    let value = table.get(store.clone(), SubKey::String("suffix1".to_string()));
     assert_eq!(value.unwrap(), "value1".to_string());
 }

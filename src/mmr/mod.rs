@@ -4,7 +4,11 @@ use std::rc::Rc;
 use uuid::Uuid;
 
 use crate::hasher::Hasher;
-use crate::store::{counter::InStoreCounter, table::InStoreTable, Store};
+use crate::store::{
+    counter::InStoreCounter,
+    table::{InStoreTable, SubKey},
+    Store,
+};
 
 pub mod formatting;
 pub mod helpers;
@@ -34,7 +38,6 @@ where
     pub elements_count: InStoreCounter,
     pub hashes: InStoreTable,
     pub root_hash: InStoreTable,
-    pub transform_subkey: Option<Box<dyn Fn(String) -> String>>,
 }
 
 impl<S, H> MMR<S, H>
@@ -63,7 +66,6 @@ where
             store: store_rc,
             hasher,
             mmr_id,
-            transform_subkey: None,
         }
     }
 
@@ -92,7 +94,7 @@ where
 
         //? Store the hash in the database
         self.hashes
-            .set(self.store.clone(), &value, Some(last_element_idx));
+            .set(self.store.clone(), &value, SubKey::Usize(last_element_idx));
 
         peaks.push(value);
 
@@ -106,8 +108,11 @@ where
 
             let parent_hash = self.hasher.hash(vec![left_hash, right_hash])?;
 
-            self.hashes
-                .set(self.store.clone(), &parent_hash, Some(last_element_idx));
+            self.hashes.set(
+                self.store.clone(),
+                &parent_hash,
+                SubKey::Usize(last_element_idx),
+            );
             peaks.push(parent_hash);
         }
 
@@ -119,7 +124,7 @@ where
         // Compute the new root hash
         let root_hash = self.calculate_root_hash(&bag, last_element_idx)?;
         self.root_hash
-            .set::<usize>(self.store.clone(), &root_hash, None);
+            .set(self.store.clone(), &root_hash, SubKey::None);
 
         let leaves = self.leaves_count.increment(self.store.clone())?;
 
@@ -155,7 +160,14 @@ where
             .map(|opts| opts.peaks.clone());
         let peaks_hashes = self.retrieve_peaks_hashes(peaks, formatting_opts).unwrap();
 
-        let siblings_hashes = self.hashes.get_many(self.store.clone(), siblings.clone());
+        let siblings_hashes = self.hashes.get_many(
+            self.store.clone(),
+            siblings
+                .clone()
+                .into_iter()
+                .map(SubKey::Usize)
+                .collect::<Vec<SubKey>>(),
+        );
 
         let mut siblings_hashes_vec: Vec<String> = siblings
             .iter()
@@ -169,7 +181,7 @@ where
 
         let element_hash = self
             .hashes
-            .get(self.store.clone(), Some(element_index.to_string()))
+            .get(self.store.clone(), SubKey::Usize(element_index))
             .unwrap();
 
         Ok(Proof {
@@ -199,32 +211,28 @@ where
         }
 
         let peaks = find_peaks(tree_size);
-        let mut siblings_per_element = HashMap::new();
+        let peaks_hashes = self.retrieve_peaks_hashes(peaks, None).unwrap();
 
+        let mut siblings_per_element = HashMap::new();
         for &element_id in &elements_ids {
             siblings_per_element.insert(element_id, find_siblings(element_id, tree_size).unwrap());
         }
-
-        let peaks_hashes = self.retrieve_peaks_hashes(peaks, None).unwrap();
         let sibling_hashes_to_get = array_deduplicate(
             siblings_per_element
                 .values()
                 .flat_map(|x| x.iter().cloned())
                 .collect(),
-        );
-
-        let sibling_hashes_to_get_str: Vec<String> = sibling_hashes_to_get
-            .iter()
-            .map(|x| x.to_string())
-            .collect();
-        let elements_ids_str: Vec<String> = elements_ids.iter().map(|&x| x.to_string()).collect();
-
+        )
+        .into_iter()
+        .map(SubKey::Usize)
+        .collect();
         let all_siblings_hashes = self
             .hashes
-            .get_many(self.store.clone(), sibling_hashes_to_get_str);
-        let element_hashes = self
-            .hashes
-            .get_many(self.store.clone(), elements_ids_str.clone());
+            .get_many(self.store.clone(), sibling_hashes_to_get);
+
+        let elements_ids_str: Vec<SubKey> =
+            elements_ids.iter().map(|&x| SubKey::Usize(x)).collect();
+        let element_hashes = self.hashes.get_many(self.store.clone(), elements_ids_str);
 
         let mut proofs: Vec<Proof> = Vec::new();
         for &element_id in &elements_ids {
@@ -327,7 +335,10 @@ where
         peak_idxs: Vec<usize>,
         formatting_opts: Option<PeaksFormattingOptions>,
     ) -> Result<Vec<String>> {
-        let hashes_result = self.hashes.get_many(self.store.clone(), peak_idxs.clone());
+        let hashes_result = self.hashes.get_many(
+            self.store.clone(),
+            peak_idxs.clone().into_iter().map(SubKey::Usize).collect(),
+        );
         // Assuming hashes_result is a HashMap<String, String>
         let hashes: Vec<String> = peak_idxs
             .iter()
