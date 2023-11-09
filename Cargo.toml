@@ -17,12 +17,17 @@ uuid = { version = "1.4.1", features = ["v4"] }               # UUID
 parking_lot = "0.12.1"                                        # Sync mutex
 num-bigint = "0.4.4"                                          # Bigints in hashers (TODO: double check if needed)
 num-traits = "0.2.17"                                         # Bigints in hashers (TODO: double check if needed)
+indexmap = "2.1.0"
 
 [dev-dependencies]
 criterion = { version = "0.4", features = ["html_reports"] }  # Benchmarking
 
 [[bench]]
 name = "mmr_benchmark"
+harness = false
+
+[[bench]]
+name = "incremental_benchmark"
 harness = false
 
 [features]
