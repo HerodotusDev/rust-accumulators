@@ -1,6 +1,9 @@
+use std::rc::Rc;
+
 use accumulators::{
-    hasher::stark_poseidon::StarkPoseidonHasher, merkle_tree::incremental::IncrementalMerkleTree,
-    store::sqlite::SQLiteStore,
+    hasher::stark_poseidon::StarkPoseidonHasher,
+    merkle_tree::incremental::IncrementalMerkleTree,
+    store::{sqlite::SQLiteStore, table::SubKey},
 };
 
 #[test]
@@ -8,6 +11,7 @@ fn initialize() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
     store.init().expect("Failed to init store");
+    let store = Rc::new(store);
 
     let tree = IncrementalMerkleTree::initialize(1024, "0x0".to_string(), hasher, store, None);
     assert_eq!(
@@ -21,14 +25,15 @@ fn get_path() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
     store.init().expect("Failed to init store");
+    let store = Rc::new(store);
     let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None);
 
     let path = tree.get_inclusion_proof(10).unwrap();
     let expected_nodes = vec![
-        "4:11".to_string(),
-        "3:4".to_string(),
-        "2:3".to_string(),
-        "1:0".to_string(),
+        SubKey::String("4:11".to_string()),
+        SubKey::String("3:4".to_string()),
+        SubKey::String("2:3".to_string()),
+        SubKey::String("1:0".to_string()),
     ];
 
     let expected_path: Vec<String> = expected_nodes
@@ -48,6 +53,7 @@ fn verify_proof() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
     store.init().expect("Failed to init store");
+    let store = Rc::new(store);
     let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None);
 
     let path = tree.get_inclusion_proof(10).unwrap();
@@ -63,6 +69,7 @@ fn update() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
     store.init().expect("Failed to init store");
+    let store = Rc::new(store);
     let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None);
 
     let path = tree.get_inclusion_proof(7).unwrap();
@@ -89,6 +96,7 @@ fn invalid_update() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
     store.init().expect("Failed to init store");
+    let store = Rc::new(store);
     let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None);
     let path = tree.get_inclusion_proof(7).unwrap();
     let empty_root = tree.get_root();
@@ -102,6 +110,7 @@ fn generate_and_verify_multi_proof() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
     store.init().expect("Failed to init store");
+    let store = Rc::new(store);
 
     let tree_size = 64;
     let default_hash = "0x0".to_string();

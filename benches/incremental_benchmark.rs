@@ -1,14 +1,17 @@
+use std::rc::Rc;
+
 use accumulators::{
     hasher::stark_poseidon::StarkPoseidonHasher, merkle_tree::incremental::IncrementalMerkleTree,
     store::sqlite::SQLiteStore,
 };
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
-fn prepare_incremental(count: usize) -> IncrementalMerkleTree<SQLiteStore, StarkPoseidonHasher> {
+fn prepare_incremental(count: usize) -> IncrementalMerkleTree<StarkPoseidonHasher> {
     let hasher = StarkPoseidonHasher::new(Some(false));
 
     let store = SQLiteStore::new(":memory:").unwrap();
     store.init().expect("Failed to init store");
+    let store = Rc::new(store);
 
     IncrementalMerkleTree::initialize(count, "0x0".to_string(), hasher, store, None)
 }

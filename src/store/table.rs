@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use super::Store;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SubKey {
     String(String),
     Usize(usize),

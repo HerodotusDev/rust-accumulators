@@ -7,7 +7,10 @@ use uuid::Uuid;
 
 use crate::{
     hasher::Hasher,
-    store::{table::InStoreTable, Store},
+    store::{
+        table::{InStoreTable, SubKey},
+        Store,
+    },
 };
 
 #[derive(Debug)]
@@ -22,33 +25,37 @@ struct Node {
     depth: usize,
 }
 
-pub struct IncrementalMerkleTree<S, H> {
-    pub store: Rc<S>,
+pub struct IncrementalMerkleTree<H> {
+    pub store: Rc<dyn Store>,
     pub mmr_id: String,
-    pub nodes: InStoreTable<S>,
-    pub root_hash: InStoreTable<S>,
+    pub nodes: InStoreTable,
+    pub root_hash: InStoreTable,
     pub hasher: H,
     pub size: usize,
     pub null_value: String,
 }
 
-impl<S, H> IncrementalMerkleTree<S, H>
+impl<H> IncrementalMerkleTree<H>
 where
-    S: Store,
     H: Hasher,
 {
-    fn new(size: usize, null_value: String, hasher: H, store: S, mmr_id: Option<String>) -> Self {
+    fn new(
+        size: usize,
+        null_value: String,
+        hasher: H,
+        store: Rc<dyn Store>,
+        mmr_id: Option<String>,
+    ) -> Self {
         let mmr_id = mmr_id.unwrap_or_else(|| Uuid::new_v4().to_string());
 
         let root_hash_key = format!("{}:{:?}", mmr_id, TreeMetadataKeys::RootHash);
         let nodes_key = format!("{}:nodes:", mmr_id);
 
-        let store_rc = Rc::new(store);
-        let root_hash = InStoreTable::new(store_rc.clone(), root_hash_key);
-        let nodes = InStoreTable::new(store_rc.clone(), nodes_key);
+        let root_hash = InStoreTable::new(store.clone(), root_hash_key);
+        let nodes = InStoreTable::new(store.clone(), nodes_key);
 
         Self {
-            store: store_rc,
+            store,
             mmr_id,
             nodes,
             root_hash,
@@ -62,17 +69,17 @@ where
         size: usize,
         null_value: String,
         hasher: H,
-        store: S,
+        store: Rc<dyn Store>,
         mmr_id: Option<String>,
     ) -> Self {
         let tree = IncrementalMerkleTree::new(size, null_value, hasher, store, mmr_id);
         let nodes = tree.render_empty_tree();
-        let nodes_hashmap: HashMap<String, String> =
+        let nodes_hashmap: HashMap<SubKey, String> =
             nodes
                 .iter()
                 .flatten()
                 .fold(HashMap::new(), |mut acc, curr| {
-                    let key = format!("{}:{}", curr.depth, curr.index);
+                    let key = SubKey::String(format!("{}:{}", curr.depth, curr.index));
                     acc.insert(key, curr.hash.clone());
                     acc
                 });
@@ -80,12 +87,12 @@ where
         tree.nodes.set_many(nodes_hashmap);
 
         tree.root_hash
-            .set::<String>(&nodes[nodes.len() - 1][0].hash, None);
+            .set(&nodes[nodes.len() - 1][0].hash, SubKey::None);
         tree
     }
 
     pub fn get_root(&self) -> String {
-        self.root_hash.get::<String>(None).unwrap()
+        self.root_hash.get(SubKey::None).unwrap()
     }
 
     pub fn get_inclusion_proof(&self, index: usize) -> Result<Vec<String>> {
@@ -104,9 +111,9 @@ where
             required_nodes_by_height.push((i, neighbour));
         }
 
-        let kv_entries: Vec<String> = required_nodes_by_height
+        let kv_entries: Vec<SubKey> = required_nodes_by_height
             .iter()
-            .map(|(height, index)| format!("{}:{}", height, index))
+            .map(|(height, index)| SubKey::String(format!("{}:{}", height, index)))
             .collect();
 
         let nodes_hash_map = self.nodes.get_many(kv_entries);
@@ -138,7 +145,7 @@ where
             current_index /= 2;
         }
 
-        let root = self.root_hash.get::<String>(None).unwrap();
+        let root = self.root_hash.get(SubKey::None).unwrap();
         Ok(root == current_value)
     }
 
@@ -154,13 +161,13 @@ where
             bail!("Invalid proof");
         }
 
-        let mut kv_updates: HashMap<String, String> = HashMap::new();
+        let mut kv_updates: HashMap<SubKey, String> = HashMap::new();
         let mut current_index = index;
         let mut current_depth = self.get_tree_depth();
         let mut current_value = new_value;
 
         kv_updates.insert(
-            format!("{}:{}", current_depth, current_index),
+            SubKey::String(format!("{}:{}", current_depth, current_index)),
             current_value.clone(),
         );
         for p in proof {
@@ -182,13 +189,13 @@ where
                 break;
             }
             kv_updates.insert(
-                format!("{}:{}", current_depth, current_index),
+                SubKey::String(format!("{}:{}", current_depth, current_index)),
                 current_value.clone(),
             );
         }
 
         self.nodes.set_many(kv_updates);
-        self.root_hash.set::<String>(&current_value, None);
+        self.root_hash.set(&current_value, SubKey::None);
         Ok(current_value)
     }
 
@@ -240,11 +247,11 @@ where
             current_level = next_level;
         }
 
-        let kv_entries: Vec<String> = proof
+        let kv_entries: Vec<SubKey> = proof
             .iter()
             .filter_map(|(kv, &is_needed)| {
                 if is_needed {
-                    Some(kv.to_string())
+                    Some(SubKey::String(kv.to_string()))
                 } else {
                     None
                 }
@@ -255,7 +262,7 @@ where
 
         let mut nodes_values: Vec<String> = Vec::with_capacity(kv_entries.len());
         for kv in kv_entries {
-            if let Some(node) = nodes_hash_map.get(&kv) {
+            if let Some(node) = nodes_hash_map.get(&kv.to_string()) {
                 nodes_values.push(node.to_string());
             }
         }
@@ -269,7 +276,7 @@ where
         values: &mut Vec<String>,
         proof: &mut Vec<String>,
     ) -> bool {
-        let root = self.root_hash.get::<String>(None).unwrap();
+        let root = self.root_hash.get(SubKey::None).unwrap();
         let calculated_root = self
             .calculate_multiproof_root_hash(indexes, values, proof)
             .unwrap();
