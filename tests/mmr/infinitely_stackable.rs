@@ -99,7 +99,10 @@ fn should_stack_3_mmrs() {
     let mut mmr_3 =
         MMR::new_infinitely_stackable(store.clone(), hasher.clone(), None, sub_mmrs.clone());
     mmr_3.append("5".to_string()).expect("Failed to append");
-    let eg_for_proving = mmr_3.append("6".to_string()).expect("Failed to append");
+    let eg_for_proving_value = "6".to_string();
+    let eg_for_proving = mmr_3
+        .append(eg_for_proving_value.clone())
+        .expect("Failed to append");
 
     //? Add the new sub mmr
     sub_mmrs.push((mmr_3.elements_count.get(), mmr_3.get_metadata()));
@@ -133,25 +136,22 @@ fn should_stack_3_mmrs() {
 
     assert_eq!(mmr_4_root, ref_root);
 
+    let proof_options = ProofOptions {
+        elements_count: None,
+        formatting_opts: None,
+    };
+
     let ref_proof = ref_mmr
-        .get_proof(
-            ref_eg_for_proving.element_index,
-            ProofOptions {
-                elements_count: None,
-                formatting_opts: None,
-            },
-        )
+        .get_proof(ref_eg_for_proving.element_index, proof_options.clone())
         .expect("Failed to get proof");
 
     let mmr_4_proof = mmr_4
-        .get_proof(
-            eg_for_proving.element_index,
-            ProofOptions {
-                elements_count: None,
-                formatting_opts: None,
-            },
-        )
+        .get_proof(eg_for_proving.element_index, proof_options.clone())
         .expect("Failed to get proof");
 
     assert_eq!(ref_proof, mmr_4_proof);
+
+    assert!(mmr_4
+        .verify_proof(mmr_4_proof, eg_for_proving_value, proof_options.clone())
+        .unwrap());
 }

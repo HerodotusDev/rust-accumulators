@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{collections::HashMap, rc::Rc};
 
 use crate::{
     hasher::Hasher,
@@ -93,7 +93,8 @@ where
             key: table.key.clone(),
             store: table.store.clone(),
         };
-        let mut stores_and_keys: Vec<(SubMMR, Vec<String>)> = vec![];
+
+        let mut stores_and_keys: HashMap<usize, (SubMMR, Vec<String>)> = HashMap::new();
         for sub_key in sub_keys.iter() {
             let element_index = match sub_key {
                 SubKey::Usize(element_index) => element_index,
@@ -101,60 +102,36 @@ where
                 _ => return table.default_get_stores_and_full_keys(sub_keys),
             };
 
-            //? Remove the last element from stores_and_keys
-            let last = match stores_and_keys.pop() {
-                Some(last) => {
-                    if element_index <= &last.0.size {
-                        Some(last)
-                    } else {
-                        //? If its the wrong mmr, we need to push it back
-                        stores_and_keys.push(last);
-                        None
+            let mut use_mmr: Option<SubMMR> = None;
+            for sub_mmr in table.sub_mmrs.as_ref().unwrap().iter() {
+                println!(
+                    "🔥 sub mmr {:?} <= {:?}, use mmr: {:?}",
+                    element_index,
+                    sub_mmr.size,
+                    match use_mmr {
+                        Some(ref mmr) => mmr.size,
+                        None => 0,
                     }
+                );
+
+                if *element_index <= sub_mmr.size {
+                    use_mmr = Some(sub_mmr.clone());
+                    break;
                 }
-                None => None,
-            };
+            }
 
-            //? If we found the right sub MMR, we can just push the sub key to it
-            //? Else we need to find the right sub MMR
-            let mut last = match last {
-                Some(last) => last,
-                None => {
-                    let mut use_mmr: Option<SubMMR> = None;
-                    for sub_mmr in table.sub_mmrs.as_ref().unwrap().iter() {
-                        println!(
-                            "🔥 sub mmr {:?} <= {:?}, use mmr: {:?}",
-                            element_index,
-                            sub_mmr.size,
-                            match use_mmr {
-                                Some(ref mmr) => mmr.size,
-                                None => 0,
-                            }
-                        );
+            let use_mmr = use_mmr.unwrap_or(this_mmr.clone());
+            let full_key = InStoreTable::get_full_key(&use_mmr.key, &sub_key.to_string());
 
-                        if *element_index <= sub_mmr.size {
-                            use_mmr = Some(sub_mmr.clone());
-                            break;
-                        }
-                    }
-                    (use_mmr.unwrap_or(this_mmr.clone()), vec![])
-                }
-            };
-
-            println!("😁 {:?} {:?} {:?}", sub_key, last.0.size, last.1);
-
-            last.1.push(InStoreTable::get_full_key(
-                &last.0.key,
-                &sub_key.to_string(),
-            ));
-
-            //? Push the last element back/or push the new one if its new
-            stores_and_keys.push(last);
+            stores_and_keys
+                .entry(use_mmr.size)
+                .and_modify(|(_, keys)| keys.push(full_key.clone()))
+                .or_insert((use_mmr, vec![full_key]));
         }
 
         stores_and_keys
             .into_iter()
-            .map(|(sub_mmr, keys)| (sub_mmr.store.clone(), keys))
+            .map(|(_, (sub_mmr, keys))| (sub_mmr.store.clone(), keys))
             .collect()
     }
 }
