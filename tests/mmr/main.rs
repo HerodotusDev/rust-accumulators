@@ -1,3 +1,3 @@
 mod helpers;
-mod infinitely_stackable;
 mod mmr;
+mod stacked;

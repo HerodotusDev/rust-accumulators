@@ -15,11 +15,11 @@ use crate::{
 /// A tuple of the size at which the MMR is stacked and the MMR itself.
 pub type SizesToMMRs<H> = Vec<(usize, MmrMetadata<H>)>;
 
-pub trait InfinitelyStackableMMR<H>
+pub trait StackedMMR<H>
 where
     H: Hasher + Clone,
 {
-    fn new_infinitely_stackable(
+    fn new_stacked(
         store: Rc<dyn Store>,
         hasher: H,
         mmr_id: Option<String>,
@@ -136,11 +136,11 @@ where
     }
 }
 
-impl<H> InfinitelyStackableMMR<H> for MMR<H>
+impl<H> StackedMMR<H> for MMR<H>
 where
     H: Hasher + Clone,
 {
-    fn new_infinitely_stackable(
+    fn new_stacked(
         store: Rc<dyn Store>,
         hasher: H,
         mmr_id: Option<String>,

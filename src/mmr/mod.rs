@@ -23,10 +23,10 @@ use self::{
     },
 };
 
-#[cfg(feature = "infinitely_stackable_mmr")]
+#[cfg(feature = "stacked_mmr")]
 mod mmrs;
-#[cfg(feature = "infinitely_stackable_mmr")]
-pub use self::mmrs::infinitely_stackable;
+#[cfg(feature = "stacked_mmr")]
+pub use self::mmrs::stacked;
 
 pub trait CoreMMR {
     fn append(&mut self, value: String) -> Result<AppendResult>;

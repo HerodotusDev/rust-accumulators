@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use accumulators::{
     hasher::stark_poseidon::StarkPoseidonHasher,
-    mmr::{helpers::ProofOptions, infinitely_stackable::InfinitelyStackableMMR, CoreMMR, MMR},
+    mmr::{helpers::ProofOptions, stacked::StackedMMR, CoreMMR, MMR},
     store::sqlite::SQLiteStore,
 };
 
@@ -33,7 +33,7 @@ fn should_stack_two_mmrs() {
         .expect("Failed to calculate root hash");
     assert_eq!(root_2, append_2.root_hash);
 
-    let mut i_s_mmr = MMR::new_infinitely_stackable(
+    let mut i_s_mmr = MMR::new_stacked(
         store.clone(),
         hasher.clone(),
         Some("is".to_string()),
@@ -84,8 +84,7 @@ fn should_stack_3_mmrs() {
         sub_mmrs.iter().map(|(a, _)| a).collect::<Vec<_>>()
     );
     //? Another mmr
-    let mut mmr_2 =
-        MMR::new_infinitely_stackable(store.clone(), hasher.clone(), None, sub_mmrs.clone());
+    let mut mmr_2 = MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone());
     mmr_2.append("3".to_string()).expect("Failed to append");
     mmr_2.append("4".to_string()).expect("Failed to append");
 
@@ -96,8 +95,7 @@ fn should_stack_3_mmrs() {
         sub_mmrs.iter().map(|(a, _)| a).collect::<Vec<_>>()
     );
     //? Another mmr
-    let mut mmr_3 =
-        MMR::new_infinitely_stackable(store.clone(), hasher.clone(), None, sub_mmrs.clone());
+    let mut mmr_3 = MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone());
     mmr_3.append("5".to_string()).expect("Failed to append");
     let eg_for_proving_value = "6".to_string();
     let eg_for_proving = mmr_3
@@ -107,8 +105,7 @@ fn should_stack_3_mmrs() {
     //? Add the new sub mmr
     sub_mmrs.push((mmr_3.elements_count.get(), mmr_3.get_metadata()));
     //? Another mmr
-    let mut mmr_4 =
-        MMR::new_infinitely_stackable(store.clone(), hasher.clone(), None, sub_mmrs.clone());
+    let mut mmr_4 = MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone());
     mmr_4.append("7".to_string()).expect("Failed to append");
     mmr_4.append("8".to_string()).expect("Failed to append");
 
