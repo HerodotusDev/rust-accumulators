@@ -40,11 +40,14 @@ pub type GetFullKeysAndStoresFn =
     fn(&InStoreTable, Vec<SubKey>) -> Vec<(Rc<dyn Store>, Vec<String>)>;
 
 #[cfg(feature = "infinitely_stackable_mmr")]
+#[derive(Clone)]
 pub struct SubMMR {
     pub size: usize,
-    pub hashes: InStoreTable,
+    pub key: String,
+    pub store: Rc<dyn Store>,
 }
 
+#[derive(Clone)]
 pub struct InStoreTable {
     /// Always use this store for setters
     ///
@@ -57,11 +60,11 @@ pub struct InStoreTable {
     /// This function is used to get the full key and store for a given sub_key
     ///
     /// The default implementation is to use the store and key provided by the InStoreTable
-    pub get_full_key_and_store: GetFullKeyAndStoreFn,
+    pub get_store_and_full_key: GetFullKeyAndStoreFn,
     /// This function is used to get the full keys and stores for a given list of sub_keys
     ///
     /// The default implementation is to use the store and key provided by the InStoreTable
-    pub get_full_keys_and_stores: GetFullKeysAndStoresFn,
+    pub get_stores_and_full_keys: GetFullKeysAndStoresFn,
     #[cfg(feature = "infinitely_stackable_mmr")]
     pub sub_mmrs: Option<Vec<SubMMR>>,
 }
@@ -71,8 +74,8 @@ impl InStoreTable {
         Self {
             store,
             key,
-            get_full_key_and_store: Self::default_get_full_key_and_store,
-            get_full_keys_and_stores: Self::default_get_full_keys_and_stores,
+            get_store_and_full_key: Self::default_get_store_and_full_key,
+            get_stores_and_full_keys: Self::default_get_stores_and_full_keys,
             #[cfg(feature = "infinitely_stackable_mmr")]
             sub_mmrs: None,
         }
@@ -82,7 +85,7 @@ impl InStoreTable {
         format!("{}{}", key, sub_key)
     }
 
-    pub fn default_get_full_key_and_store(&self, sub_key: SubKey) -> (Rc<dyn Store>, String) {
+    pub fn default_get_store_and_full_key(&self, sub_key: SubKey) -> (Rc<dyn Store>, String) {
         let new_sub_key = sub_key.to_string();
         (
             self.store.clone(),
@@ -90,7 +93,7 @@ impl InStoreTable {
         )
     }
 
-    pub fn default_get_full_keys_and_stores(
+    pub fn default_get_stores_and_full_keys(
         &self,
         sub_keys: Vec<SubKey>,
     ) -> Vec<(Rc<dyn Store>, Vec<String>)> {
@@ -102,13 +105,23 @@ impl InStoreTable {
     }
 
     pub fn get(&self, sub_key: SubKey) -> Option<String> {
-        let (store, full_key) = (self.get_full_key_and_store)(self, sub_key);
+        let (store, full_key) = (self.get_store_and_full_key)(self, sub_key);
         store.get(&full_key).unwrap_or_default()
     }
 
     pub fn get_many(&self, sub_keyes: Vec<SubKey>) -> HashMap<String, String> {
         let requested_len = sub_keyes.len();
-        let stores_and_keys = (self.get_full_keys_and_stores)(self, sub_keyes);
+        println!("🔥 sub keyes {:?}", sub_keyes);
+
+        let stores_and_keys = (self.get_stores_and_full_keys)(self, sub_keyes);
+
+        println!(
+            "🔥 stores and keys {:?}",
+            stores_and_keys
+                .iter()
+                .map(|(_, keys)| keys)
+                .collect::<Vec<&Vec<String>>>(),
+        );
 
         let mut keyless = HashMap::new();
 
@@ -116,6 +129,7 @@ impl InStoreTable {
             let (store, keys) = store_and_keys;
             let keys_ref: Vec<&str> = keys.iter().map(AsRef::as_ref).collect();
             let fetched = store.get_many(keys_ref).unwrap_or_default(); // Assuming get_many is async and returns a Result
+            println!("🔥 fetched {:?}", fetched);
 
             for (key, value) in fetched.iter() {
                 let new_key: String = if key.contains(':') {
@@ -127,12 +141,19 @@ impl InStoreTable {
             }
         }
 
-        assert!(keyless.len() == requested_len, "Some keys were not found");
+        assert_eq!(
+            keyless.len(),
+            requested_len,
+            "Some keys were not found {:?}",
+            keyless
+        );
         keyless
     }
 
     pub fn set(&self, value: &str, sub_key: SubKey) {
-        let (store, key) = (self.get_full_key_and_store)(self, sub_key);
+        let (store, key) = (self.get_store_and_full_key)(self, sub_key);
+
+        println!("🔥 SET key {:?} value {:?}", key, value);
 
         store.set(&key, value).expect("Failed to set value")
     }
@@ -144,6 +165,8 @@ impl InStoreTable {
             let full_key = InStoreTable::get_full_key(&self.key, &key.to_string());
             store_entries.insert(full_key, value.clone());
         }
+
+        println!("🔥 SET MANY {:?}", store_entries);
 
         self.store
             .set_many(store_entries)

@@ -44,7 +44,7 @@ pub trait CoreMMR {
         formatting_opts: Option<PeaksFormattingOptions>,
     ) -> Result<Vec<String>>;
     fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String>;
-    fn calculate_root_hash(&self, bag: &str, leaf_count: usize) -> Result<String>;
+    fn calculate_root_hash(&self, bag: &str, elements_count: usize) -> Result<String>;
 }
 
 pub struct MMR<H>
@@ -60,9 +60,15 @@ where
     pub root_hash: InStoreTable,
 }
 
+pub struct MmrMetadata<H> {
+    pub mmr_id: String,
+    pub store: Rc<dyn Store>,
+    pub hasher: H,
+}
+
 impl<H> MMR<H>
 where
-    H: Hasher,
+    H: Hasher + Clone,
 {
     pub fn new(store: Rc<dyn Store>, hasher: H, mmr_id: Option<String>) -> Self {
         let mmr_id = mmr_id.unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -78,6 +84,14 @@ where
             store,
             hasher,
             mmr_id,
+        }
+    }
+
+    pub fn get_metadata(&self) -> MmrMetadata<H> {
+        MmrMetadata {
+            mmr_id: self.mmr_id.clone(),
+            store: self.store.clone(),
+            hasher: self.hasher.clone(),
         }
     }
 
@@ -410,8 +424,8 @@ where
         }
     }
 
-    fn calculate_root_hash(&self, bag: &str, leaf_count: usize) -> Result<String> {
+    fn calculate_root_hash(&self, bag: &str, elements_count: usize) -> Result<String> {
         self.hasher
-            .hash(vec![leaf_count.to_string(), bag.to_string()])
+            .hash(vec![elements_count.to_string(), bag.to_string()])
     }
 }

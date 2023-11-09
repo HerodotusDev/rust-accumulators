@@ -4,7 +4,7 @@ use crate::{
     hasher::Hasher,
     mmr::{
         helpers::{elements_count_to_leaf_count, TreeMetadataKeys},
-        MMR,
+        MmrMetadata, MMR,
     },
     store::{
         table::{InStoreTable, SubKey, SubMMR},
@@ -12,18 +12,12 @@ use crate::{
     },
 };
 
-pub struct MmrMetadata<H> {
-    pub mmr_id: String,
-    pub store: Rc<dyn Store>,
-    pub hasher: H,
-}
-
 /// A tuple of the size at which the MMR is stacked and the MMR itself.
 pub type SizesToMMRs<H> = Vec<(usize, MmrMetadata<H>)>;
 
 pub trait InfinitelyStackableMMR<H>
 where
-    H: Hasher,
+    H: Hasher + Clone,
 {
     fn new_infinitely_stackable(
         store: Rc<dyn Store>,
@@ -33,61 +27,129 @@ where
     ) -> Self;
 }
 
-// TODO below
-#[allow(unused)]
 impl<H> MMR<H>
 where
-    H: Hasher,
+    H: Hasher + Clone,
 {
-    fn get_full_key_and_store(table: &InStoreTable, sub_key: SubKey) -> (Rc<dyn Store>, String) {
-        let (mmr_id, key) =
-            MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
+    fn get_store_and_full_key(table: &InStoreTable, sub_key: SubKey) -> (Rc<dyn Store>, String) {
+        let (_, key) = MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
 
         match key {
             TreeMetadataKeys::Hashes => {}
             //? If the key is not hashes, we don't need to do anything
-            _ => return table.default_get_full_key_and_store(sub_key),
+            _ => return table.default_get_store_and_full_key(sub_key),
         }
 
         let element_index = match sub_key {
             SubKey::Usize(element_index) => element_index,
             //? If the sub_key is not an element index, we don't need to do anything
-            _ => return table.default_get_full_key_and_store(sub_key),
+            _ => return table.default_get_store_and_full_key(sub_key),
         };
 
-        let mut sub_mmrs = table
+        let sub_mmrs = table
             .sub_mmrs
             .as_ref()
             .expect("Sub MMRs are not set")
             .iter();
 
+        let this_mmr = SubMMR {
+            size: usize::MAX,
+            store: table.store.clone(),
+            key: table.key.clone(),
+        };
         let mut use_mmr = None;
+
         for sub_mmr in sub_mmrs {
-            // TODO check if it shouldn't be >=
-            if element_index > sub_mmr.size {
+            if element_index < sub_mmr.size {
+                use_mmr = Some(sub_mmr);
+            } else {
                 break;
             }
-            use_mmr = Some(sub_mmr);
         }
 
+        let use_mmr = use_mmr.unwrap_or(&this_mmr);
+
         (
-            use_mmr.unwrap().hashes.store.clone(),
-            InStoreTable::get_full_key(&use_mmr.unwrap().hashes.key, &sub_key.to_string()),
+            use_mmr.store.clone(),
+            InStoreTable::get_full_key(&use_mmr.key, &sub_key.to_string()),
         )
     }
 
-    fn get_full_keys_and_stores(
+    fn get_stores_and_full_keys(
         table: &InStoreTable,
         sub_keys: Vec<SubKey>,
     ) -> Vec<(Rc<dyn Store>, Vec<String>)> {
-        println!("{:?}", sub_keys);
-        panic!("Not implemented")
+        let (_, key) = MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
+
+        match key {
+            TreeMetadataKeys::Hashes => {}
+            //? If the key is not hashes, we don't need to do anything
+            _ => return table.default_get_stores_and_full_keys(sub_keys),
+        }
+
+        let this_mmr = SubMMR {
+            size: usize::MAX,
+            key: table.key.clone(),
+            store: table.store.clone(),
+        };
+        let mut stores_and_keys: Vec<(SubMMR, Vec<String>)> = vec![];
+        for sub_key in sub_keys.iter() {
+            let element_index = match sub_key {
+                SubKey::Usize(element_index) => element_index,
+                //? If the sub_key is not an element index, we don't need to do anything
+                _ => return table.default_get_stores_and_full_keys(sub_keys),
+            };
+
+            //? Remove the last element from stores_and_keys
+            let last = match stores_and_keys.pop() {
+                Some(last) => {
+                    if element_index <= &last.0.size {
+                        Some(last)
+                    } else {
+                        //? If its the wrong mmr, we need to push it back
+                        stores_and_keys.push(last);
+                        None
+                    }
+                }
+                None => None,
+            };
+
+            //? If we found the right sub MMR, we can just push the sub key to it
+            //? Else we need to find the right sub MMR
+            let mut last = match last {
+                Some(last) => last,
+                None => {
+                    let mut use_mmr = None;
+                    for sub_mmr in table.sub_mmrs.as_ref().unwrap().iter() {
+                        if element_index <= &sub_mmr.size {
+                            use_mmr = Some(sub_mmr.clone());
+                        } else {
+                            break;
+                        }
+                    }
+                    (use_mmr.unwrap_or(this_mmr.clone()), vec![])
+                }
+            };
+
+            last.1.push(InStoreTable::get_full_key(
+                &last.0.key,
+                &sub_key.to_string(),
+            ));
+
+            //? Push the last element back/or push the new one if its new
+            stores_and_keys.push(last);
+        }
+
+        stores_and_keys
+            .into_iter()
+            .map(|(sub_mmr, keys)| (sub_mmr.store.clone(), keys))
+            .collect()
     }
 }
 
 impl<H> InfinitelyStackableMMR<H> for MMR<H>
 where
-    H: Hasher,
+    H: Hasher + Clone,
 {
     fn new_infinitely_stackable(
         store: Rc<dyn Store>,
@@ -105,7 +167,8 @@ where
 
             sub_mmrs.push(SubMMR {
                 size,
-                hashes: hashes_table,
+                store: mmr_metadata.store.clone(),
+                key: hashes_table.key.clone(),
             });
 
             //? Last sub MMR gets special treatment
@@ -132,8 +195,8 @@ where
                 .expect("Could not set leaves count");
         }
 
-        mmr.hashes.get_full_key_and_store = MMR::<H>::get_full_key_and_store;
-        mmr.hashes.get_full_keys_and_stores = MMR::<H>::get_full_keys_and_stores;
+        mmr.hashes.get_store_and_full_key = MMR::<H>::get_store_and_full_key;
+        mmr.hashes.get_stores_and_full_keys = MMR::<H>::get_stores_and_full_keys;
         mmr.hashes.sub_mmrs = Some(sub_mmrs);
 
         mmr
