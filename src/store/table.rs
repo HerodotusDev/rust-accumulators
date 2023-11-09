@@ -109,11 +109,11 @@ impl InStoreTable {
         store.get(&full_key).unwrap_or_default()
     }
 
-    pub fn get_many(&self, sub_keyes: Vec<SubKey>) -> HashMap<String, String> {
-        let requested_len = sub_keyes.len();
-        println!("🔥 sub keyes {:?}", sub_keyes);
+    pub fn get_many(&self, sub_keys: Vec<SubKey>) -> HashMap<String, String> {
+        let requested_len = sub_keys.len();
+        println!("🔥 sub keys 1 {:?}", sub_keys);
 
-        let stores_and_keys = (self.get_stores_and_full_keys)(self, sub_keyes);
+        let stores_and_keys = (self.get_stores_and_full_keys)(self, sub_keys);
 
         println!(
             "🔥 stores and keys {:?}",

@@ -62,7 +62,6 @@ where
         for sub_mmr in sub_mmrs {
             if element_index < sub_mmr.size {
                 use_mmr = Some(sub_mmr);
-            } else {
                 break;
             }
         }
@@ -80,6 +79,8 @@ where
         sub_keys: Vec<SubKey>,
     ) -> Vec<(Rc<dyn Store>, Vec<String>)> {
         let (_, key) = MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
+
+        println!("🔥 sub keys {:?}", sub_keys);
 
         match key {
             TreeMetadataKeys::Hashes => {}
@@ -119,17 +120,28 @@ where
             let mut last = match last {
                 Some(last) => last,
                 None => {
-                    let mut use_mmr = None;
+                    let mut use_mmr: Option<SubMMR> = None;
                     for sub_mmr in table.sub_mmrs.as_ref().unwrap().iter() {
-                        if element_index <= &sub_mmr.size {
+                        println!(
+                            "🔥 sub mmr {:?} <= {:?}, use mmr: {:?}",
+                            element_index,
+                            sub_mmr.size,
+                            match use_mmr {
+                                Some(ref mmr) => mmr.size,
+                                None => 0,
+                            }
+                        );
+
+                        if *element_index <= sub_mmr.size {
                             use_mmr = Some(sub_mmr.clone());
-                        } else {
                             break;
                         }
                     }
                     (use_mmr.unwrap_or(this_mmr.clone()), vec![])
                 }
             };
+
+            println!("😁 {:?} {:?} {:?}", sub_key, last.0.size, last.1);
 
             last.1.push(InStoreTable::get_full_key(
                 &last.0.key,

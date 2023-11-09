@@ -2,12 +2,12 @@ use std::rc::Rc;
 
 use accumulators::{
     hasher::stark_poseidon::StarkPoseidonHasher,
-    mmr::{infinitely_stackable::InfinitelyStackableMMR, CoreMMR, MMR},
+    mmr::{helpers::ProofOptions, infinitely_stackable::InfinitelyStackableMMR, CoreMMR, MMR},
     store::sqlite::SQLiteStore,
 };
 
 #[test]
-fn should_append_to_mmr() {
+fn should_stack_two_mmrs() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
     store.init().expect("Failed to init store");
@@ -63,4 +63,95 @@ fn should_append_to_mmr() {
         .expect("Failed to calculate root hash");
 
     assert_eq!(root_3, i_s_root_3);
+}
+
+#[test]
+fn should_stack_3_mmrs() {
+    let store = SQLiteStore::new(":memory:").unwrap();
+    let hasher = StarkPoseidonHasher::new(Some(false));
+    store.init().expect("Failed to init store");
+    let store = Rc::new(store);
+
+    //? First MMR
+    let mut mmr_1 = MMR::new(store.clone(), hasher.clone(), None);
+    mmr_1.append("1".to_string()).expect("Failed to append");
+    mmr_1.append("2".to_string()).expect("Failed to append");
+
+    //? Start gathering sub mmrs
+    let mut sub_mmrs = vec![(mmr_1.elements_count.get(), mmr_1.get_metadata())];
+    println!(
+        "✅ Sub mmrs: {:?}",
+        sub_mmrs.iter().map(|(a, _)| a).collect::<Vec<_>>()
+    );
+    //? Another mmr
+    let mut mmr_2 =
+        MMR::new_infinitely_stackable(store.clone(), hasher.clone(), None, sub_mmrs.clone());
+    mmr_2.append("3".to_string()).expect("Failed to append");
+    mmr_2.append("4".to_string()).expect("Failed to append");
+
+    //? Add the new sub mmr
+    sub_mmrs.push((mmr_2.elements_count.get(), mmr_2.get_metadata()));
+    println!(
+        "✅ Sub mmrs: {:?}",
+        sub_mmrs.iter().map(|(a, _)| a).collect::<Vec<_>>()
+    );
+    //? Another mmr
+    let mut mmr_3 =
+        MMR::new_infinitely_stackable(store.clone(), hasher.clone(), None, sub_mmrs.clone());
+    mmr_3.append("5".to_string()).expect("Failed to append");
+    let eg_for_proving = mmr_3.append("6".to_string()).expect("Failed to append");
+
+    //? Add the new sub mmr
+    sub_mmrs.push((mmr_3.elements_count.get(), mmr_3.get_metadata()));
+    //? Another mmr
+    let mut mmr_4 =
+        MMR::new_infinitely_stackable(store.clone(), hasher.clone(), None, sub_mmrs.clone());
+    mmr_4.append("7".to_string()).expect("Failed to append");
+    mmr_4.append("8".to_string()).expect("Failed to append");
+
+    //? All MMRs are now stacked
+
+    assert_eq!(mmr_4.leaves_count.get(), 8);
+    let mmr_4_bag = mmr_4.bag_the_peaks(None).unwrap();
+    let mmr_4_root = mmr_4
+        .calculate_root_hash(&mmr_4_bag, mmr_4.elements_count.get())
+        .expect("Failed to calculate root hash");
+
+    let mut ref_mmr = MMR::new(store.clone(), hasher.clone(), None);
+    ref_mmr.append("1".to_string()).expect("Failed to append");
+    ref_mmr.append("2".to_string()).expect("Failed to append");
+    ref_mmr.append("3".to_string()).expect("Failed to append");
+    ref_mmr.append("4".to_string()).expect("Failed to append");
+    ref_mmr.append("5".to_string()).expect("Failed to append");
+    let ref_eg_for_proving = ref_mmr.append("6".to_string()).expect("Failed to append");
+    ref_mmr.append("7".to_string()).expect("Failed to append");
+    ref_mmr.append("8".to_string()).expect("Failed to append");
+    let ref_bag = ref_mmr.bag_the_peaks(None).unwrap();
+    let ref_root = ref_mmr
+        .calculate_root_hash(&ref_bag, ref_mmr.elements_count.get())
+        .expect("Failed to calculate root hash");
+
+    assert_eq!(mmr_4_root, ref_root);
+
+    let ref_proof = ref_mmr
+        .get_proof(
+            ref_eg_for_proving.element_index,
+            ProofOptions {
+                elements_count: None,
+                formatting_opts: None,
+            },
+        )
+        .expect("Failed to get proof");
+
+    let mmr_4_proof = mmr_4
+        .get_proof(
+            eg_for_proving.element_index,
+            ProofOptions {
+                elements_count: None,
+                formatting_opts: None,
+            },
+        )
+        .expect("Failed to get proof");
+
+    assert_eq!(ref_proof, mmr_4_proof);
 }

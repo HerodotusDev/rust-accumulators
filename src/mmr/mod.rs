@@ -60,6 +60,7 @@ where
     pub root_hash: InStoreTable,
 }
 
+#[derive(Clone)]
 pub struct MmrMetadata<H> {
     pub mmr_id: String,
     pub store: Rc<dyn Store>,
