@@ -111,25 +111,13 @@ impl InStoreTable {
 
     pub fn get_many(&self, sub_keys: Vec<SubKey>) -> HashMap<String, String> {
         let requested_len = sub_keys.len();
-        println!("🔥 sub keys 1 {:?}", sub_keys);
-
         let stores_and_keys = (self.get_stores_and_full_keys)(self, sub_keys);
 
-        println!(
-            "🔥 stores and keys {:?}",
-            stores_and_keys
-                .iter()
-                .map(|(_, keys)| keys)
-                .collect::<Vec<&Vec<String>>>(),
-        );
-
         let mut keyless = HashMap::new();
-
         for store_and_keys in stores_and_keys {
             let (store, keys) = store_and_keys;
             let keys_ref: Vec<&str> = keys.iter().map(AsRef::as_ref).collect();
             let fetched = store.get_many(keys_ref).unwrap_or_default(); // Assuming get_many is async and returns a Result
-            println!("🔥 fetched {:?}", fetched);
 
             for (key, value) in fetched.iter() {
                 let new_key: String = if key.contains(':') {
@@ -152,9 +140,6 @@ impl InStoreTable {
 
     pub fn set(&self, value: &str, sub_key: SubKey) {
         let (store, key) = (self.get_store_and_full_key)(self, sub_key);
-
-        println!("🔥 SET key {:?} value {:?}", key, value);
-
         store.set(&key, value).expect("Failed to set value")
     }
 
@@ -165,8 +150,6 @@ impl InStoreTable {
             let full_key = InStoreTable::get_full_key(&self.key, &key.to_string());
             store_entries.insert(full_key, value.clone());
         }
-
-        println!("🔥 SET MANY {:?}", store_entries);
 
         self.store
             .set_many(store_entries)

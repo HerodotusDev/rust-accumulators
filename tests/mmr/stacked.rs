@@ -79,10 +79,7 @@ fn should_stack_4_mmrs() {
 
     //? Start gathering sub mmrs
     let mut sub_mmrs = vec![(mmr_1.elements_count.get(), mmr_1.get_metadata())];
-    println!(
-        "✅ Sub mmrs: {:?}",
-        sub_mmrs.iter().map(|(a, _)| a).collect::<Vec<_>>()
-    );
+
     //? Another mmr
     let mut mmr_2 = MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone());
     mmr_2.append("3".to_string()).expect("Failed to append");
@@ -90,10 +87,7 @@ fn should_stack_4_mmrs() {
 
     //? Add the new sub mmr
     sub_mmrs.push((mmr_2.elements_count.get(), mmr_2.get_metadata()));
-    println!(
-        "✅ Sub mmrs: {:?}",
-        sub_mmrs.iter().map(|(a, _)| a).collect::<Vec<_>>()
-    );
+
     //? Another mmr
     let mut mmr_3 = MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone());
     mmr_3.append("5".to_string()).expect("Failed to append");

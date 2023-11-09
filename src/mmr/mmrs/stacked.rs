@@ -80,8 +80,6 @@ where
     ) -> Vec<(Rc<dyn Store>, Vec<String>)> {
         let (_, key) = MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
 
-        println!("🔥 sub keys {:?}", sub_keys);
-
         match key {
             TreeMetadataKeys::Hashes => {}
             //? If the key is not hashes, we don't need to do anything
@@ -104,16 +102,6 @@ where
 
             let mut use_mmr: Option<SubMMR> = None;
             for sub_mmr in table.sub_mmrs.as_ref().unwrap().iter() {
-                println!(
-                    "🔥 sub mmr {:?} <= {:?}, use mmr: {:?}",
-                    element_index,
-                    sub_mmr.size,
-                    match use_mmr {
-                        Some(ref mmr) => mmr.size,
-                        None => 0,
-                    }
-                );
-
                 if *element_index <= sub_mmr.size {
                     use_mmr = Some(sub_mmr.clone());
                     break;
