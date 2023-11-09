@@ -1,9 +1,7 @@
 use std::rc::Rc;
 
 use accumulators::{
-    hasher::stark_poseidon::StarkPoseidonHasher,
-    mmr::{CoreMMR, MMR},
-    store::sqlite::SQLiteStore,
+    hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::sqlite::SQLiteStore,
 };
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 

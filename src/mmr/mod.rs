@@ -28,25 +28,6 @@ mod mmrs;
 #[cfg(feature = "stacked_mmr")]
 pub use self::mmrs::stacked;
 
-pub trait CoreMMR {
-    fn append(&mut self, value: String) -> Result<AppendResult>;
-    fn get_proof(&self, element_index: usize, options: ProofOptions) -> Result<Proof>;
-    fn get_proofs(&self, elements_ids: Vec<usize>, options: ProofOptions) -> Result<Vec<Proof>>;
-    fn verify_proof(
-        &self,
-        proof: Proof,
-        element_value: String,
-        options: ProofOptions,
-    ) -> Result<bool>;
-    fn retrieve_peaks_hashes(
-        &self,
-        peak_idxs: Vec<usize>,
-        formatting_opts: Option<PeaksFormattingOptions>,
-    ) -> Result<Vec<String>>;
-    fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String>;
-    fn calculate_root_hash(&self, bag: &str, elements_count: usize) -> Result<String>;
-}
-
 pub struct MMR<H>
 where
     H: Hasher,
@@ -139,13 +120,8 @@ where
         let _ = mmr.append(genesis);
         Ok(mmr)
     }
-}
 
-impl<H> CoreMMR for MMR<H>
-where
-    H: Hasher,
-{
-    fn append(&mut self, value: String) -> Result<AppendResult> {
+    pub fn append(&mut self, value: String) -> Result<AppendResult> {
         assert!(
             self.hasher.is_element_size_valid(&value),
             "Element size is too big to hash with this hasher"
@@ -196,7 +172,7 @@ where
         })
     }
 
-    fn get_proof(&self, element_index: usize, options: ProofOptions) -> Result<Proof> {
+    pub fn get_proof(&self, element_index: usize, options: ProofOptions) -> Result<Proof> {
         assert_ne!(element_index, 0, "Index must be greater than 0");
 
         let element_count = self.elements_count.get();
@@ -247,7 +223,11 @@ where
         })
     }
 
-    fn get_proofs(&self, elements_ids: Vec<usize>, options: ProofOptions) -> Result<Vec<Proof>> {
+    pub fn get_proofs(
+        &self,
+        elements_ids: Vec<usize>,
+        options: ProofOptions,
+    ) -> Result<Vec<Proof>> {
         let element_count = self.elements_count.get();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
@@ -308,7 +288,7 @@ where
         Ok(proofs)
     }
 
-    fn verify_proof(
+    pub fn verify_proof(
         &self,
         mut proof: Proof,
         element_value: String,
@@ -380,7 +360,7 @@ where
         Ok(peak_hashes[peak_index] == hash)
     }
 
-    fn retrieve_peaks_hashes(
+    pub fn retrieve_peaks_hashes(
         &self,
         peak_idxs: Vec<usize>,
         formatting_opts: Option<PeaksFormattingOptions>,
@@ -400,7 +380,7 @@ where
         }
     }
 
-    fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String> {
+    pub fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String> {
         let tree_size = elements_count.unwrap_or_else(|| self.elements_count.get());
         let peaks_idxs = find_peaks(tree_size);
 
@@ -425,7 +405,7 @@ where
         }
     }
 
-    fn calculate_root_hash(&self, bag: &str, elements_count: usize) -> Result<String> {
+    pub fn calculate_root_hash(&self, bag: &str, elements_count: usize) -> Result<String> {
         self.hasher
             .hash(vec![elements_count.to_string(), bag.to_string()])
     }

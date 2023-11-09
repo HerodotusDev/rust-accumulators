@@ -4,7 +4,7 @@ use accumulators::{
     hasher::{stark_poseidon::StarkPoseidonHasher, Hasher},
     mmr::{
         helpers::{AppendResult, Proof, ProofOptions},
-        CoreMMR, MMR,
+        MMR,
     },
     store::{sqlite::SQLiteStore, table::SubKey},
 };

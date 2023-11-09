@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use accumulators::{
     hasher::stark_poseidon::StarkPoseidonHasher,
-    mmr::{helpers::ProofOptions, stacked::StackedMMR, CoreMMR, MMR},
+    mmr::{helpers::ProofOptions, stacked::StackedMMR, MMR},
     store::sqlite::SQLiteStore,
 };
 
@@ -66,7 +66,7 @@ fn should_stack_two_mmrs() {
 }
 
 #[test]
-fn should_stack_3_mmrs() {
+fn should_stack_4_mmrs() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
     store.init().expect("Failed to init store");
