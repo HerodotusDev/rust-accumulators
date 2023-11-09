@@ -1,5 +1,8 @@
 use accumulators::store::{
-    counter::InStoreCounter, sqlite::SQLiteStore, table::InStoreTable, Store,
+    counter::InStoreCounter,
+    sqlite::SQLiteStore,
+    table::{InStoreTable, SubKey},
+    Store,
 };
 use std::{collections::HashMap, rc::Rc};
 
@@ -7,20 +10,19 @@ use std::{collections::HashMap, rc::Rc};
 fn set_and_get_value() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let _ = store.init();
-    store
-        .set(
-            "6b9b77f2-a893-48bf-a52a-d5be5d0aaba3:RootHash",
-            "0x049ee3eba8c1600700ee1b87eb599f16716b0b1022947733551fde4050ca6804",
-        )
-        .unwrap();
+
+    let key_value = (
+        "6b9b77f2-a893-48bf-a52a-d5be5d0aaba3:RootHash",
+        "0x049ee3eba8c1600700ee1b87eb599f16716b0b1022947733551fde4050ca6804",
+    );
+    store.set(key_value.0, key_value.1).unwrap();
+
     store.set("key", "value").unwrap();
     let value = store.get("key").unwrap();
     assert_eq!(value.unwrap(), "value");
-    let value1 = store.get("6b9b77f2-a893-48bf-a52a-d5be5d0aaba3:RootHash");
-    assert_eq!(
-        value1.unwrap(),
-        Some("0x049ee3eba8c1600700ee1b87eb599f16716b0b1022947733551fde4050ca6804".to_string())
-    );
+
+    let value1 = store.get(key_value.0);
+    assert_eq!(value1.unwrap(), Some(key_value.1.to_owned()));
 }
 
 #[test]
@@ -76,9 +78,10 @@ fn should_delete_a_value() {
 fn test_in_store_counter() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let _ = store.init();
+    let store = Rc::new(store);
 
     // Create an in-store counter
-    let counter = InStoreCounter::new(Rc::new(store), "counter".to_string());
+    let counter = InStoreCounter::new(store.clone(), "counter".to_string());
     let _ = counter.set(10);
     let value = counter.get();
     assert_eq!(value, 10);
@@ -90,11 +93,12 @@ fn test_in_store_counter() {
 fn test_get_none_in_store_table() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let _ = store.init();
+    let store = Rc::new(store);
 
     // Create an in-store counter
-    let table = InStoreTable::new(Rc::new(store), "table".to_string());
-    table.set::<usize>("value1", None);
-    let value = table.get::<usize>(None);
+    let table = InStoreTable::new(store.clone(), "table".to_string());
+    table.set("value1", SubKey::None);
+    let value = table.get(SubKey::None);
     assert_eq!(value.unwrap(), "value1".to_string());
 }
 
@@ -102,19 +106,23 @@ fn test_get_none_in_store_table() {
 fn test_get_many_none_in_store_table() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let _ = store.init();
+    let store = Rc::new(store);
 
     // Create an in-store counter
-    let table = InStoreTable::new(Rc::new(store), "table".to_string());
+    let table = InStoreTable::new(store.clone(), "table".to_string());
     let mut entries = HashMap::new();
-    entries.insert("key1".to_string(), "value1".to_string());
-    entries.insert("key2".to_string(), "value2".to_string());
+    entries.insert(SubKey::String("key1".to_string()), "value1".to_string());
+    entries.insert(SubKey::String("key2".to_string()), "value2".to_string());
     table.set_many(entries);
-    let value = table.get(Some("key1".to_string()));
+    let value = table.get(SubKey::String("key1".to_string()));
     assert_eq!(value.unwrap(), "value1".to_string());
-    let value = table.get(Some("key2".to_string()));
+    let value = table.get(SubKey::String("key2".to_string()));
     assert_eq!(value.unwrap(), "value2".to_string());
 
-    let values = table.get_many(vec!["key1".to_string(), "key2".to_string()]);
+    let values = table.get_many(vec![
+        SubKey::String("key1".to_string()),
+        SubKey::String("key2".to_string()),
+    ]);
     assert_eq!(values.get("tablekey1"), Some(&"value1".to_string()));
     assert_eq!(values.get("tablekey2"), Some(&"value2".to_string()));
 }
@@ -123,10 +131,11 @@ fn test_get_many_none_in_store_table() {
 fn test_get_some_in_store_table() {
     let store = SQLiteStore::new(":memory:").unwrap();
     let _ = store.init();
+    let store = Rc::new(store);
 
     // Create an in-store counter
-    let table = InStoreTable::new(Rc::new(store), "table".to_string());
-    table.set("value1", Some("suffix1".to_string()));
-    let value = table.get(Some("suffix1".to_string()));
+    let table = InStoreTable::new(store.clone(), "table".to_string());
+    table.set("value1", SubKey::String("suffix1".to_string()));
+    let value = table.get(SubKey::String("suffix1".to_string()));
     assert_eq!(value.unwrap(), "value1".to_string());
 }

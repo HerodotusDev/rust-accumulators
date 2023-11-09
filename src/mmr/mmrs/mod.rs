@@ -1,1 +1,1 @@
-pub mod infinitely_stackable;
+pub mod stacked;

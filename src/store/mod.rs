@@ -4,6 +4,7 @@ use std::collections::HashMap;
 pub mod counter;
 pub mod table;
 
+#[cfg(feature = "sqlite")]
 mod stores;
 #[cfg(feature = "sqlite")]
 pub use self::stores::sqlite;

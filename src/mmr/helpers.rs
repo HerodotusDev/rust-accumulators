@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashSet;
+use std::fmt::{Display, Formatter};
 use std::hash::Hash;
+use std::str::FromStr;
 
 use super::formatting::{PeaksFormattingOptions, ProofFormattingOptions};
 
@@ -27,6 +29,7 @@ pub struct Proof {
     pub elements_count: usize,
 }
 
+#[derive(Clone)]
 pub struct ProofOptions {
     pub elements_count: Option<usize>,
     pub formatting_opts: Option<FormattingOptionsBundle>,
@@ -37,6 +40,7 @@ pub struct PeaksOptions {
     pub formatting_opts: Option<PeaksFormattingOptions>,
 }
 
+#[derive(Clone)]
 pub struct FormattingOptionsBundle {
     pub proof: ProofFormattingOptions,
     pub peaks: PeaksFormattingOptions,
@@ -47,6 +51,32 @@ pub enum TreeMetadataKeys {
     LeafCount,
     ElementCount,
     RootHash,
+    Hashes,
+}
+
+impl FromStr for TreeMetadataKeys {
+    fn from_str(text: &str) -> Result<Self> {
+        match text {
+            "leaf_count" => Ok(TreeMetadataKeys::LeafCount),
+            "elements_count" => Ok(TreeMetadataKeys::ElementCount),
+            "root_hash" => Ok(TreeMetadataKeys::RootHash),
+            "hashes" => Ok(TreeMetadataKeys::Hashes),
+            _ => Err(anyhow!("Invalid tree metadata key")),
+        }
+    }
+
+    type Err = anyhow::Error;
+}
+
+impl Display for TreeMetadataKeys {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TreeMetadataKeys::LeafCount => write!(f, "leaf_count"),
+            TreeMetadataKeys::ElementCount => write!(f, "elements_count"),
+            TreeMetadataKeys::RootHash => write!(f, "root_hash"),
+            TreeMetadataKeys::Hashes => write!(f, "hashes"),
+        }
+    }
 }
 
 /// Append Result
