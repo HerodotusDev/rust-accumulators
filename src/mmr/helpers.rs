@@ -29,7 +29,7 @@ pub struct Proof {
     pub elements_count: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ProofOptions {
     pub elements_count: Option<usize>,
     pub formatting_opts: Option<FormattingOptionsBundle>,

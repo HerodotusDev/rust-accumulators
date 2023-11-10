@@ -27,6 +27,8 @@ where
     pub elements_count: InStoreCounter,
     pub hashes: InStoreTable,
     pub root_hash: InStoreTable,
+    #[cfg(feature = "stacked_mmr")]
+    pub sub_mmrs: SizesToMMRs<H>,
 }
 
 #[derive(Clone)]
@@ -35,6 +37,10 @@ pub struct MmrMetadata<H> {
     pub store: Rc<dyn Store>,
     pub hasher: H,
 }
+
+/// A tuple of the size at which the MMR is stacked and the MMR itself.
+#[cfg(feature = "stacked_mmr")]
+pub type SizesToMMRs<H> = Vec<(usize, MmrMetadata<H>)>;
 
 impl<H> MMR<H>
 where
@@ -54,6 +60,8 @@ where
             store,
             hasher,
             mmr_id,
+            #[cfg(feature = "stacked_mmr")]
+            sub_mmrs: Vec::new(),
         }
     }
 
@@ -74,11 +82,24 @@ where
         )
     }
 
-    pub fn decode_store_key(store_key: &str) -> Option<(String, TreeMetadataKeys)> {
+    pub fn decode_store_key(store_key: &str) -> Option<(String, TreeMetadataKeys, SubKey)> {
         let mut parts = store_key.split(':');
         let mmr_id = parts.next()?.to_string();
         let key = TreeMetadataKeys::from_str(parts.next()?).expect("Invalid tree metadata key");
-        Some((mmr_id, key))
+        let sub_key = match parts.next() {
+            Some(sub_key) => SubKey::String(sub_key.to_string()),
+            None => SubKey::None,
+        };
+
+        Some((mmr_id, key, sub_key))
+    }
+
+    pub fn encode_store_key(mmr_id: &str, key: TreeMetadataKeys, sub_key: SubKey) -> String {
+        let store_key = format!("{}:{}", mmr_id, key);
+        match sub_key {
+            SubKey::None => store_key,
+            _ => format!("{}:{}", store_key, sub_key.to_string()),
+        }
     }
 
     pub fn get_stores(
@@ -160,15 +181,15 @@ where
         })
     }
 
-    pub fn get_proof(&self, element_index: usize, options: ProofOptions) -> Result<Proof> {
+    pub fn get_proof(&self, element_index: usize, options: Option<ProofOptions>) -> Result<Proof> {
         assert_ne!(element_index, 0, "Index must be greater than 0");
 
+        let options = options.unwrap_or_default();
         let element_count = self.elements_count.get();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
-        // FIXME: If the error is correct this should be <= not <, either change this or the error
         assert!(
-            element_index < tree_size,
+            element_index <= tree_size,
             "Index must be less or equal to the tree size"
         );
 
@@ -213,19 +234,18 @@ where
 
     pub fn get_proofs(
         &self,
-        elements_ids: Vec<usize>,
-        options: ProofOptions,
+        elements_indexes: Vec<usize>,
+        options: Option<ProofOptions>,
     ) -> Result<Vec<Proof>> {
+        let options = options.unwrap_or_default();
         let element_count = self.elements_count.get();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
-        for &element_id in &elements_ids {
-            // FIXME: If the error is correct this should be < not <=, either change this or the error
-            assert!(element_id >= 1, "Index must be greater than 1");
-            // FIXME: If the error is correct this should be < not <=, either change this or the error
+        for &element_index in &elements_indexes {
+            assert_ne!(element_index, 0, "Index must be greater than 0");
             assert!(
-                element_id <= tree_size,
-                "Index must be less than the tree size"
+                element_index <= tree_size,
+                "Index must be less or equal to the tree size"
             )
         }
 
@@ -233,7 +253,7 @@ where
         let peaks_hashes = self.retrieve_peaks_hashes(peaks, None).unwrap();
 
         let mut siblings_per_element = HashMap::new();
-        for &element_id in &elements_ids {
+        for &element_id in &elements_indexes {
             siblings_per_element.insert(element_id, find_siblings(element_id, tree_size).unwrap());
         }
         let sibling_hashes_to_get = array_deduplicate(
@@ -248,11 +268,11 @@ where
         let all_siblings_hashes = self.hashes.get_many(sibling_hashes_to_get);
 
         let elements_ids_str: Vec<SubKey> =
-            elements_ids.iter().map(|&x| SubKey::Usize(x)).collect();
+            elements_indexes.iter().map(|&x| SubKey::Usize(x)).collect();
         let element_hashes = self.hashes.get_many(elements_ids_str);
 
         let mut proofs: Vec<Proof> = Vec::new();
-        for &element_id in &elements_ids {
+        for &element_id in &elements_indexes {
             let siblings = siblings_per_element.get(&element_id).unwrap();
             let mut siblings_hashes: Vec<String> = siblings
                 .iter()
@@ -280,8 +300,9 @@ where
         &self,
         mut proof: Proof,
         element_value: String,
-        options: ProofOptions,
+        options: Option<ProofOptions>,
     ) -> Result<bool> {
+        let options = options.unwrap_or_default();
         let element_count = self.elements_count.get();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
