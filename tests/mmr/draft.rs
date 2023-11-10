@@ -1,9 +1,7 @@
 use std::rc::Rc;
 
 use accumulators::{
-    hasher::stark_poseidon::StarkPoseidonHasher,
-    mmr::{ProofOptions, MMR},
-    store::memory::InMemoryStore,
+    hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::memory::InMemoryStore,
 };
 
 #[test]
@@ -78,23 +76,18 @@ fn should_apply() {
         .expect("Failed to calculate root hash");
     draft.commit();
 
-    println!("✅ store after {:?}", store.store);
-
     let bag = mmr.bag_the_peaks(None).unwrap();
     let root = mmr
         .calculate_root_hash(&bag, mmr.elements_count.get())
         .expect("Failed to calculate root hash");
     assert_eq!(draft_root, root);
 
-    let proof_options = ProofOptions {
-        elements_count: None,
-        formatting_opts: None,
-    };
+    mmr.append("10".to_string()).expect("Failed to append");
 
     let proof = mmr
-        .get_proof(eg_append.element_index, proof_options.clone())
+        .get_proof(eg_append.element_index, None)
         .expect("Failed to get proof");
     assert!(mmr
-        .verify_proof(proof, eg_value, proof_options)
+        .verify_proof(proof, eg_value, None)
         .expect("Failed to verify proof"));
 }

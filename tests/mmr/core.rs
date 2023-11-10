@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use accumulators::{
     hasher::{stark_poseidon::StarkPoseidonHasher, Hasher},
-    mmr::{AppendResult, Proof, ProofOptions, MMR},
+    mmr::{AppendResult, Proof, MMR},
     store::{memory::InMemoryStore, sqlite::SQLiteStore, SubKey},
 };
 
@@ -98,15 +98,7 @@ fn should_append_to_mmr() {
         "0x49da356656c3153d59f9be39143daebfc12e05b6a93ab4ccfa866a890ad78f"
     );
 
-    let proof1 = mmr
-        .get_proof(
-            1,
-            ProofOptions {
-                elements_count: None,
-                formatting_opts: None,
-            },
-        )
-        .unwrap();
+    let proof1 = mmr.get_proof(1, None).unwrap();
 
     assert_eq!(
         proof1,
@@ -125,25 +117,9 @@ fn should_append_to_mmr() {
         }
     );
 
-    mmr.verify_proof(
-        proof1,
-        "1".to_string(),
-        ProofOptions {
-            elements_count: None,
-            formatting_opts: None,
-        },
-    )
-    .unwrap();
+    mmr.verify_proof(proof1, "1".to_string(), None).unwrap();
 
-    let proof2 = mmr
-        .get_proof(
-            2,
-            ProofOptions {
-                elements_count: None,
-                formatting_opts: None,
-            },
-        )
-        .unwrap();
+    let proof2 = mmr.get_proof(2, None).unwrap();
 
     assert_eq!(
         proof2,
@@ -162,25 +138,9 @@ fn should_append_to_mmr() {
         }
     );
 
-    mmr.verify_proof(
-        proof2,
-        "2".to_string(),
-        ProofOptions {
-            elements_count: None,
-            formatting_opts: None,
-        },
-    )
-    .unwrap();
+    mmr.verify_proof(proof2, "2".to_string(), None).unwrap();
 
-    let proof4 = mmr
-        .get_proof(
-            4,
-            ProofOptions {
-                elements_count: None,
-                formatting_opts: None,
-            },
-        )
-        .unwrap();
+    let proof4 = mmr.get_proof(4, None).unwrap();
 
     assert_eq!(
         proof4,
@@ -199,25 +159,9 @@ fn should_append_to_mmr() {
         }
     );
 
-    mmr.verify_proof(
-        proof4,
-        "4".to_string(),
-        ProofOptions {
-            elements_count: None,
-            formatting_opts: None,
-        },
-    )
-    .unwrap();
+    mmr.verify_proof(proof4, "4".to_string(), None).unwrap();
 
-    let proof5 = mmr
-        .get_proof(
-            5,
-            ProofOptions {
-                elements_count: None,
-                formatting_opts: None,
-            },
-        )
-        .unwrap();
+    let proof5 = mmr.get_proof(5, None).unwrap();
 
     assert_eq!(
         proof5,
@@ -236,15 +180,7 @@ fn should_append_to_mmr() {
         }
     );
 
-    mmr.verify_proof(
-        proof5,
-        "5".to_string(),
-        ProofOptions {
-            elements_count: None,
-            formatting_opts: None,
-        },
-    )
-    .unwrap();
+    mmr.verify_proof(proof5, "5".to_string(), None).unwrap();
 }
 
 #[test]

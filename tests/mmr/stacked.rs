@@ -1,9 +1,7 @@
 use std::rc::Rc;
 
 use accumulators::{
-    hasher::stark_poseidon::StarkPoseidonHasher,
-    mmr::{ProofOptions, MMR},
-    store::sqlite::SQLiteStore,
+    hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::sqlite::SQLiteStore,
 };
 
 #[test]
@@ -127,22 +125,17 @@ fn should_stack_4_mmrs() {
 
     assert_eq!(mmr_4_root, ref_root);
 
-    let proof_options = ProofOptions {
-        elements_count: None,
-        formatting_opts: None,
-    };
-
     let ref_proof = ref_mmr
-        .get_proof(ref_eg_for_proving.element_index, proof_options.clone())
+        .get_proof(ref_eg_for_proving.element_index, None)
         .expect("Failed to get proof");
 
     let mmr_4_proof = mmr_4
-        .get_proof(eg_for_proving.element_index, proof_options.clone())
+        .get_proof(eg_for_proving.element_index, None)
         .expect("Failed to get proof");
 
     assert_eq!(ref_proof, mmr_4_proof);
 
     assert!(mmr_4
-        .verify_proof(mmr_4_proof, eg_for_proving_value, proof_options.clone())
+        .verify_proof(mmr_4_proof, eg_for_proving_value, None)
         .unwrap());
 }

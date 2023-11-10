@@ -181,15 +181,15 @@ where
         })
     }
 
-    pub fn get_proof(&self, element_index: usize, options: ProofOptions) -> Result<Proof> {
+    pub fn get_proof(&self, element_index: usize, options: Option<ProofOptions>) -> Result<Proof> {
         assert_ne!(element_index, 0, "Index must be greater than 0");
 
+        let options = options.unwrap_or_default();
         let element_count = self.elements_count.get();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
-        // FIXME: If the error is correct this should be <= not <, either change this or the error
         assert!(
-            element_index < tree_size,
+            element_index <= tree_size,
             "Index must be less or equal to the tree size"
         );
 
@@ -234,19 +234,18 @@ where
 
     pub fn get_proofs(
         &self,
-        elements_ids: Vec<usize>,
-        options: ProofOptions,
+        elements_indexes: Vec<usize>,
+        options: Option<ProofOptions>,
     ) -> Result<Vec<Proof>> {
+        let options = options.unwrap_or_default();
         let element_count = self.elements_count.get();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
-        for &element_id in &elements_ids {
-            // FIXME: If the error is correct this should be < not <=, either change this or the error
-            assert!(element_id >= 1, "Index must be greater than 1");
-            // FIXME: If the error is correct this should be < not <=, either change this or the error
+        for &element_index in &elements_indexes {
+            assert_ne!(element_index, 0, "Index must be greater than 0");
             assert!(
-                element_id <= tree_size,
-                "Index must be less than the tree size"
+                element_index <= tree_size,
+                "Index must be less or equal to the tree size"
             )
         }
 
@@ -254,7 +253,7 @@ where
         let peaks_hashes = self.retrieve_peaks_hashes(peaks, None).unwrap();
 
         let mut siblings_per_element = HashMap::new();
-        for &element_id in &elements_ids {
+        for &element_id in &elements_indexes {
             siblings_per_element.insert(element_id, find_siblings(element_id, tree_size).unwrap());
         }
         let sibling_hashes_to_get = array_deduplicate(
@@ -269,11 +268,11 @@ where
         let all_siblings_hashes = self.hashes.get_many(sibling_hashes_to_get);
 
         let elements_ids_str: Vec<SubKey> =
-            elements_ids.iter().map(|&x| SubKey::Usize(x)).collect();
+            elements_indexes.iter().map(|&x| SubKey::Usize(x)).collect();
         let element_hashes = self.hashes.get_many(elements_ids_str);
 
         let mut proofs: Vec<Proof> = Vec::new();
-        for &element_id in &elements_ids {
+        for &element_id in &elements_indexes {
             let siblings = siblings_per_element.get(&element_id).unwrap();
             let mut siblings_hashes: Vec<String> = siblings
                 .iter()
@@ -301,8 +300,9 @@ where
         &self,
         mut proof: Proof,
         element_value: String,
-        options: ProofOptions,
+        options: Option<ProofOptions>,
     ) -> Result<bool> {
+        let options = options.unwrap_or_default();
         let element_count = self.elements_count.get();
         let tree_size = options.elements_count.unwrap_or(element_count);
 
