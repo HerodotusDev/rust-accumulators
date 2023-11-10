@@ -94,13 +94,13 @@ where
         let mut use_mmr = None;
 
         for sub_mmr in sub_mmrs {
-            if element_index < sub_mmr.size {
-                use_mmr = Some(sub_mmr);
+            if element_index <= sub_mmr.size {
+                use_mmr = Some(sub_mmr.clone());
                 break;
             }
         }
 
-        let use_mmr = use_mmr.unwrap_or(&this_mmr);
+        let use_mmr = use_mmr.unwrap_or(this_mmr.clone());
 
         (
             use_mmr.store.clone(),
