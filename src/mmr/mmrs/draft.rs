@@ -58,8 +58,6 @@ where
             to_set.insert(full_key, value.to_string());
         }
 
-        println!("✅ to_set: {:?}", to_set);
-
         self.ref_mmr
             .store
             .set_many(to_set)
