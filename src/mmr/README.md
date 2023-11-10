@@ -2,50 +2,138 @@
 
 MMR is a structure that allows appending and proving efficiently. Time complexity of both operations is O(log tree_size).
 
-## Example
+#### Requires: `features = ["mmr"]`
+
+## Basic Example
 
 ```rust
 use accumulators::{
-    hasher::{stark_poseidon::StarkPoseidonHasher, Hasher},
-    mmr::{
-        helpers::{AppendResult, Proof, ProofOptions},
-        MMR,
-    },
-    store::sqlite::SQLiteStore,
+    hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::memory::InMemoryStore,
 };
 
-let store = SQLiteStore::new(":memory:").unwrap();
+let store = InMemoryStore::default();
+let store_rc = Rc::new(store);
 let hasher = StarkPoseidonHasher::new(Some(false));
-store.init().expect("Failed to init store");
 
-let mut mmr = MMR::new(store, hasher.clone(), None);
+let mut mmr = MMR::new(store_rc, hasher, None);
 
-let _ = mmr.append("1".to_string()).unwrap();
-let _ = mmr.append("2".to_string()).unwrap();
-let _ = mmr.append("3".to_string()).unwrap();
-let append_result = mmr.append("4".to_string()).unwrap();
+mmr.append("1".to_string()).expect("Failed to append");
+mmr.append("2".to_string()).expect("Failed to append");
+mmr.append("3".to_string()).expect("Failed to append");
+let example_value = "4".to_string();
+let example_append = mmr.append(example_value.clone()).expect("Failed to append");
 
-let proof4 = mmr
-    .get_proof(append_result.element_index,
-    ProofOptions {
-            elements_count: None,
-            formatting_opts: None,
-        },
-    )
-    .unwrap();
+let proof = mmr
+    .get_proof(example_append.element_index, None)
+    .expect("Failed to get proof");
 
-mmr.verify_proof(
-    proof4,
-    "4".to_string(),
-    ProofOptions {
-        elements_count: None,
-        formatting_opts: None,
-    },
-)
-.unwrap(); //return true
+assert!(mmr
+    .verify_proof(proof, example_value, None)
+    .expect("Failed to verify proof"));
 ```
 
-### Benchmark
+## MMR Types
+
+### MMR
+
+The regular MMR, see the example above.
+
+#### Requires: `features = ["mmr"]`
+
+### StackedMMR
+
+An infinitely stackable MMR, used to reduce data duplication when handling multiple MMRs, or handling things like Precomputation and DraftMMRs
+
+#### Requires: `features = ["stacked_mmr"]`
+
+#### Example
+
+```rust
+use accumulators::{
+    hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::memory::InMemoryStore,
+};
+
+let store = InMemoryStore::new();
+let store = Rc::new(store);
+let hasher = StarkPoseidonHasher::new(Some(false));
+
+let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
+
+let example_value = "1".to_string();
+let example_append = mmr.append(example_value.clone()).expect("Failed to append");
+
+let sub_mmrs = vec![(mmr.elements_count.get(), mmr.get_metadata())];
+
+let mut stacked_mmr = MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone());
+stacked_mmr
+    .append("2".to_string())
+    .expect("Failed to append");
+
+let proof = stacked_mmr
+    .get_proof(example_append.element_index, None)
+    .expect("Failed to get proof");
+
+assert!(stacked_mmr
+    .verify_proof(proof, example_value, None)
+    .unwrap());
+```
+
+### DraftMMR
+
+A MMR built on the StackedMMR, that is used for precomputation of the MMR, which then can be either discarded or committed to the MMR it was made from.
+
+#### Requires: `features = ["draft_mmr"]`
+
+#### Example
+
+```rust
+use accumulators::{
+    hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::memory::InMemoryStore,
+};
+
+let store = InMemoryStore::new();
+let store = Rc::new(store);
+let hasher = StarkPoseidonHasher::new(Some(false));
+
+let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
+
+mmr.append("1".to_string()).expect("Failed to append");
+mmr.append("2".to_string()).expect("Failed to append");
+
+let mut draft = mmr.start_draft();
+draft.mmr.append("3".to_string()).expect("Failed to append");
+draft.mmr.append("4".to_string()).expect("Failed to append");
+
+let draft_bag = draft.mmr.bag_the_peaks(None).unwrap();
+let draft_root = draft
+    .mmr
+    .calculate_root_hash(&draft_bag, draft.mmr.elements_count.get())
+    .expect("Failed to calculate root hash");
+
+draft.commit();
+
+let bag = mmr.bag_the_peaks(None).unwrap();
+let root = mmr
+    .calculate_root_hash(&bag, mmr.elements_count.get())
+    .expect("Failed to calculate root hash");
+
+assert_eq!(draft_root, root);
+
+let mut draft = mmr.start_draft();
+draft.mmr.append("5".to_string()).expect("Failed to append");
+draft.mmr.append("6".to_string()).expect("Failed to append");
+
+draft.discard();
+
+let after_discard_bag = mmr.bag_the_peaks(None).unwrap();
+let after_discard_root = mmr
+    .calculate_root_hash(&after_discard_bag, mmr.elements_count.get())
+    .expect("Failed to calculate root hash");
+
+assert_eq!(after_discard_root, root);
+```
+
+## Benchmarks
 
 ```sh
 MMR insertion/times/10000
