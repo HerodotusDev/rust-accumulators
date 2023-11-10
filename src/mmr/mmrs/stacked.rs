@@ -65,7 +65,8 @@ where
         table: &InStoreTable,
         sub_key: SubKey,
     ) -> (Rc<dyn Store>, String) {
-        let (_, key) = MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
+        let (_, key, _) =
+            MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
 
         match key {
             TreeMetadataKeys::Hashes => {}
@@ -111,7 +112,8 @@ where
         table: &InStoreTable,
         sub_keys: Vec<SubKey>,
     ) -> Vec<(Rc<dyn Store>, Vec<String>)> {
-        let (_, key) = MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
+        let (_, key, _) =
+            MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
 
         match key {
             TreeMetadataKeys::Hashes => {}
