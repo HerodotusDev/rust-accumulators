@@ -82,11 +82,24 @@ where
         )
     }
 
-    pub fn decode_store_key(store_key: &str) -> Option<(String, TreeMetadataKeys)> {
+    pub fn decode_store_key(store_key: &str) -> Option<(String, TreeMetadataKeys, SubKey)> {
         let mut parts = store_key.split(':');
         let mmr_id = parts.next()?.to_string();
         let key = TreeMetadataKeys::from_str(parts.next()?).expect("Invalid tree metadata key");
-        Some((mmr_id, key))
+        let sub_key = match parts.next() {
+            Some(sub_key) => SubKey::String(sub_key.to_string()),
+            None => SubKey::None,
+        };
+
+        Some((mmr_id, key, sub_key))
+    }
+
+    pub fn encode_store_key(mmr_id: &str, key: TreeMetadataKeys, sub_key: SubKey) -> String {
+        let store_key = format!("{}:{}", mmr_id, key);
+        match sub_key {
+            SubKey::None => store_key,
+            _ => format!("{}:{}", store_key, sub_key.to_string()),
+        }
     }
 
     pub fn get_stores(
