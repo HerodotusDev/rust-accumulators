@@ -1,13 +1,6 @@
 use std::{collections::HashMap, rc::Rc};
 
-use crate::{
-    hasher::Hasher,
-    mmr::{MmrMetadata, MMR},
-    store::memory::InMemoryStore,
-};
-
-/// A tuple of the size at which the MMR is stacked and the MMR itself.
-pub type SizesToMMRs<H> = Vec<(usize, MmrMetadata<H>)>;
+use crate::{hasher::Hasher, mmr::MMR, store::memory::InMemoryStore};
 
 impl<H> MMR<H>
 where
