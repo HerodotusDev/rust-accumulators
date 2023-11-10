@@ -27,6 +27,8 @@ where
     pub elements_count: InStoreCounter,
     pub hashes: InStoreTable,
     pub root_hash: InStoreTable,
+    #[cfg(feature = "stacked_mmr")]
+    pub sub_mmrs: SizesToMMRs<H>,
 }
 
 #[derive(Clone)]
@@ -35,6 +37,10 @@ pub struct MmrMetadata<H> {
     pub store: Rc<dyn Store>,
     pub hasher: H,
 }
+
+/// A tuple of the size at which the MMR is stacked and the MMR itself.
+#[cfg(feature = "stacked_mmr")]
+pub type SizesToMMRs<H> = Vec<(usize, MmrMetadata<H>)>;
 
 impl<H> MMR<H>
 where
@@ -54,6 +60,8 @@ where
             store,
             hasher,
             mmr_id,
+            #[cfg(feature = "stacked_mmr")]
+            sub_mmrs: Vec::new(),
         }
     }
 

@@ -2,12 +2,9 @@ use std::{collections::HashMap, rc::Rc};
 
 use crate::{
     hasher::Hasher,
-    mmr::{elements_count_to_leaf_count, MmrMetadata, TreeMetadataKeys, MMR},
+    mmr::{elements_count_to_leaf_count, SizesToMMRs, TreeMetadataKeys, MMR},
     store::{InStoreTable, Store, SubKey, SubMMR},
 };
-
-/// A tuple of the size at which the MMR is stacked and the MMR itself.
-pub type SizesToMMRs<H> = Vec<(usize, MmrMetadata<H>)>;
 
 impl<H> MMR<H>
 where
