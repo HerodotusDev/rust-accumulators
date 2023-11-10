@@ -3,14 +3,14 @@ use std::rc::Rc;
 use accumulators::{
     hasher::{stark_poseidon::StarkPoseidonHasher, Hasher},
     mmr::{AppendResult, Proof, ProofOptions, MMR},
-    store::{sqlite::SQLiteStore, SubKey},
+    store::{memory::InMemoryStore, sqlite::SQLiteStore, SubKey},
 };
 
 #[test]
 fn should_append_to_mmr() {
-    let store = SQLiteStore::new(":memory:").unwrap();
+    let store = InMemoryStore::default();
     let hasher = StarkPoseidonHasher::new(Some(false));
-    store.init().expect("Failed to init store");
+
     let store = Rc::new(store);
 
     let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
