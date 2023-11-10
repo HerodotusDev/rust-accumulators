@@ -2,11 +2,8 @@ use std::rc::Rc;
 
 use accumulators::{
     hasher::{stark_poseidon::StarkPoseidonHasher, Hasher},
-    mmr::{
-        helpers::{AppendResult, Proof, ProofOptions},
-        MMR,
-    },
-    store::{sqlite::SQLiteStore, table::SubKey},
+    mmr::{AppendResult, Proof, ProofOptions, MMR},
+    store::{sqlite::SQLiteStore, SubKey},
 };
 
 #[test]

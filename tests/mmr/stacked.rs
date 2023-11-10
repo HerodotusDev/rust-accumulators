@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use accumulators::{
     hasher::stark_poseidon::StarkPoseidonHasher,
-    mmr::{helpers::ProofOptions, stacked::StackedMMR, MMR},
+    mmr::{ProofOptions, MMR},
     store::sqlite::SQLiteStore,
 };
 

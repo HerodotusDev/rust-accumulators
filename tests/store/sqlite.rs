@@ -1,8 +1,6 @@
 use accumulators::store::{
-    counter::InStoreCounter,
     sqlite::SQLiteStore,
-    table::{InStoreTable, SubKey},
-    Store,
+    InStoreCounter, Store, {InStoreTable, SubKey},
 };
 use std::{collections::HashMap, rc::Rc};
 

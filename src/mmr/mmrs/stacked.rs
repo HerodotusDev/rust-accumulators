@@ -2,30 +2,12 @@ use std::{collections::HashMap, rc::Rc};
 
 use crate::{
     hasher::Hasher,
-    mmr::{
-        helpers::{elements_count_to_leaf_count, TreeMetadataKeys},
-        MmrMetadata, MMR,
-    },
-    store::{
-        table::{InStoreTable, SubKey, SubMMR},
-        Store,
-    },
+    mmr::{elements_count_to_leaf_count, MmrMetadata, TreeMetadataKeys, MMR},
+    store::{InStoreTable, Store, SubKey, SubMMR},
 };
 
 /// A tuple of the size at which the MMR is stacked and the MMR itself.
 pub type SizesToMMRs<H> = Vec<(usize, MmrMetadata<H>)>;
-
-pub trait StackedMMR<H>
-where
-    H: Hasher + Clone,
-{
-    fn new_stacked(
-        store: Rc<dyn Store>,
-        hasher: H,
-        mmr_id: Option<String>,
-        sub_mmrs_metadata: SizesToMMRs<H>,
-    ) -> Self;
-}
 
 impl<H> MMR<H>
 where
@@ -122,13 +104,8 @@ where
             .map(|(_, (sub_mmr, keys))| (sub_mmr.store.clone(), keys))
             .collect()
     }
-}
 
-impl<H> StackedMMR<H> for MMR<H>
-where
-    H: Hasher + Clone,
-{
-    fn new_stacked(
+    pub fn new_stacked(
         store: Rc<dyn Store>,
         hasher: H,
         mmr_id: Option<String>,

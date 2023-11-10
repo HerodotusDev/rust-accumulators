@@ -7,10 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     hasher::Hasher,
-    store::{
-        table::{InStoreTable, SubKey},
-        Store,
-    },
+    store::{InStoreTable, Store, SubKey},
 };
 
 #[derive(Debug)]

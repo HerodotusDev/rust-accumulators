@@ -1,4 +1,4 @@
-use accumulators::mmr::helpers::{
+use accumulators::mmr::{
     element_index_to_leaf_index, elements_count_to_leaf_count, find_peaks, find_siblings,
     get_peak_info,
 };

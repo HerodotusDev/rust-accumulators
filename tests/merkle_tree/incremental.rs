@@ -3,7 +3,7 @@ use std::rc::Rc;
 use accumulators::{
     hasher::stark_poseidon::StarkPoseidonHasher,
     merkle_tree::incremental::IncrementalMerkleTree,
-    store::{sqlite::SQLiteStore, table::SubKey},
+    store::{sqlite::SQLiteStore, SubKey},
 };
 
 #[test]
