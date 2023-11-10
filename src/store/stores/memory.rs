@@ -60,3 +60,10 @@ impl Store for InMemoryStore {
         Ok(())
     }
 }
+
+impl InMemoryStore {
+    pub fn clear(&self) {
+        let mut store = self.store.write();
+        store.clear();
+    }
+}
