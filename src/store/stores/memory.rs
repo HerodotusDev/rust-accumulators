@@ -62,6 +62,10 @@ impl Store for InMemoryStore {
 }
 
 impl InMemoryStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn clear(&self) {
         let mut store = self.store.write();
         store.clear();
