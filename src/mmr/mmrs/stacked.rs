@@ -13,98 +13,6 @@ impl<H> MMR<H>
 where
     H: Hasher + Clone,
 {
-    fn get_store_and_full_key(table: &InStoreTable, sub_key: SubKey) -> (Rc<dyn Store>, String) {
-        let (_, key) = MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
-
-        match key {
-            TreeMetadataKeys::Hashes => {}
-            //? If the key is not hashes, we don't need to do anything
-            _ => return table.default_get_store_and_full_key(sub_key),
-        }
-
-        let element_index = match sub_key {
-            SubKey::Usize(element_index) => element_index,
-            //? If the sub_key is not an element index, we don't need to do anything
-            _ => return table.default_get_store_and_full_key(sub_key),
-        };
-
-        let sub_mmrs = table
-            .sub_mmrs
-            .as_ref()
-            .expect("Sub MMRs are not set")
-            .iter();
-
-        let this_mmr = SubMMR {
-            size: usize::MAX,
-            store: table.store.clone(),
-            key: table.key.clone(),
-        };
-        let mut use_mmr = None;
-
-        for sub_mmr in sub_mmrs {
-            if element_index < sub_mmr.size {
-                use_mmr = Some(sub_mmr);
-                break;
-            }
-        }
-
-        let use_mmr = use_mmr.unwrap_or(&this_mmr);
-
-        (
-            use_mmr.store.clone(),
-            InStoreTable::get_full_key(&use_mmr.key, &sub_key.to_string()),
-        )
-    }
-
-    fn get_stores_and_full_keys(
-        table: &InStoreTable,
-        sub_keys: Vec<SubKey>,
-    ) -> Vec<(Rc<dyn Store>, Vec<String>)> {
-        let (_, key) = MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
-
-        match key {
-            TreeMetadataKeys::Hashes => {}
-            //? If the key is not hashes, we don't need to do anything
-            _ => return table.default_get_stores_and_full_keys(sub_keys),
-        }
-
-        let this_mmr = SubMMR {
-            size: usize::MAX,
-            key: table.key.clone(),
-            store: table.store.clone(),
-        };
-
-        let mut stores_and_keys: HashMap<usize, (SubMMR, Vec<String>)> = HashMap::new();
-        for sub_key in sub_keys.iter() {
-            let element_index = match sub_key {
-                SubKey::Usize(element_index) => element_index,
-                //? If the sub_key is not an element index, we don't need to do anything
-                _ => return table.default_get_stores_and_full_keys(sub_keys),
-            };
-
-            let mut use_mmr: Option<SubMMR> = None;
-            for sub_mmr in table.sub_mmrs.as_ref().unwrap().iter() {
-                if *element_index <= sub_mmr.size {
-                    use_mmr = Some(sub_mmr.clone());
-                    break;
-                }
-            }
-
-            let use_mmr = use_mmr.unwrap_or(this_mmr.clone());
-            let full_key = InStoreTable::get_full_key(&use_mmr.key, &sub_key.to_string());
-
-            stores_and_keys
-                .entry(use_mmr.size)
-                .and_modify(|(_, keys)| keys.push(full_key.clone()))
-                .or_insert((use_mmr, vec![full_key]));
-        }
-
-        stores_and_keys
-            .into_iter()
-            .map(|(_, (sub_mmr, keys))| (sub_mmr.store.clone(), keys))
-            .collect()
-    }
-
     pub fn new_stacked(
         store: Rc<dyn Store>,
         hasher: H,
@@ -154,5 +62,100 @@ where
         mmr.hashes.sub_mmrs = Some(sub_mmrs);
 
         mmr
+    }
+
+    pub fn get_store_and_full_key(
+        table: &InStoreTable,
+        sub_key: SubKey,
+    ) -> (Rc<dyn Store>, String) {
+        let (_, key) = MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
+
+        match key {
+            TreeMetadataKeys::Hashes => {}
+            //? If the key is not hashes, we don't need to do anything
+            _ => return table.default_get_store_and_full_key(sub_key),
+        }
+
+        let element_index = match sub_key {
+            SubKey::Usize(element_index) => element_index,
+            //? If the sub_key is not an element index, we don't need to do anything
+            _ => return table.default_get_store_and_full_key(sub_key),
+        };
+
+        let sub_mmrs = table
+            .sub_mmrs
+            .as_ref()
+            .expect("Sub MMRs are not set")
+            .iter();
+
+        let this_mmr = SubMMR {
+            size: usize::MAX,
+            store: table.store.clone(),
+            key: table.key.clone(),
+        };
+        let mut use_mmr = None;
+
+        for sub_mmr in sub_mmrs {
+            if element_index < sub_mmr.size {
+                use_mmr = Some(sub_mmr);
+                break;
+            }
+        }
+
+        let use_mmr = use_mmr.unwrap_or(&this_mmr);
+
+        (
+            use_mmr.store.clone(),
+            InStoreTable::get_full_key(&use_mmr.key, &sub_key.to_string()),
+        )
+    }
+
+    pub fn get_stores_and_full_keys(
+        table: &InStoreTable,
+        sub_keys: Vec<SubKey>,
+    ) -> Vec<(Rc<dyn Store>, Vec<String>)> {
+        let (_, key) = MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
+
+        match key {
+            TreeMetadataKeys::Hashes => {}
+            //? If the key is not hashes, we don't need to do anything
+            _ => return table.default_get_stores_and_full_keys(sub_keys),
+        }
+
+        let this_mmr = SubMMR {
+            size: usize::MAX,
+            key: table.key.clone(),
+            store: table.store.clone(),
+        };
+
+        let mut stores_and_keys: HashMap<usize, (SubMMR, Vec<String>)> = HashMap::new();
+        for sub_key in sub_keys.iter() {
+            let element_index = match sub_key {
+                SubKey::Usize(element_index) => element_index,
+                //? If the sub_key is not an element index, we don't need to do anything
+                _ => return table.default_get_stores_and_full_keys(sub_keys),
+            };
+
+            let mut use_mmr: Option<SubMMR> = None;
+            for sub_mmr in table.sub_mmrs.as_ref().unwrap().iter() {
+                if *element_index <= sub_mmr.size {
+                    use_mmr = Some(sub_mmr.clone());
+                    break;
+                }
+            }
+
+            let use_mmr = use_mmr.unwrap_or(this_mmr.clone());
+            let full_key = InStoreTable::get_full_key(&use_mmr.key, &sub_key.to_string());
+
+            stores_and_keys
+                .entry(use_mmr.size)
+                .and_modify(|(_, keys)| keys.push(full_key.clone()))
+                .or_insert((use_mmr, vec![full_key]));
+        }
+
+        stores_and_keys
+            .into_iter()
+            .map(|(_, (sub_mmr, keys))| (sub_mmr.store.clone(), keys))
+            .collect()
     }
 }
