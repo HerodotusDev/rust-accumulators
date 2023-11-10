@@ -139,3 +139,34 @@ fn should_stack_4_mmrs() {
         .verify_proof(mmr_4_proof, eg_for_proving_value, None)
         .unwrap());
 }
+
+#[test]
+fn example() {
+    use accumulators::{
+        hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::memory::InMemoryStore,
+    };
+
+    let store = InMemoryStore::new();
+    let store = Rc::new(store);
+    let hasher = StarkPoseidonHasher::new(Some(false));
+
+    let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
+
+    let example_value = "1".to_string();
+    let example_append = mmr.append(example_value.clone()).expect("Failed to append");
+
+    let sub_mmrs = vec![(mmr.elements_count.get(), mmr.get_metadata())];
+
+    let mut stacked_mmr = MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone());
+    stacked_mmr
+        .append("2".to_string())
+        .expect("Failed to append");
+
+    let proof = stacked_mmr
+        .get_proof(example_append.element_index, None)
+        .expect("Failed to get proof");
+
+    assert!(stacked_mmr
+        .verify_proof(proof, example_value, None)
+        .unwrap());
+}

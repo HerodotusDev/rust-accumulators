@@ -91,3 +91,51 @@ fn should_apply() {
         .verify_proof(proof, eg_value, None)
         .expect("Failed to verify proof"));
 }
+
+#[test]
+fn example() {
+    use accumulators::{
+        hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::memory::InMemoryStore,
+    };
+
+    let store = InMemoryStore::new();
+    let store = Rc::new(store);
+    let hasher = StarkPoseidonHasher::new(Some(false));
+
+    let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
+
+    mmr.append("1".to_string()).expect("Failed to append");
+    mmr.append("2".to_string()).expect("Failed to append");
+
+    let mut draft = mmr.start_draft();
+    draft.mmr.append("3".to_string()).expect("Failed to append");
+    draft.mmr.append("4".to_string()).expect("Failed to append");
+
+    let draft_bag = draft.mmr.bag_the_peaks(None).unwrap();
+    let draft_root = draft
+        .mmr
+        .calculate_root_hash(&draft_bag, draft.mmr.elements_count.get())
+        .expect("Failed to calculate root hash");
+
+    draft.commit();
+
+    let bag = mmr.bag_the_peaks(None).unwrap();
+    let root = mmr
+        .calculate_root_hash(&bag, mmr.elements_count.get())
+        .expect("Failed to calculate root hash");
+
+    assert_eq!(draft_root, root);
+
+    let mut draft = mmr.start_draft();
+    draft.mmr.append("5".to_string()).expect("Failed to append");
+    draft.mmr.append("6".to_string()).expect("Failed to append");
+
+    draft.discard();
+
+    let after_discard_bag = mmr.bag_the_peaks(None).unwrap();
+    let after_discard_root = mmr
+        .calculate_root_hash(&after_discard_bag, mmr.elements_count.get())
+        .expect("Failed to calculate root hash");
+
+    assert_eq!(after_discard_root, root);
+}

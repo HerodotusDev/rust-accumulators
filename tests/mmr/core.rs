@@ -215,3 +215,30 @@ fn test_new() {
             .unwrap()
     );
 }
+
+#[test]
+fn example() {
+    use accumulators::{
+        hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::memory::InMemoryStore,
+    };
+
+    let store = InMemoryStore::default();
+    let store_rc = Rc::new(store);
+    let hasher = StarkPoseidonHasher::new(Some(false));
+
+    let mut mmr = MMR::new(store_rc, hasher, None);
+
+    mmr.append("1".to_string()).expect("Failed to append");
+    mmr.append("2".to_string()).expect("Failed to append");
+    mmr.append("3".to_string()).expect("Failed to append");
+    let example_value = "4".to_string();
+    let example_append = mmr.append(example_value.clone()).expect("Failed to append");
+
+    let proof = mmr
+        .get_proof(example_append.element_index, None)
+        .expect("Failed to get proof");
+
+    assert!(mmr
+        .verify_proof(proof, example_value, None)
+        .expect("Failed to verify proof"));
+}

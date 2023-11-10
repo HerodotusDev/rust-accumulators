@@ -154,3 +154,24 @@ fn generate_and_verify_multi_proof() {
 
     assert!(is_valid);
 }
+
+#[test]
+fn example() {
+    use accumulators::{
+        hasher::stark_poseidon::StarkPoseidonHasher,
+        merkle_tree::incremental::IncrementalMerkleTree, store::memory::InMemoryStore,
+    };
+
+    let store = InMemoryStore::new();
+    let store = Rc::new(store);
+    let hasher = StarkPoseidonHasher::new(Some(false));
+
+    let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None);
+
+    let path = tree.get_inclusion_proof(10).unwrap();
+    let valid_proof = tree.verify_proof(10, "0x0", &path).unwrap();
+    assert!(valid_proof);
+
+    let invalid_proof = tree.verify_proof(10, "0x1", &path).unwrap();
+    assert!(!invalid_proof);
+}
