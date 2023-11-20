@@ -5,28 +5,33 @@ use accumulators::{
     store::sqlite::SQLiteStore,
 };
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use tokio::runtime::Runtime;
 
-fn prepare_incremental(count: usize) -> IncrementalMerkleTree<StarkPoseidonHasher> {
+async fn prepare_incremental(count: usize) -> IncrementalMerkleTree<StarkPoseidonHasher> {
     let hasher = StarkPoseidonHasher::new(Some(false));
 
-    let store = SQLiteStore::new(":memory:").unwrap();
-    store.init().expect("Failed to init store");
+    let store = SQLiteStore::new(":memory:").await.unwrap();
+
     let store = Rc::new(store);
 
-    IncrementalMerkleTree::initialize(count, "0x0".to_string(), hasher, store, None)
+    IncrementalMerkleTree::initialize(count, "0x0".to_string(), hasher, store, None).await
 }
 
 fn bench(c: &mut Criterion) {
-    {
-        let mut group = c.benchmark_group("Incremental Merkle Tree insertion");
-        let inputs = [10_000, 1_000_000];
+    let rt = Runtime::new().unwrap(); // Create a new Tokio runtime
 
-        for input in inputs.iter() {
-            group.bench_with_input(BenchmarkId::new("times", input), &input, |b, &&size| {
-                b.iter(|| prepare_incremental(size));
+    let mut group = c.benchmark_group("Incremental Merkle Tree insertion");
+    let inputs = [10_000, 1_000_000];
+
+    for &input in &inputs {
+        group.bench_with_input(BenchmarkId::new("times", input), &input, |b, &size| {
+            b.iter(|| {
+                rt.block_on(async { prepare_incremental(size).await }); // Execute the async function
             });
-        }
+        });
     }
+
+    group.finish();
 }
 
 criterion_group!(

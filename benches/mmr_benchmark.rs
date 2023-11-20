@@ -4,34 +4,39 @@ use accumulators::{
     hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::sqlite::SQLiteStore,
 };
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use tokio::runtime::Runtime;
 
-fn prepare_mmr(count: usize) -> MMR<StarkPoseidonHasher> {
+async fn prepare_mmr(count: usize) -> MMR<StarkPoseidonHasher> {
     let hasher = StarkPoseidonHasher::new(Some(false));
 
-    let store = SQLiteStore::new(":memory:").unwrap();
-    store.init().expect("Failed to init store");
+    let store = SQLiteStore::new(":memory:").await.unwrap();
+
     let store = Rc::new(store);
 
     let mut mmr = MMR::new(store, hasher.clone(), None);
 
     for i in 0..count {
-        let _ = mmr.append(i.to_string()).unwrap();
+        let _ = mmr.append(i.to_string()).await.unwrap();
     }
 
     mmr
 }
 
 fn bench(c: &mut Criterion) {
-    {
-        let mut group = c.benchmark_group("MMR insertion");
-        let inputs = [10_000, 1_000_000];
+    let rt = Runtime::new().unwrap(); // Create a new Tokio runtime
 
-        for input in inputs.iter() {
-            group.bench_with_input(BenchmarkId::new("times", input), &input, |b, &&size| {
-                b.iter(|| prepare_mmr(size));
+    let mut group = c.benchmark_group("MMR insertion");
+    let inputs = [10_000, 1_000_000];
+
+    for &input in &inputs {
+        group.bench_with_input(BenchmarkId::new("times", input), &input, |b, &size| {
+            b.iter(|| {
+                rt.block_on(async { prepare_mmr(size).await }); // Execute the async function
             });
-        }
+        });
     }
+
+    group.finish();
 }
 
 criterion_group!(

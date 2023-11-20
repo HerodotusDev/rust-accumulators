@@ -6,15 +6,15 @@ impl<H> MMR<H>
 where
     H: Hasher + Clone,
 {
-    pub fn start_draft(&mut self) -> DraftMMR<H> {
+    pub async fn start_draft(&mut self) -> DraftMMR<H> {
         let store = InMemoryStore::default();
         let store = Rc::new(store);
         let hasher = self.hasher.clone();
 
         let mut sub_mmrs = self.sub_mmrs.clone();
-        sub_mmrs.push((self.elements_count.get(), self.get_metadata()));
+        sub_mmrs.push((self.elements_count.get().await, self.get_metadata()));
 
-        let draft_mmr = MMR::new_stacked(store.clone(), hasher, None, sub_mmrs);
+        let draft_mmr = MMR::new_stacked(store.clone(), hasher, None, sub_mmrs).await;
 
         DraftMMR {
             store,
@@ -37,11 +37,11 @@ impl<H> DraftMMR<'_, H>
 where
     H: Hasher + Clone,
 {
-    pub fn discard(self) {
+    pub async fn discard(self) {
         self.store.clear();
     }
 
-    pub fn commit(self) {
+    pub async fn commit(self) {
         let mut to_set = HashMap::new();
         for (key, value) in self.store.store.read().iter() {
             let (_, key, sub_key) =
@@ -54,6 +54,7 @@ where
         self.ref_mmr
             .store
             .set_many(to_set)
+            .await
             .expect("Could not apply draft to MMR");
 
         self.store.clear();

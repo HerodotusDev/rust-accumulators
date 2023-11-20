@@ -13,10 +13,11 @@ impl InStoreCounter {
         Self { store, key }
     }
 
-    pub fn get(&self) -> usize {
+    pub async fn get(&self) -> usize {
         let current_count = self
             .store
             .get(&self.key)
+            .await
             .expect("Failed to get count")
             .unwrap_or("0".to_string());
         current_count
@@ -24,15 +25,15 @@ impl InStoreCounter {
             .expect("Failed to parse count")
     }
 
-    pub fn set(&self, count: usize) -> Result<()> {
-        self.store.set(&self.key, &count.to_string())?;
+    pub async fn set(&self, count: usize) -> Result<()> {
+        self.store.set(&self.key, &count.to_string()).await?;
         Ok(())
     }
 
-    pub fn increment(&self) -> Result<usize> {
-        let current_count = self.get();
+    pub async fn increment(&self) -> Result<usize> {
+        let current_count = self.get().await;
         let new_count = current_count + 1;
-        self.set(new_count)?;
+        self.set(new_count).await?;
         Ok(new_count)
     }
 }
