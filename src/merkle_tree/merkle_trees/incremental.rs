@@ -62,7 +62,7 @@ where
         }
     }
 
-    pub fn initialize(
+    pub async fn initialize(
         size: usize,
         null_value: String,
         hasher: H,
@@ -81,18 +81,19 @@ where
                     acc
                 });
 
-        tree.nodes.set_many(nodes_hashmap);
+        tree.nodes.set_many(nodes_hashmap).await;
 
         tree.root_hash
-            .set(&nodes[nodes.len() - 1][0].hash, SubKey::None);
+            .set(&nodes[nodes.len() - 1][0].hash, SubKey::None)
+            .await;
         tree
     }
 
-    pub fn get_root(&self) -> String {
-        self.root_hash.get(SubKey::None).unwrap()
+    pub async fn get_root(&self) -> String {
+        self.root_hash.get(SubKey::None).await.unwrap()
     }
 
-    pub fn get_inclusion_proof(&self, index: usize) -> Result<Vec<String>> {
+    pub async fn get_inclusion_proof(&self, index: usize) -> Result<Vec<String>> {
         let mut required_nodes_by_height = Vec::new();
         let tree_depth = self.get_tree_depth();
         let mut current_index = index;
@@ -113,7 +114,7 @@ where
             .map(|(height, index)| SubKey::String(format!("{}:{}", height, index)))
             .collect();
 
-        let nodes_hash_map = self.nodes.get_many(kv_entries);
+        let nodes_hash_map = self.nodes.get_many(kv_entries).await;
 
         let mut ordered_nodes = Vec::with_capacity(required_nodes_by_height.len());
         for (height, index) in required_nodes_by_height {
@@ -124,7 +125,12 @@ where
         Ok(ordered_nodes)
     }
 
-    pub fn verify_proof(&self, index: usize, value: &str, proof: &Vec<String>) -> Result<bool> {
+    pub async fn verify_proof(
+        &self,
+        index: usize,
+        value: &str,
+        proof: &Vec<String>,
+    ) -> Result<bool> {
         let mut current_index = index;
         let mut current_value = value.to_string();
 
@@ -142,18 +148,18 @@ where
             current_index /= 2;
         }
 
-        let root = self.root_hash.get(SubKey::None).unwrap();
+        let root = self.root_hash.get(SubKey::None).await.unwrap();
         Ok(root == current_value)
     }
 
-    pub fn update(
+    pub async fn update(
         &self,
         index: usize,
         old_value: String,
         new_value: String,
         proof: Vec<String>,
     ) -> Result<String> {
-        let is_proof_valid = self.verify_proof(index, &old_value, &proof).unwrap();
+        let is_proof_valid = self.verify_proof(index, &old_value, &proof).await.unwrap();
         if !is_proof_valid {
             bail!("Invalid proof");
         }
@@ -191,12 +197,15 @@ where
             );
         }
 
-        self.nodes.set_many(kv_updates);
-        self.root_hash.set(&current_value, SubKey::None);
+        self.nodes.set_many(kv_updates).await;
+        self.root_hash.set(&current_value, SubKey::None).await;
         Ok(current_value)
     }
 
-    pub fn get_inclusion_multi_proof(&self, indexes_to_prove: Vec<usize>) -> Result<Vec<String>> {
+    pub async fn get_inclusion_multi_proof(
+        &self,
+        indexes_to_prove: Vec<usize>,
+    ) -> Result<Vec<String>> {
         let tree_depth = self.get_tree_depth();
 
         let mut proof: IndexMap<String, bool> = indexes_to_prove
@@ -255,7 +264,7 @@ where
             })
             .collect();
 
-        let nodes_hash_map = self.nodes.get_many(kv_entries.clone());
+        let nodes_hash_map = self.nodes.get_many(kv_entries.clone()).await;
 
         let mut nodes_values: Vec<String> = Vec::with_capacity(kv_entries.len());
         for kv in kv_entries {
@@ -267,13 +276,13 @@ where
         Ok(nodes_values)
     }
 
-    pub fn verify_multi_proof(
+    pub async fn verify_multi_proof(
         &self,
         indexes: &mut Vec<usize>,
         values: &mut Vec<String>,
         proof: &mut Vec<String>,
     ) -> bool {
-        let root = self.root_hash.get(SubKey::None).unwrap();
+        let root = self.root_hash.get(SubKey::None).await.unwrap();
         let calculated_root = self
             .calculate_multiproof_root_hash(indexes, values, proof)
             .unwrap();

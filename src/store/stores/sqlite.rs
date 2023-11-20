@@ -1,109 +1,131 @@
 use anyhow::Result;
-use parking_lot::Mutex;
-use rusqlite::{params, params_from_iter, Connection};
+
+use async_trait::async_trait;
+use sqlx::{Pool, Row, Sqlite, SqlitePool};
 use std::collections::HashMap;
+use tokio::sync::Mutex;
 
 use super::super::Store;
 
 pub struct SQLiteStore {
-    db: Mutex<Connection>,
+    db: Mutex<Pool<Sqlite>>,
 }
 
+impl SQLiteStore {
+    pub async fn new(path: &str) -> Result<Self> {
+        let pool = SqlitePool::connect(path).await?;
+        let store = SQLiteStore {
+            db: Mutex::new(pool),
+        };
+        store.init().await?;
+        Ok(store)
+    }
+
+    async fn init(&self) -> Result<()> {
+        let pool = self.db.lock().await;
+        sqlx::query!(
+            r#"CREATE TABLE IF NOT EXISTS store (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );"#
+        )
+        .execute(&*pool)
+        .await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl Store for SQLiteStore {
-    fn get(&self, key: &str) -> Result<Option<String>> {
-        let binding = self.db.lock();
-        let mut stmt = binding.prepare("SELECT value FROM store WHERE key = ?")?;
+    async fn get(&self, key: &str) -> Result<Option<String>> {
+        let pool = self.db.lock().await;
 
-        let mut rows = stmt.query(params![key])?;
+        let row = sqlx::query("SELECT value FROM store WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&*pool)
+            .await?;
 
-        if let Some(row) = rows.next()? {
-            Ok(Some(row.get(0)?))
+        // Extract the value from the row, if it exists
+        if let Some(row) = row {
+            let value: String = row.try_get("value")?;
+            Ok(Some(value))
         } else {
             Ok(None)
         }
     }
 
-    fn get_many(&self, keys: Vec<&str>) -> Result<HashMap<String, String>> {
-        let mut map = HashMap::new();
-
-        // Create the placeholders string.
-        let placeholders: Vec<String> = vec!["?".to_string(); keys.len()];
-        let placeholders_str = placeholders.join(", ");
-        // Prepare the statement.
-        let query = format!(
+    async fn get_many(&self, keys: Vec<&str>) -> Result<HashMap<String, String>> {
+        let pool = self.db.lock().await;
+        let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let query_statement = format!(
             "SELECT key, value FROM store WHERE key IN ({})",
-            placeholders_str
+            placeholders
         );
-        let binding = self.db.lock();
-        let mut stmt = binding.prepare(&query)?;
-        let mut rows = stmt.query(params_from_iter(keys.iter()))?;
+        let mut query = sqlx::query(&query_statement);
 
-        while let Some(row) = rows.next()? {
-            map.insert(row.get(0)?, row.get(1)?);
+        for key in &keys {
+            query = query.bind(key);
+        }
+
+        let rows = query.fetch_all(&*pool).await?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let key: String = row.get("key");
+            let value: String = row.get("value");
+            map.insert(key, value);
         }
 
         Ok(map)
     }
 
-    fn set(&self, key: &str, value: &str) -> Result<()> {
-        self.db.lock().execute(
-            "INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)",
-            params![key, value],
-        )?;
+    async fn set(&self, key: &str, value: &str) -> Result<()> {
+        let pool = self.db.lock().await;
+        sqlx::query("INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)")
+            .bind(key)
+            .bind(value)
+            .execute(&*pool)
+            .await?;
+
         Ok(())
     }
 
-    fn set_many(&self, entries: HashMap<String, String>) -> Result<()> {
-        let mut binding = self.db.lock();
-        let tx = binding.transaction()?;
+    async fn set_many(&self, entries: HashMap<String, String>) -> Result<()> {
+        let pool = self.db.lock().await;
+
         for (key, value) in entries.iter() {
-            tx.execute(
-                "INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)",
-                params![key, value],
-            )?;
+            sqlx::query("INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)")
+                .bind(key)
+                .bind(value)
+                .execute(&*pool)
+                .await?;
         }
-        tx.commit()?;
-        Ok(())
-    }
-
-    fn delete(&self, key: &str) -> Result<()> {
-        self.db
-            .lock()
-            .execute("DELETE FROM store WHERE key = ?", params![key])?;
-        Ok(())
-    }
-
-    fn delete_many(&self, keys: Vec<&str>) -> Result<()> {
-        // Create the placeholders string.
-        let placeholders: Vec<String> = vec!["?".to_string(); keys.len()];
-        let placeholders_str = placeholders.join(", ");
-
-        // Prepare the statement.
-        let query = format!("DELETE FROM store WHERE key IN ({})", placeholders_str);
-
-        // Bind the parameters and execute the query.
-        self.db
-            .lock()
-            .execute(&query, params_from_iter(keys.iter()))?;
 
         Ok(())
     }
-}
 
-impl SQLiteStore {
-    pub fn new(path: &str) -> Result<Self> {
-        let db = Mutex::new(Connection::open(path)?);
-        Ok(SQLiteStore { db })
+    async fn delete(&self, key: &str) -> Result<()> {
+        let pool = self.db.lock().await;
+        sqlx::query("DELETE FROM store WHERE key = ?")
+            .bind(key)
+            .execute(&*pool)
+            .await?;
+
+        Ok(())
     }
 
-    pub fn init(&self) -> Result<()> {
-        self.db.lock().execute(
-            "CREATE TABLE IF NOT EXISTS store (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );",
-            [],
-        )?;
+    async fn delete_many(&self, keys: Vec<&str>) -> Result<()> {
+        let pool = self.db.lock().await;
+        let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+
+        let query_statement = format!("DELETE FROM store WHERE key IN ({})", placeholders);
+        let mut query = sqlx::query(&query_statement);
+
+        for key in &keys {
+            query = query.bind(key);
+        }
+
+        query.execute(&*pool).await?;
+
         Ok(())
     }
 }
