@@ -91,15 +91,17 @@ impl Store for SQLiteStore {
 
     async fn set_many(&self, entries: HashMap<String, String>) -> Result<()> {
         let pool = self.db.lock().await;
+        let mut transaction = pool.begin().await?;
 
         for (key, value) in entries.iter() {
             sqlx::query("INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)")
                 .bind(key)
                 .bind(value)
-                .execute(&*pool)
+                .execute(&mut *transaction)
                 .await?;
         }
 
+        transaction.commit().await?;
         Ok(())
     }
 
