@@ -199,8 +199,8 @@ async fn should_append_duplicate_to_mmr() {
     let store = Rc::new(store);
 
     let mut mmr = MMR::new(store, hasher, None);
-    let _ = mmr.append("4".to_string());
-    let _ = mmr.append("4".to_string());
+    let _ = mmr.append("4".to_string()).await;
+    let _ = mmr.append("4".to_string()).await;
 
     let _root = mmr.bag_the_peaks(None).await.unwrap();
 }
