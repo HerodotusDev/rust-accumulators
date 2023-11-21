@@ -8,20 +8,7 @@ homepage = "https://herodotus.dev/"
 repository = "https://github.com/HerodotusDev/rust-accumulators"
 documentation = "https://github.com/HerodotusDev/rust-accumulators/blob/main/README.md"
 readme = "README.md"
-keywords = [
-    "accumulators",
-    "mmr",
-    "merkle",
-    "tree",
-    "incremental",
-    "hasher",
-    "store",
-    "sqlite",
-    "memory",
-    "keccak",
-    "poseidon",
-    "pedersen",
-]
+keywords = ["accumulators", "mmr", "merkle", "tree", "incremental"]
 categories = ["cryptography", "data-structures", "database", "blockchain"]
 exclude = [".github", ".vscode"]
 
