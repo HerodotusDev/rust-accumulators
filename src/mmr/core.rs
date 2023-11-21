@@ -117,38 +117,42 @@ where
         )
     }
 
-    pub fn create_with_genesis(
+    pub async fn create_with_genesis(
         store: Rc<dyn Store>,
         hasher: H,
         mmr_id: Option<String>,
     ) -> Result<Self> {
         let mut mmr = MMR::new(store, hasher, mmr_id);
-        let elements_count: usize = mmr.elements_count.get();
+        let elements_count: usize = mmr.elements_count.get().await;
         assert_eq!(elements_count, 0, "Cannot call create_with_genesis on a non-empty MMR. Please provide an empty store or change the MMR id.");
         let genesis = mmr.hasher.get_genesis();
-        let _ = mmr.append(genesis);
+        let _ = mmr.append(genesis).await;
         Ok(mmr)
     }
 
-    pub fn append(&mut self, value: String) -> Result<AppendResult> {
+    pub async fn append(&mut self, value: String) -> Result<AppendResult> {
         assert!(
             self.hasher.is_element_size_valid(&value),
             "Element size is too big to hash with this hasher"
         );
 
-        let elements_count = self.elements_count.get();
+        let elements_count = self.elements_count.get().await;
 
-        let mut peaks = self.retrieve_peaks_hashes(find_peaks(elements_count), None)?;
+        let mut peaks = self
+            .retrieve_peaks_hashes(find_peaks(elements_count), None)
+            .await?;
 
-        let mut last_element_idx = self.elements_count.increment()?;
+        let mut last_element_idx = self.elements_count.increment().await?;
         let leaf_element_index = last_element_idx;
 
         //? Store the hash in the database
-        self.hashes.set(&value, SubKey::Usize(last_element_idx));
+        self.hashes
+            .set(&value, SubKey::Usize(last_element_idx))
+            .await;
 
         peaks.push(value);
 
-        let no_merges = leaf_count_to_append_no_merges(self.leaves_count.get());
+        let no_merges = leaf_count_to_append_no_merges(self.leaves_count.get().await);
 
         for _ in 0..no_merges {
             last_element_idx += 1;
@@ -159,19 +163,20 @@ where
             let parent_hash = self.hasher.hash(vec![left_hash, right_hash])?;
 
             self.hashes
-                .set(&parent_hash, SubKey::Usize(last_element_idx));
+                .set(&parent_hash, SubKey::Usize(last_element_idx))
+                .await;
             peaks.push(parent_hash);
         }
 
-        self.elements_count.set(last_element_idx)?;
+        self.elements_count.set(last_element_idx).await?;
 
-        let bag = self.bag_the_peaks(None)?;
+        let bag = self.bag_the_peaks(None).await?;
 
         // Compute the new root hash
         let root_hash = self.calculate_root_hash(&bag, last_element_idx)?;
-        self.root_hash.set(&root_hash, SubKey::None);
+        self.root_hash.set(&root_hash, SubKey::None).await;
 
-        let leaves = self.leaves_count.increment()?;
+        let leaves = self.leaves_count.increment().await?;
 
         Ok(AppendResult {
             leaves_count: leaves,
@@ -181,11 +186,15 @@ where
         })
     }
 
-    pub fn get_proof(&self, element_index: usize, options: Option<ProofOptions>) -> Result<Proof> {
+    pub async fn get_proof(
+        &self,
+        element_index: usize,
+        options: Option<ProofOptions>,
+    ) -> Result<Proof> {
         assert_ne!(element_index, 0, "Index must be greater than 0");
 
         let options = options.unwrap_or_default();
-        let element_count = self.elements_count.get();
+        let element_count = self.elements_count.get().await;
         let tree_size = options.elements_count.unwrap_or(element_count);
 
         assert!(
@@ -201,15 +210,21 @@ where
             .formatting_opts
             .as_ref()
             .map(|opts| opts.peaks.clone());
-        let peaks_hashes = self.retrieve_peaks_hashes(peaks, formatting_opts).unwrap();
+        let peaks_hashes = self
+            .retrieve_peaks_hashes(peaks, formatting_opts)
+            .await
+            .unwrap();
 
-        let siblings_hashes = self.hashes.get_many(
-            siblings
-                .clone()
-                .into_iter()
-                .map(SubKey::Usize)
-                .collect::<Vec<SubKey>>(),
-        );
+        let siblings_hashes = self
+            .hashes
+            .get_many(
+                siblings
+                    .clone()
+                    .into_iter()
+                    .map(SubKey::Usize)
+                    .collect::<Vec<SubKey>>(),
+            )
+            .await;
 
         let mut siblings_hashes_vec: Vec<String> = siblings
             .iter()
@@ -221,7 +236,7 @@ where
                 format_proof(siblings_hashes_vec, formatting_opts.proof.clone()).unwrap();
         }
 
-        let element_hash = self.hashes.get(SubKey::Usize(element_index)).unwrap();
+        let element_hash = self.hashes.get(SubKey::Usize(element_index)).await.unwrap();
 
         Ok(Proof {
             element_index,
@@ -232,13 +247,13 @@ where
         })
     }
 
-    pub fn get_proofs(
+    pub async fn get_proofs(
         &self,
         elements_indexes: Vec<usize>,
         options: Option<ProofOptions>,
     ) -> Result<Vec<Proof>> {
         let options = options.unwrap_or_default();
-        let element_count = self.elements_count.get();
+        let element_count = self.elements_count.get().await;
         let tree_size = options.elements_count.unwrap_or(element_count);
 
         for &element_index in &elements_indexes {
@@ -250,7 +265,7 @@ where
         }
 
         let peaks = find_peaks(tree_size);
-        let peaks_hashes = self.retrieve_peaks_hashes(peaks, None).unwrap();
+        let peaks_hashes = self.retrieve_peaks_hashes(peaks, None).await.unwrap();
 
         let mut siblings_per_element = HashMap::new();
         for &element_id in &elements_indexes {
@@ -265,11 +280,11 @@ where
         .into_iter()
         .map(SubKey::Usize)
         .collect();
-        let all_siblings_hashes = self.hashes.get_many(sibling_hashes_to_get);
+        let all_siblings_hashes = self.hashes.get_many(sibling_hashes_to_get).await;
 
         let elements_ids_str: Vec<SubKey> =
             elements_indexes.iter().map(|&x| SubKey::Usize(x)).collect();
-        let element_hashes = self.hashes.get_many(elements_ids_str);
+        let element_hashes = self.hashes.get_many(elements_ids_str).await;
 
         let mut proofs: Vec<Proof> = Vec::new();
         for &element_id in &elements_indexes {
@@ -296,14 +311,14 @@ where
         Ok(proofs)
     }
 
-    pub fn verify_proof(
+    pub async fn verify_proof(
         &self,
         mut proof: Proof,
         element_value: String,
         options: Option<ProofOptions>,
     ) -> Result<bool> {
         let options = options.unwrap_or_default();
-        let element_count = self.elements_count.get();
+        let element_count = self.elements_count.get().await;
         let tree_size = options.elements_count.unwrap_or(element_count);
 
         let leaf_count = mmr_size_to_leaf_count(tree_size);
@@ -364,19 +379,22 @@ where
                 .unwrap();
         }
 
-        let peak_hashes = self.retrieve_peaks_hashes(find_peaks(tree_size), None)?;
+        let peak_hashes = self
+            .retrieve_peaks_hashes(find_peaks(tree_size), None)
+            .await?;
 
         Ok(peak_hashes[peak_index] == hash)
     }
 
-    pub fn retrieve_peaks_hashes(
+    pub async fn retrieve_peaks_hashes(
         &self,
         peak_idxs: Vec<usize>,
         formatting_opts: Option<PeaksFormattingOptions>,
     ) -> Result<Vec<String>> {
         let hashes_result = self
             .hashes
-            .get_many(peak_idxs.clone().into_iter().map(SubKey::Usize).collect());
+            .get_many(peak_idxs.clone().into_iter().map(SubKey::Usize).collect())
+            .await;
         // Assuming hashes_result is a HashMap<String, String>
         let hashes: Vec<String> = peak_idxs
             .iter()
@@ -389,12 +407,14 @@ where
         }
     }
 
-    pub fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String> {
-        let tree_size = elements_count.unwrap_or_else(|| self.elements_count.get());
+    pub async fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String> {
+        let element_count_result = self.elements_count.get().await;
+        let tree_size = elements_count.unwrap_or(element_count_result);
         let peaks_idxs = find_peaks(tree_size);
 
         let peaks_hashes = self
             .retrieve_peaks_hashes(peaks_idxs.clone(), None)
+            .await
             .unwrap();
 
         match peaks_idxs.len() {

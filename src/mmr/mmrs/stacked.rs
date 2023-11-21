@@ -10,7 +10,7 @@ impl<H> MMR<H>
 where
     H: Hasher + Clone,
 {
-    pub fn new_stacked(
+    pub async fn new_stacked(
         store: Rc<dyn Store>,
         hasher: H,
         mmr_id: Option<String>,
@@ -36,7 +36,7 @@ where
             }
 
             let elements_count = size;
-            let current_elements_count = mmr.elements_count.get();
+            let current_elements_count = mmr.elements_count.get().await;
 
             //? If the current MMR is already larger than the sub MMR, we don't need to do anything
             if current_elements_count >= elements_count {
@@ -48,9 +48,11 @@ where
 
             mmr.elements_count
                 .set(elements_count)
+                .await
                 .expect("Could not set elements count");
             mmr.leaves_count
                 .set(leaves_count)
+                .await
                 .expect("Could not set leaves count");
         }
 

@@ -104,12 +104,12 @@ impl InStoreTable {
         vec![(self.store.clone(), sub_keys)]
     }
 
-    pub fn get(&self, sub_key: SubKey) -> Option<String> {
+    pub async fn get(&self, sub_key: SubKey) -> Option<String> {
         let (store, full_key) = (self.get_store_and_full_key)(self, sub_key);
-        store.get(&full_key).unwrap_or_default()
+        store.get(&full_key).await.unwrap_or_default()
     }
 
-    pub fn get_many(&self, sub_keys: Vec<SubKey>) -> HashMap<String, String> {
+    pub async fn get_many(&self, sub_keys: Vec<SubKey>) -> HashMap<String, String> {
         let requested_len = sub_keys.len();
         let stores_and_keys = (self.get_stores_and_full_keys)(self, sub_keys);
 
@@ -117,7 +117,7 @@ impl InStoreTable {
         for store_and_keys in stores_and_keys {
             let (store, keys) = store_and_keys;
             let keys_ref: Vec<&str> = keys.iter().map(AsRef::as_ref).collect();
-            let fetched = store.get_many(keys_ref).unwrap_or_default(); // Assuming get_many is async and returns a Result
+            let fetched = store.get_many(keys_ref).await.unwrap_or_default(); // Assuming get_many is async and returns a Result
 
             for (key, value) in fetched.iter() {
                 let new_key: String = if key.contains(':') {
@@ -138,12 +138,12 @@ impl InStoreTable {
         keyless
     }
 
-    pub fn set(&self, value: &str, sub_key: SubKey) {
+    pub async fn set(&self, value: &str, sub_key: SubKey) {
         let (store, key) = (self.get_store_and_full_key)(self, sub_key);
-        store.set(&key, value).expect("Failed to set value")
+        store.set(&key, value).await.expect("Failed to set value")
     }
 
-    pub fn set_many(&self, entries: HashMap<SubKey, String>) {
+    pub async fn set_many(&self, entries: HashMap<SubKey, String>) {
         let mut store_entries = HashMap::new();
 
         for (key, value) in entries.into_iter() {
@@ -153,6 +153,7 @@ impl InStoreTable {
 
         self.store
             .set_many(store_entries)
+            .await
             .expect("Failed to set many values");
     }
 }
