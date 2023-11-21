@@ -6,6 +6,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  DATABASE_URL: "sqlite::memory:"
 
 jobs:
   test_mmr:
@@ -19,4 +20,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
-      - run: cargo test && cargo clippy
+      - run: cargo test --all-features && cargo clippy --all-features

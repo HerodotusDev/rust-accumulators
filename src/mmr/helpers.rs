@@ -1,12 +1,82 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashSet;
+use std::fmt::{Display, Formatter};
 use std::hash::Hash;
+use std::str::FromStr;
+
+use super::formatting::{PeaksFormattingOptions, ProofFormattingOptions};
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Proof {
+    /// The index of the proven element.
+    /// For example: 1
+    pub element_index: usize,
+
+    /// The hash of the element - the hash that is stored in the database.
+    /// For example: "0x1234567890abcdef"
+    pub element_hash: String,
+
+    /// The proof of the element's inclusion, aka the siblings hashes.
+    /// For example: ["0x1234567890abcdef", "0x1234567890abcdef"]
+    pub siblings_hashes: Vec<String>,
+
+    /// The hashes of the peaks of the tree.
+    /// For example: ["0x1234567890abcdef", "0x1234567890abcdef"]
+    pub peaks_hashes: Vec<String>,
+
+    /// The size of the tree, aka the position, aka the number of all elements in the tree.
+    /// For example: 1
+    pub elements_count: usize,
+}
+
+#[derive(Clone, Default)]
+pub struct ProofOptions {
+    pub elements_count: Option<usize>,
+    pub formatting_opts: Option<FormattingOptionsBundle>,
+}
+
+pub struct PeaksOptions {
+    pub elements_count: Option<usize>,
+    pub formatting_opts: Option<PeaksFormattingOptions>,
+}
+
+#[derive(Clone)]
+pub struct FormattingOptionsBundle {
+    pub proof: ProofFormattingOptions,
+    pub peaks: PeaksFormattingOptions,
+}
 
 #[derive(Debug)]
 pub enum TreeMetadataKeys {
     LeafCount,
     ElementCount,
     RootHash,
+    Hashes,
+}
+
+impl FromStr for TreeMetadataKeys {
+    fn from_str(text: &str) -> Result<Self> {
+        match text {
+            "leaf_count" => Ok(TreeMetadataKeys::LeafCount),
+            "elements_count" => Ok(TreeMetadataKeys::ElementCount),
+            "root_hash" => Ok(TreeMetadataKeys::RootHash),
+            "hashes" => Ok(TreeMetadataKeys::Hashes),
+            _ => Err(anyhow!("Invalid tree metadata key")),
+        }
+    }
+
+    type Err = anyhow::Error;
+}
+
+impl Display for TreeMetadataKeys {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TreeMetadataKeys::LeafCount => write!(f, "leaf_count"),
+            TreeMetadataKeys::ElementCount => write!(f, "elements_count"),
+            TreeMetadataKeys::RootHash => write!(f, "root_hash"),
+            TreeMetadataKeys::Hashes => write!(f, "hashes"),
+        }
+    }
 }
 
 /// Append Result

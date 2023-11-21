@@ -1,50 +1,46 @@
+![](/banner.png)
+
 # Rust Accumulators
 
 [![Cargo Test](https://github.com/HerodotusDev/rust-mmr/actions/workflows/ci.yml/badge.svg)](https://github.com/HerodotusDev/rust-mmr/actions/workflows/ci.yml)
 
-## Example
+## Accumulators
 
-```rust
-use std::vec;
+### - [MMR](./src/mmr/README.md)
 
-use mmr::{
-    core::CoreMMR,
-    hash::{stark_poseidon::StarkPoseidonHasher, IHasher},
-    helpers::AppendResult,
-    proof::{Proof, ProofOptions},
-    store::sqlite::SQLiteStore,
-};
+#### Requires: `features = ["mmr"]`
 
-let store = SQLiteStore::new(":memory:").unwrap();
-let hasher = StarkPoseidonHasher::new(Some(false));
-let _ = store.init();
+A Rust implementation of a Merkle Mountain Range (MMR) accumulator. With extensions.
 
-let mut mmr = CoreMMR::new(store, hasher.clone(), None);
+[MMR's README.md](./src/mmr/README.md)
 
-let _ = mmr.append("1".to_string()).unwrap();
-let _ = mmr.append("2".to_string()).unwrap();
-let _ = mmr.append("3".to_string()).unwrap();
-let append_result = mmr.append("4".to_string()).unwrap();
+### - [Incremental Merkle Tree](./src/merkle_tree/README.md)
 
-let proof4 = mmr
-    .get_proof(append_result.element_index,
-    ProofOptions {
-            elements_count: None,
-            formatting_opts: None,
-        },
-    )
-    .unwrap();
+#### Requires: `features = ["incremental_merkle_tree"]`
 
-mmr.verify_proof(
-    proof2,
-    "2".to_string(),
-    ProofOptions {
-        elements_count: None,
-        formatting_opts: None,
-    },
-)
-.unwrap(); //return true
-```
+A Rust implementation of an Incremental Merkle Tree accumulator.
+
+[Incremental Merkle Tree's README.md](./src/merkle_tree/README.md)
+
+## Utils
+
+### Hashers:
+
+Hashing functions used for hashing inside accumulators.
+
+- keccak: `features = ["keccak"]`
+
+- poseidon: `features = ["poseidon"]`
+
+- pedersen: `features = ["pedersen"]`
+
+### Stores:
+
+Key value stores used for storing the accumulator data.
+
+- memory: `features = ["memory"]`
+
+- sqlite: `features = ["sqlite"]`
 
 ## Reference
 

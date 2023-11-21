@@ -3,13 +3,13 @@ use num_bigint::BigInt;
 use num_traits::{identities::Zero, Num};
 use sha3::{Digest, Keccak256};
 
-use super::IHasher;
+use super::super::Hasher;
 
 pub struct KeccakHasher {
     block_size_bits: usize,
 }
 
-impl IHasher for KeccakHasher {
+impl Hasher for KeccakHasher {
     fn hash(&self, data: Vec<String>) -> Result<String> {
         let mut keccak = Keccak256::new();
 

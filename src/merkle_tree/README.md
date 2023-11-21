@@ -1,0 +1,36 @@
+# Incremental Merkle Tree
+
+Incremental Merkle Tree is a structure that contains a constant amount of hashes, allows updating a given hash and proving efficiently. Time complexity of both operations is O(log tree_size).
+
+#### Requires: `features = ["incremental_merkle_tree"]`
+
+## Example
+
+```rust
+use accumulators::{
+    hasher::stark_poseidon::StarkPoseidonHasher,
+    merkle_tree::incremental::IncrementalMerkleTree, store::memory::InMemoryStore,
+};
+
+let store = InMemoryStore::new();
+let store = Rc::new(store);
+let hasher = StarkPoseidonHasher::new(Some(false));
+
+let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None);
+
+let path = tree.get_inclusion_proof(10).unwrap();
+let valid_proof = tree.verify_proof(10, "0x0", &path).unwrap();
+assert!(valid_proof);
+
+let invalid_proof = tree.verify_proof(10, "0x1", &path).unwrap();
+assert!(!invalid_proof);
+```
+
+### Benchmark
+
+```sh
+Incremental Merkle Tree insertion/times/10000
+                        time:   [154.39 ms 154.89 ms 155.38 ms]
+Incremental Merkle Tree insertion/times/1000000
+                        time:   [17.946 s 18.027 s 18.125 s]
+```

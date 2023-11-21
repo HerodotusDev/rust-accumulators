@@ -1,42 +1,39 @@
 use std::rc::Rc;
 
-use super::IStore;
+use super::Store;
 use anyhow::Result;
 
-pub struct InStoreCounter<S> {
-    store: Rc<S>,
-    key: String,
+pub struct InStoreCounter {
+    pub store: Rc<dyn Store>,
+    pub key: String,
 }
 
-impl<S> InStoreCounter<S>
-where
-    S: IStore,
-{
-    // constructor
-    pub fn new(store: Rc<S>, key: String) -> Self {
+impl InStoreCounter {
+    pub fn new(store: Rc<dyn Store>, key: String) -> Self {
         Self { store, key }
     }
 
-    pub fn get(&self) -> usize {
+    pub async fn get(&self) -> usize {
         let current_count = self
             .store
             .get(&self.key)
-            .unwrap()
+            .await
+            .expect("Failed to get count")
             .unwrap_or("0".to_string());
-        current_count.parse::<usize>().unwrap()
+        current_count
+            .parse::<usize>()
+            .expect("Failed to parse count")
     }
 
-    // set
-    pub fn set(&self, count: usize) -> Result<()> {
-        self.store.set(&self.key, &count.to_string())?;
+    pub async fn set(&self, count: usize) -> Result<()> {
+        self.store.set(&self.key, &count.to_string()).await?;
         Ok(())
     }
 
-    // increment
-    pub fn increment(&self) -> Result<usize> {
-        let current_count = self.get();
+    pub async fn increment(&self) -> Result<usize> {
+        let current_count = self.get().await;
         let new_count = current_count + 1;
-        self.set(new_count)?;
+        self.set(new_count).await?;
         Ok(new_count)
     }
 }

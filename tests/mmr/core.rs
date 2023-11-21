@@ -1,24 +1,23 @@
-use std::vec;
+use std::rc::Rc;
 
 use accumulators::{
-    core::CoreMMR,
-    hash::{stark_poseidon::StarkPoseidonHasher, IHasher},
-    helpers::AppendResult,
-    proof::{Proof, ProofOptions},
-    store::sqlite::SQLiteStore,
+    hasher::{stark_poseidon::StarkPoseidonHasher, Hasher},
+    mmr::{AppendResult, Proof, MMR},
+    store::{memory::InMemoryStore, sqlite::SQLiteStore, SubKey},
 };
 
-#[test]
-fn should_append_to_mmr() {
-    let store = SQLiteStore::new(":memory:").unwrap();
+#[tokio::test]
+async fn should_append_to_mmr() {
+    let store = InMemoryStore::default();
     let hasher = StarkPoseidonHasher::new(Some(false));
-    let _ = store.init();
 
-    let mut mmr = CoreMMR::new(store, hasher.clone(), None);
+    let store = Rc::new(store);
+
+    let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
 
     // Act
     // let mut mmr = CoreMMR::create_with_genesis(store, hasher.clone(), None).unwrap();
-    let append_result1 = mmr.append("1".to_string()).unwrap();
+    let append_result1 = mmr.append("1".to_string()).await.unwrap();
 
     assert_eq!(
         append_result1,
@@ -31,9 +30,9 @@ fn should_append_to_mmr() {
         }
     );
 
-    assert_eq!(mmr.bag_the_peaks(None).unwrap(), "1");
+    assert_eq!(mmr.bag_the_peaks(None).await.unwrap(), "1");
 
-    let append_result2 = mmr.append("2".to_string()).unwrap();
+    let append_result2 = mmr.append("2".to_string()).await.unwrap();
 
     assert_eq!(
         append_result2,
@@ -47,11 +46,11 @@ fn should_append_to_mmr() {
     );
 
     assert_eq!(
-        mmr.bag_the_peaks(None).unwrap(),
+        mmr.bag_the_peaks(None).await.unwrap(),
         "0x5d44a3decb2b2e0cc71071f7b802f45dd792d064f0fc7316c46514f70f9891a"
     );
 
-    let append_result4 = mmr.append("4".to_string()).unwrap();
+    let append_result4 = mmr.append("4".to_string()).await.unwrap();
     assert_eq!(
         append_result4,
         AppendResult {
@@ -64,10 +63,10 @@ fn should_append_to_mmr() {
     );
 
     assert_eq!(
-        mmr.bag_the_peaks(None).unwrap(),
+        mmr.bag_the_peaks(None).await.unwrap(),
         "0x6f31a64a67c46b553960ae6b72bcf9fa3ccc6a4d6344e3799412e2c73a059b2"
     );
-    let append_result5 = mmr.append("5".to_string()).unwrap();
+    let append_result5 = mmr.append("5".to_string()).await.unwrap();
     assert_eq!(
         append_result5,
         AppendResult {
@@ -79,10 +78,10 @@ fn should_append_to_mmr() {
         }
     );
     assert_eq!(
-        mmr.bag_the_peaks(None).unwrap(),
+        mmr.bag_the_peaks(None).await.unwrap(),
         "0x43c59debacab61e73dec9edd73da27738a8be14c1e123bb38f9634220323c4f"
     );
-    let append_result8 = mmr.append("8".to_string()).unwrap();
+    let append_result8 = mmr.append("8".to_string()).await.unwrap();
     assert_eq!(
         append_result8,
         AppendResult {
@@ -95,19 +94,11 @@ fn should_append_to_mmr() {
     );
 
     assert_eq!(
-        mmr.bag_the_peaks(None).unwrap(),
+        mmr.bag_the_peaks(None).await.unwrap(),
         "0x49da356656c3153d59f9be39143daebfc12e05b6a93ab4ccfa866a890ad78f"
     );
 
-    let proof1 = mmr
-        .get_proof(
-            1,
-            ProofOptions {
-                elements_count: None,
-                formatting_opts: None,
-            },
-        )
-        .unwrap();
+    let proof1 = mmr.get_proof(1, None).await.unwrap();
 
     assert_eq!(
         proof1,
@@ -126,25 +117,11 @@ fn should_append_to_mmr() {
         }
     );
 
-    mmr.verify_proof(
-        proof1,
-        "1".to_string(),
-        ProofOptions {
-            elements_count: None,
-            formatting_opts: None,
-        },
-    )
-    .unwrap();
-
-    let proof2 = mmr
-        .get_proof(
-            2,
-            ProofOptions {
-                elements_count: None,
-                formatting_opts: None,
-            },
-        )
+    mmr.verify_proof(proof1, "1".to_string(), None)
+        .await
         .unwrap();
+
+    let proof2 = mmr.get_proof(2, None).await.unwrap();
 
     assert_eq!(
         proof2,
@@ -163,25 +140,11 @@ fn should_append_to_mmr() {
         }
     );
 
-    mmr.verify_proof(
-        proof2,
-        "2".to_string(),
-        ProofOptions {
-            elements_count: None,
-            formatting_opts: None,
-        },
-    )
-    .unwrap();
-
-    let proof4 = mmr
-        .get_proof(
-            4,
-            ProofOptions {
-                elements_count: None,
-                formatting_opts: None,
-            },
-        )
+    mmr.verify_proof(proof2, "2".to_string(), None)
+        .await
         .unwrap();
+
+    let proof4 = mmr.get_proof(4, None).await.unwrap();
 
     assert_eq!(
         proof4,
@@ -200,25 +163,11 @@ fn should_append_to_mmr() {
         }
     );
 
-    mmr.verify_proof(
-        proof4,
-        "4".to_string(),
-        ProofOptions {
-            elements_count: None,
-            formatting_opts: None,
-        },
-    )
-    .unwrap();
-
-    let proof5 = mmr
-        .get_proof(
-            5,
-            ProofOptions {
-                elements_count: None,
-                formatting_opts: None,
-            },
-        )
+    mmr.verify_proof(proof4, "4".to_string(), None)
+        .await
         .unwrap();
+
+    let proof5 = mmr.get_proof(5, None).await.unwrap();
 
     assert_eq!(
         proof5,
@@ -237,43 +186,74 @@ fn should_append_to_mmr() {
         }
     );
 
-    mmr.verify_proof(
-        proof5,
-        "5".to_string(),
-        ProofOptions {
-            elements_count: None,
-            formatting_opts: None,
-        },
-    )
-    .unwrap();
+    mmr.verify_proof(proof5, "5".to_string(), None)
+        .await
+        .unwrap();
 }
 
-#[test]
-fn should_append_duplicate_to_mmr() {
-    let store = SQLiteStore::new(":memory:").unwrap();
+#[tokio::test]
+async fn should_append_duplicate_to_mmr() {
+    let store = SQLiteStore::new(":memory:").await.unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
-    let _ = store.init();
-    let mut mmr = CoreMMR::new(store, hasher, None);
-    let _ = mmr.append("4".to_string());
-    let _ = mmr.append("4".to_string());
 
-    let _root = mmr.bag_the_peaks(None).unwrap();
+    let store = Rc::new(store);
+
+    let mut mmr = MMR::new(store, hasher, None);
+    let _ = mmr.append("4".to_string()).await;
+    let _ = mmr.append("4".to_string()).await;
+
+    let _root = mmr.bag_the_peaks(None).await.unwrap();
 }
 
-#[test]
-fn test_new() {
+#[tokio::test]
+async fn test_new() {
     // Arrange
-    let store = SQLiteStore::new(":memory:").unwrap();
+    let store = SQLiteStore::new(":memory:").await.unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
-    let _ = store.init();
+
+    let store = Rc::new(store);
 
     // Act
-    let core_mmr = CoreMMR::create_with_genesis(store, hasher.clone(), None).unwrap();
+    let core_mmr = MMR::create_with_genesis(store, hasher.clone(), None)
+        .await
+        .unwrap();
 
     assert_eq!(
-        core_mmr.root_hash.get::<usize>(None).unwrap(),
+        core_mmr.root_hash.get(SubKey::None).await.unwrap(),
         hasher
             .hash(vec!["1".to_string(), hasher.get_genesis()])
             .unwrap()
     );
+}
+
+#[tokio::test]
+async fn example() {
+    use accumulators::{
+        hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::memory::InMemoryStore,
+    };
+
+    let store = InMemoryStore::default();
+    let store_rc = Rc::new(store);
+    let hasher = StarkPoseidonHasher::new(Some(false));
+
+    let mut mmr = MMR::new(store_rc, hasher, None);
+
+    mmr.append("1".to_string()).await.expect("Failed to append");
+    mmr.append("2".to_string()).await.expect("Failed to append");
+    mmr.append("3".to_string()).await.expect("Failed to append");
+    let example_value = "4".to_string();
+    let example_append = mmr
+        .append(example_value.clone())
+        .await
+        .expect("Failed to append");
+
+    let proof = mmr
+        .get_proof(example_append.element_index, None)
+        .await
+        .expect("Failed to get proof");
+
+    assert!(mmr
+        .verify_proof(proof, example_value, None)
+        .await
+        .expect("Failed to verify proof"));
 }
