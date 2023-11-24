@@ -1,14 +1,18 @@
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, sync::Arc};
 
-use crate::{hasher::Hasher, mmr::MMR, store::memory::InMemoryStore};
+use crate::{
+    hasher::Hasher,
+    mmr::{CoreMMR, MMR},
+    store::memory::InMemoryStore,
+};
 
 impl<H> MMR<H>
 where
-    H: Hasher + Clone,
+    H: Hasher + Clone + Send + Sync,
 {
     pub async fn start_draft(&mut self) -> DraftMMR<H> {
         let store = InMemoryStore::default();
-        let store = Rc::new(store);
+        let store = Arc::new(store);
         let hasher = self.hasher.clone();
 
         let mut sub_mmrs = self.sub_mmrs.clone();
@@ -28,14 +32,14 @@ pub struct DraftMMR<'a, H>
 where
     H: Hasher,
 {
-    store: Rc<InMemoryStore>,
+    store: Arc<InMemoryStore>,
     ref_mmr: &'a mut MMR<H>,
     pub mmr: MMR<H>,
 }
 
 impl<H> DraftMMR<'_, H>
 where
-    H: Hasher + Clone,
+    H: Hasher + Clone + Send + Sync,
 {
     pub async fn discard(self) {
         self.store.clear();

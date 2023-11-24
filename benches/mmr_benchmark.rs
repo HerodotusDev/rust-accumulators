@@ -1,7 +1,9 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use accumulators::{
-    hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::sqlite::SQLiteStore,
+    hasher::stark_poseidon::StarkPoseidonHasher,
+    mmr::{CoreMMR, MMR},
+    store::sqlite::SQLiteStore,
 };
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use tokio::runtime::Runtime;
@@ -11,7 +13,7 @@ async fn prepare_mmr(count: usize) -> MMR<StarkPoseidonHasher> {
 
     let store = SQLiteStore::new(":memory:").await.unwrap();
 
-    let store = Rc::new(store);
+    let store = Arc::new(store);
 
     let mut mmr = MMR::new(store, hasher.clone(), None);
 

@@ -1,20 +1,20 @@
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     hasher::Hasher,
-    mmr::{elements_count_to_leaf_count, SizesToMMRs, TreeMetadataKeys, MMR},
+    mmr::{elements_count_to_leaf_count, CoreMMR, SizesToMMRs, TreeMetadataKeys, MMR},
     store::{InStoreTable, Store, SubKey, SubMMR},
 };
 
 impl<H> MMR<H>
 where
-    H: Hasher + Clone,
+    H: Hasher + Clone + Send + Sync,
 {
     pub async fn new_stacked(
-        store: Rc<dyn Store>,
+        store: Arc<dyn Store>,
         hasher: H,
         mmr_id: Option<String>,
-        sub_mmrs_metadata: SizesToMMRs<H>,
+        sub_mmrs_metadata: SizesToMMRs,
     ) -> Self {
         let mut mmr = MMR::new(store, hasher, mmr_id);
         let sub_mmrs_count = sub_mmrs_metadata.len();
@@ -66,7 +66,7 @@ where
     pub fn get_store_and_full_key(
         table: &InStoreTable,
         sub_key: SubKey,
-    ) -> (Rc<dyn Store>, String) {
+    ) -> (Arc<dyn Store>, String) {
         let (_, key, _) =
             MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
 
@@ -113,7 +113,7 @@ where
     pub fn get_stores_and_full_keys(
         table: &InStoreTable,
         sub_keys: Vec<SubKey>,
-    ) -> Vec<(Rc<dyn Store>, Vec<String>)> {
+    ) -> Vec<(Arc<dyn Store>, Vec<String>)> {
         let (_, key, _) =
             MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
 

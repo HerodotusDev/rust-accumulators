@@ -1,10 +1,11 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
-use std::rc::Rc;
 use std::str::FromStr;
+use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::hasher::Hasher;
+use crate::hasher::{Hasher, HashingFunction};
 use crate::store::{InStoreCounter, InStoreTable, Store, SubKey};
 
 use crate::mmr::{
@@ -16,11 +17,44 @@ use crate::mmr::{
     },
 };
 
+#[async_trait]
+pub trait CoreMMR: Sync + Send {
+    fn get_metadata(&self) -> MmrMetadata;
+    fn get_store_keys(mmr_id: &str) -> (String, String, String, String);
+    fn decode_store_key(store_key: &str) -> Option<(String, TreeMetadataKeys, SubKey)>;
+    fn encode_store_key(mmr_id: &str, key: TreeMetadataKeys, sub_key: SubKey) -> String;
+    fn get_stores(
+        mmr_id: &str,
+        store_rc: Arc<dyn Store>,
+    ) -> (InStoreCounter, InStoreCounter, InStoreTable, InStoreTable);
+    async fn append(&mut self, value: String) -> Result<AppendResult>;
+    async fn get_proof(&self, element_index: usize, options: Option<ProofOptions>)
+        -> Result<Proof>;
+    async fn get_proofs(
+        &self,
+        elements_indexes: Vec<usize>,
+        options: Option<ProofOptions>,
+    ) -> Result<Vec<Proof>>;
+    async fn verify_proof(
+        &self,
+        proof: Proof,
+        element_value: String,
+        options: Option<ProofOptions>,
+    ) -> Result<bool>;
+    async fn retrieve_peaks_hashes(
+        &self,
+        peak_idxs: Vec<usize>,
+        formatting_opts: Option<PeaksFormattingOptions>,
+    ) -> Result<Vec<String>>;
+    async fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String>;
+    fn calculate_root_hash(&self, bag: &str, elements_count: usize) -> Result<String>;
+}
+
 pub struct MMR<H>
 where
     H: Hasher,
 {
-    pub store: Rc<dyn Store>,
+    pub store: Arc<dyn Store>,
     pub hasher: H,
     pub mmr_id: String,
     pub leaves_count: InStoreCounter,
@@ -28,25 +62,25 @@ where
     pub hashes: InStoreTable,
     pub root_hash: InStoreTable,
     #[cfg(feature = "stacked_mmr")]
-    pub sub_mmrs: SizesToMMRs<H>,
+    pub sub_mmrs: SizesToMMRs,
 }
 
 #[derive(Clone)]
-pub struct MmrMetadata<H> {
+pub struct MmrMetadata {
     pub mmr_id: String,
-    pub store: Rc<dyn Store>,
-    pub hasher: H,
+    pub store: Arc<dyn Store>,
+    pub hasher: HashingFunction,
 }
 
 /// A tuple of the size at which the MMR is stacked and the MMR itself.
 #[cfg(feature = "stacked_mmr")]
-pub type SizesToMMRs<H> = Vec<(usize, MmrMetadata<H>)>;
+pub type SizesToMMRs = Vec<(usize, MmrMetadata)>;
 
 impl<H> MMR<H>
 where
-    H: Hasher + Clone,
+    H: Hasher + Clone + Send + Sync,
 {
-    pub fn new(store: Rc<dyn Store>, hasher: H, mmr_id: Option<String>) -> Self {
+    pub fn new(store: Arc<dyn Store>, hasher: H, mmr_id: Option<String>) -> Self {
         let mmr_id = mmr_id.unwrap_or_else(|| Uuid::new_v4().to_string());
 
         let (leaves_count, elements_count, root_hash, hashes) =
@@ -65,15 +99,34 @@ where
         }
     }
 
-    pub fn get_metadata(&self) -> MmrMetadata<H> {
+    pub async fn create_with_genesis(
+        store: Arc<dyn Store>,
+        hasher: H,
+        mmr_id: Option<String>,
+    ) -> Result<Self> {
+        let mut mmr = MMR::new(store, hasher, mmr_id);
+        let elements_count: usize = mmr.elements_count.get().await;
+        assert_eq!(elements_count, 0, "Cannot call create_with_genesis on a non-empty MMR. Please provide an empty store or change the MMR id.");
+        let genesis = mmr.hasher.get_genesis();
+        let _ = mmr.append(genesis).await;
+        Ok(mmr)
+    }
+}
+
+#[async_trait]
+impl<H> CoreMMR for MMR<H>
+where
+    H: Hasher + Clone + Send + Sync,
+{
+    fn get_metadata(&self) -> MmrMetadata {
         MmrMetadata {
             mmr_id: self.mmr_id.clone(),
             store: self.store.clone(),
-            hasher: self.hasher.clone(),
+            hasher: self.hasher.get_name(),
         }
     }
 
-    pub fn get_store_keys(mmr_id: &str) -> (String, String, String, String) {
+    fn get_store_keys(mmr_id: &str) -> (String, String, String, String) {
         (
             format!("{}:{}", mmr_id, TreeMetadataKeys::LeafCount),
             format!("{}:{}", mmr_id, TreeMetadataKeys::ElementCount),
@@ -82,7 +135,7 @@ where
         )
     }
 
-    pub fn decode_store_key(store_key: &str) -> Option<(String, TreeMetadataKeys, SubKey)> {
+    fn decode_store_key(store_key: &str) -> Option<(String, TreeMetadataKeys, SubKey)> {
         let mut parts = store_key.split(':');
         let mmr_id = parts.next()?.to_string();
         let key = TreeMetadataKeys::from_str(parts.next()?).expect("Invalid tree metadata key");
@@ -94,7 +147,7 @@ where
         Some((mmr_id, key, sub_key))
     }
 
-    pub fn encode_store_key(mmr_id: &str, key: TreeMetadataKeys, sub_key: SubKey) -> String {
+    fn encode_store_key(mmr_id: &str, key: TreeMetadataKeys, sub_key: SubKey) -> String {
         let store_key = format!("{}:{}", mmr_id, key);
         match sub_key {
             SubKey::None => store_key,
@@ -102,9 +155,9 @@ where
         }
     }
 
-    pub fn get_stores(
+    fn get_stores(
         mmr_id: &str,
-        store_rc: Rc<dyn Store>,
+        store_rc: Arc<dyn Store>,
     ) -> (InStoreCounter, InStoreCounter, InStoreTable, InStoreTable) {
         let (leaves_count_key, elements_count_key, root_hash_key, hashes_key) =
             MMR::<H>::get_store_keys(mmr_id);
@@ -117,20 +170,7 @@ where
         )
     }
 
-    pub async fn create_with_genesis(
-        store: Rc<dyn Store>,
-        hasher: H,
-        mmr_id: Option<String>,
-    ) -> Result<Self> {
-        let mut mmr = MMR::new(store, hasher, mmr_id);
-        let elements_count: usize = mmr.elements_count.get().await;
-        assert_eq!(elements_count, 0, "Cannot call create_with_genesis on a non-empty MMR. Please provide an empty store or change the MMR id.");
-        let genesis = mmr.hasher.get_genesis();
-        let _ = mmr.append(genesis).await;
-        Ok(mmr)
-    }
-
-    pub async fn append(&mut self, value: String) -> Result<AppendResult> {
+    async fn append(&mut self, value: String) -> Result<AppendResult> {
         assert!(
             self.hasher.is_element_size_valid(&value),
             "Element size is too big to hash with this hasher"
@@ -186,7 +226,7 @@ where
         })
     }
 
-    pub async fn get_proof(
+    async fn get_proof(
         &self,
         element_index: usize,
         options: Option<ProofOptions>,
@@ -247,7 +287,7 @@ where
         })
     }
 
-    pub async fn get_proofs(
+    async fn get_proofs(
         &self,
         elements_indexes: Vec<usize>,
         options: Option<ProofOptions>,
@@ -311,7 +351,7 @@ where
         Ok(proofs)
     }
 
-    pub async fn verify_proof(
+    async fn verify_proof(
         &self,
         mut proof: Proof,
         element_value: String,
@@ -386,7 +426,7 @@ where
         Ok(peak_hashes[peak_index] == hash)
     }
 
-    pub async fn retrieve_peaks_hashes(
+    async fn retrieve_peaks_hashes(
         &self,
         peak_idxs: Vec<usize>,
         formatting_opts: Option<PeaksFormattingOptions>,
@@ -407,7 +447,7 @@ where
         }
     }
 
-    pub async fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String> {
+    async fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String> {
         let element_count_result = self.elements_count.get().await;
         let tree_size = elements_count.unwrap_or(element_count_result);
         let peaks_idxs = find_peaks(tree_size);
@@ -434,7 +474,7 @@ where
         }
     }
 
-    pub fn calculate_root_hash(&self, bag: &str, elements_count: usize) -> Result<String> {
+    fn calculate_root_hash(&self, bag: &str, elements_count: usize) -> Result<String> {
         self.hasher
             .hash(vec![elements_count.to_string(), bag.to_string()])
     }

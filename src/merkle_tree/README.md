@@ -13,7 +13,7 @@ use accumulators::{
 };
 
 let store = InMemoryStore::new();
-let store = Rc::new(store);
+let store = Arc::new(store);
 let hasher = StarkPoseidonHasher::new(Some(false));
 
 let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None);

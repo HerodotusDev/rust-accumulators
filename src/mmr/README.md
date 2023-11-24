@@ -12,7 +12,7 @@ use accumulators::{
 };
 
 let store = InMemoryStore::default();
-let store_rc = Rc::new(store);
+let store_rc = Arc::new(store);
 let hasher = StarkPoseidonHasher::new(Some(false));
 
 let mut mmr = MMR::new(store_rc, hasher, None);
@@ -54,7 +54,7 @@ use accumulators::{
 };
 
 let store = InMemoryStore::new();
-let store = Rc::new(store);
+let store = Arc::new(store);
 let hasher = StarkPoseidonHasher::new(Some(false));
 
 let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
@@ -92,7 +92,7 @@ use accumulators::{
 };
 
 let store = InMemoryStore::new();
-let store = Rc::new(store);
+let store = Arc::new(store);
 let hasher = StarkPoseidonHasher::new(Some(false));
 
 let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
