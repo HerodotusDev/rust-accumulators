@@ -1,4 +1,4 @@
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     hasher::Hasher,
@@ -6,15 +6,12 @@ use crate::{
     store::{InStoreTable, Store, SubKey, SubMMR},
 };
 
-impl<H> MMR<H>
-where
-    H: Hasher + Clone,
-{
+impl MMR {
     pub async fn new_stacked(
-        store: Rc<dyn Store>,
-        hasher: H,
+        store: Arc<dyn Store>,
+        hasher: Arc<dyn Hasher>,
         mmr_id: Option<String>,
-        sub_mmrs_metadata: SizesToMMRs<H>,
+        sub_mmrs_metadata: SizesToMMRs,
     ) -> Self {
         let mut mmr = MMR::new(store, hasher, mmr_id);
         let sub_mmrs_count = sub_mmrs_metadata.len();
@@ -22,7 +19,7 @@ where
 
         for (idx, (size, mmr_metadata)) in sub_mmrs_metadata.into_iter().enumerate() {
             let (_, _, _, hashes_table) =
-                MMR::<H>::get_stores(&mmr_metadata.mmr_id, mmr_metadata.store.clone());
+                MMR::get_stores(&mmr_metadata.mmr_id, mmr_metadata.store.clone());
 
             sub_mmrs.push(SubMMR {
                 size,
@@ -56,8 +53,8 @@ where
                 .expect("Could not set leaves count");
         }
 
-        mmr.hashes.get_store_and_full_key = MMR::<H>::get_store_and_full_key;
-        mmr.hashes.get_stores_and_full_keys = MMR::<H>::get_stores_and_full_keys;
+        mmr.hashes.get_store_and_full_key = MMR::get_store_and_full_key;
+        mmr.hashes.get_stores_and_full_keys = MMR::get_stores_and_full_keys;
         mmr.hashes.sub_mmrs = Some(sub_mmrs);
 
         mmr
@@ -66,9 +63,8 @@ where
     pub fn get_store_and_full_key(
         table: &InStoreTable,
         sub_key: SubKey,
-    ) -> (Rc<dyn Store>, String) {
-        let (_, key, _) =
-            MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
+    ) -> (Arc<dyn Store>, String) {
+        let (_, key, _) = MMR::decode_store_key(&table.key).expect("Could not decode store key");
 
         match key {
             TreeMetadataKeys::Hashes => {}
@@ -113,9 +109,8 @@ where
     pub fn get_stores_and_full_keys(
         table: &InStoreTable,
         sub_keys: Vec<SubKey>,
-    ) -> Vec<(Rc<dyn Store>, Vec<String>)> {
-        let (_, key, _) =
-            MMR::<H>::decode_store_key(&table.key).expect("Could not decode store key");
+    ) -> Vec<(Arc<dyn Store>, Vec<String>)> {
+        let (_, key, _) = MMR::decode_store_key(&table.key).expect("Could not decode store key");
 
         match key {
             TreeMetadataKeys::Hashes => {}

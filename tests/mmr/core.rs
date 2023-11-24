@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use accumulators::{
     hasher::{stark_poseidon::StarkPoseidonHasher, Hasher},
@@ -9,9 +9,9 @@ use accumulators::{
 #[tokio::test]
 async fn should_append_to_mmr() {
     let store = InMemoryStore::default();
-    let hasher = StarkPoseidonHasher::new(Some(false));
+    let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
-    let store = Rc::new(store);
+    let store = Arc::new(store);
 
     let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
 
@@ -194,9 +194,9 @@ async fn should_append_to_mmr() {
 #[tokio::test]
 async fn should_append_duplicate_to_mmr() {
     let store = SQLiteStore::new(":memory:").await.unwrap();
-    let hasher = StarkPoseidonHasher::new(Some(false));
+    let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
-    let store = Rc::new(store);
+    let store = Arc::new(store);
 
     let mut mmr = MMR::new(store, hasher, None);
     let _ = mmr.append("4".to_string()).await;
@@ -209,9 +209,9 @@ async fn should_append_duplicate_to_mmr() {
 async fn test_new() {
     // Arrange
     let store = SQLiteStore::new(":memory:").await.unwrap();
-    let hasher = StarkPoseidonHasher::new(Some(false));
+    let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
-    let store = Rc::new(store);
+    let store = Arc::new(store);
 
     // Act
     let core_mmr = MMR::create_with_genesis(store, hasher.clone(), None)
@@ -233,8 +233,8 @@ async fn example() {
     };
 
     let store = InMemoryStore::default();
-    let store_rc = Rc::new(store);
-    let hasher = StarkPoseidonHasher::new(Some(false));
+    let store_rc = Arc::new(store);
+    let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
     let mut mmr = MMR::new(store_rc, hasher, None);
 

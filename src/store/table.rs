@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::Store;
 
@@ -35,16 +35,16 @@ impl Hash for SubKey {
     }
 }
 
-pub type GetFullKeyAndStoreFn = fn(&InStoreTable, SubKey) -> (Rc<dyn Store>, String);
+pub type GetFullKeyAndStoreFn = fn(&InStoreTable, SubKey) -> (Arc<dyn Store>, String);
 pub type GetFullKeysAndStoresFn =
-    fn(&InStoreTable, Vec<SubKey>) -> Vec<(Rc<dyn Store>, Vec<String>)>;
+    fn(&InStoreTable, Vec<SubKey>) -> Vec<(Arc<dyn Store>, Vec<String>)>;
 
 #[cfg(feature = "stacked_mmr")]
 #[derive(Clone)]
 pub struct SubMMR {
     pub size: usize,
     pub key: String,
-    pub store: Rc<dyn Store>,
+    pub store: Arc<dyn Store>,
 }
 
 #[derive(Clone)]
@@ -52,7 +52,7 @@ pub struct InStoreTable {
     /// Always use this store for setters
     ///
     /// For getters use the store provided by the get_full_key... functions
-    pub store: Rc<dyn Store>,
+    pub store: Arc<dyn Store>,
     /// Always use this key for setters
     ///
     /// For getters use the key provided by the get_full_key... functions
@@ -70,7 +70,7 @@ pub struct InStoreTable {
 }
 
 impl InStoreTable {
-    pub fn new(store: Rc<dyn Store>, key: String) -> Self {
+    pub fn new(store: Arc<dyn Store>, key: String) -> Self {
         Self {
             store,
             key,
@@ -85,7 +85,7 @@ impl InStoreTable {
         format!("{}{}", key, sub_key)
     }
 
-    pub fn default_get_store_and_full_key(&self, sub_key: SubKey) -> (Rc<dyn Store>, String) {
+    pub fn default_get_store_and_full_key(&self, sub_key: SubKey) -> (Arc<dyn Store>, String) {
         let new_sub_key = sub_key.to_string();
         (
             self.store.clone(),
@@ -96,7 +96,7 @@ impl InStoreTable {
     pub fn default_get_stores_and_full_keys(
         &self,
         sub_keys: Vec<SubKey>,
-    ) -> Vec<(Rc<dyn Store>, Vec<String>)> {
+    ) -> Vec<(Arc<dyn Store>, Vec<String>)> {
         let sub_keys: Vec<String> = sub_keys
             .into_iter()
             .map(|sub_key| InStoreTable::get_full_key(&self.key, &sub_key.to_string()))

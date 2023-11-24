@@ -1,3 +1,5 @@
+use crate::hasher::HashingFunction;
+
 use super::super::Hasher;
 use anyhow::{anyhow, Result};
 use starknet::core::types::FieldElement;
@@ -10,6 +12,10 @@ pub struct StarkPoseidonHasher {
 }
 
 impl Hasher for StarkPoseidonHasher {
+    fn get_name(&self) -> HashingFunction {
+        HashingFunction::Poseidon
+    }
+
     fn hash(&self, data: Vec<String>) -> Result<String> {
         let size_error_index = data.iter().position(|e| !self.is_element_size_valid(e));
 

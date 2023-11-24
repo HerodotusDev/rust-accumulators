@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use accumulators::{
     hasher::stark_poseidon::StarkPoseidonHasher, merkle_tree::incremental::IncrementalMerkleTree,
@@ -12,7 +12,7 @@ async fn prepare_incremental(count: usize) -> IncrementalMerkleTree<StarkPoseido
 
     let store = SQLiteStore::new(":memory:").await.unwrap();
 
-    let store = Rc::new(store);
+    let store = Arc::new(store);
 
     IncrementalMerkleTree::initialize(count, "0x0".to_string(), hasher, store, None).await
 }

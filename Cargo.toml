@@ -50,6 +50,7 @@ default = ["store", "hasher"]
 all = [
     "store",
     "sqlite",
+    "memory",
     "hasher",
     "keccak",
     "poseidon",

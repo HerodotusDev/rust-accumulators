@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Result};
 
 use indexmap::IndexMap;
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, sync::Arc};
 
 use uuid::Uuid;
 
@@ -23,7 +23,7 @@ struct Node {
 }
 
 pub struct IncrementalMerkleTree<H> {
-    pub store: Rc<dyn Store>,
+    pub store: Arc<dyn Store>,
     pub mmr_id: String,
     pub nodes: InStoreTable,
     pub root_hash: InStoreTable,
@@ -40,7 +40,7 @@ where
         size: usize,
         null_value: String,
         hasher: H,
-        store: Rc<dyn Store>,
+        store: Arc<dyn Store>,
         mmr_id: Option<String>,
     ) -> Self {
         let mmr_id = mmr_id.unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -66,7 +66,7 @@ where
         size: usize,
         null_value: String,
         hasher: H,
-        store: Rc<dyn Store>,
+        store: Arc<dyn Store>,
         mmr_id: Option<String>,
     ) -> Self {
         let tree = IncrementalMerkleTree::new(size, null_value, hasher, store, mmr_id);

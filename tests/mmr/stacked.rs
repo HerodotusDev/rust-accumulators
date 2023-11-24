@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use accumulators::{
     hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::sqlite::SQLiteStore,
@@ -7,9 +7,9 @@ use accumulators::{
 #[tokio::test]
 async fn should_stack_two_mmrs() {
     let store = SQLiteStore::new(":memory:").await.unwrap();
-    let hasher = StarkPoseidonHasher::new(Some(false));
+    let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
-    let store = Rc::new(store);
+    let store = Arc::new(store);
 
     let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
 
@@ -67,9 +67,9 @@ async fn should_stack_two_mmrs() {
 #[tokio::test]
 async fn should_stack_4_mmrs() {
     let store = SQLiteStore::new(":memory:").await.unwrap();
-    let hasher = StarkPoseidonHasher::new(Some(false));
+    let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
-    let store = Rc::new(store);
+    let store = Arc::new(store);
 
     //? First MMR
     let mut mmr_1 = MMR::new(store.clone(), hasher.clone(), None);
@@ -197,8 +197,8 @@ async fn example() {
     };
 
     let store = InMemoryStore::new();
-    let store = Rc::new(store);
-    let hasher = StarkPoseidonHasher::new(Some(false));
+    let store = Arc::new(store);
+    let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
     let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
 
