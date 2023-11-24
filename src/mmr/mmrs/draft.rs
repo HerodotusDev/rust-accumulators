@@ -1,16 +1,9 @@
 use std::{collections::HashMap, sync::Arc};
 
-use crate::{
-    hasher::Hasher,
-    mmr::{CoreMMR, MMR},
-    store::memory::InMemoryStore,
-};
+use crate::{mmr::MMR, store::memory::InMemoryStore};
 
-impl<H> MMR<H>
-where
-    H: Hasher + Clone + Send + Sync,
-{
-    pub async fn start_draft(&mut self) -> DraftMMR<H> {
+impl MMR {
+    pub async fn start_draft(&mut self) -> DraftMMR {
         let store = InMemoryStore::default();
         let store = Arc::new(store);
         let hasher = self.hasher.clone();
@@ -28,19 +21,13 @@ where
     }
 }
 
-pub struct DraftMMR<'a, H>
-where
-    H: Hasher,
-{
+pub struct DraftMMR<'a> {
     store: Arc<InMemoryStore>,
-    ref_mmr: &'a mut MMR<H>,
-    pub mmr: MMR<H>,
+    ref_mmr: &'a mut MMR,
+    pub mmr: MMR,
 }
 
-impl<H> DraftMMR<'_, H>
-where
-    H: Hasher + Clone + Send + Sync,
-{
+impl DraftMMR<'_> {
     pub async fn discard(self) {
         self.store.clear();
     }
@@ -48,9 +35,8 @@ where
     pub async fn commit(self) {
         let mut to_set = HashMap::new();
         for (key, value) in self.store.store.read().iter() {
-            let (_, key, sub_key) =
-                MMR::<H>::decode_store_key(key).expect("Could not decode store key");
-            let full_key = MMR::<H>::encode_store_key(&self.ref_mmr.mmr_id, key, sub_key);
+            let (_, key, sub_key) = MMR::decode_store_key(key).expect("Could not decode store key");
+            let full_key = MMR::encode_store_key(&self.ref_mmr.mmr_id, key, sub_key);
 
             to_set.insert(full_key, value.to_string());
         }

@@ -1,16 +1,14 @@
 use std::sync::Arc;
 
 use accumulators::{
-    hasher::stark_poseidon::StarkPoseidonHasher,
-    mmr::{CoreMMR, MMR},
-    store::memory::InMemoryStore,
+    hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::memory::InMemoryStore,
 };
 
 #[tokio::test]
 async fn should_discard_properly() {
     let store = InMemoryStore::default();
     let store = Arc::new(store);
-    let hasher = StarkPoseidonHasher::new(Some(false));
+    let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
     let mut ref_mmr = MMR::new(store.clone(), hasher.clone(), None);
     ref_mmr
@@ -84,7 +82,7 @@ async fn should_discard_properly() {
 async fn should_apply() {
     let store = InMemoryStore::default();
     let store = Arc::new(store);
-    let hasher = StarkPoseidonHasher::new(Some(false));
+    let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
     let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
     mmr.append("1".to_string()).await.expect("Failed to append");
@@ -138,7 +136,7 @@ async fn example() {
 
     let store = InMemoryStore::new();
     let store = Arc::new(store);
-    let hasher = StarkPoseidonHasher::new(Some(false));
+    let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
     let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
 
