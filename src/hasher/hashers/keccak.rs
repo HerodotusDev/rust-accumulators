@@ -3,6 +3,8 @@ use num_bigint::BigInt;
 use num_traits::{identities::Zero, Num};
 use sha3::{Digest, Keccak256};
 
+use crate::hasher::HashingFunction;
+
 use super::super::Hasher;
 
 pub struct KeccakHasher {
@@ -10,6 +12,10 @@ pub struct KeccakHasher {
 }
 
 impl Hasher for KeccakHasher {
+    fn get_name(&self) -> HashingFunction {
+        HashingFunction::Keccak256
+    }
+
     fn hash(&self, data: Vec<String>) -> Result<String> {
         let mut keccak = Keccak256::new();
 

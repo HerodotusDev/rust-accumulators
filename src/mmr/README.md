@@ -12,23 +12,28 @@ use accumulators::{
 };
 
 let store = InMemoryStore::default();
-let store_rc = Rc::new(store);
-let hasher = StarkPoseidonHasher::new(Some(false));
+let store_rc = Arc::new(store);
+let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
 let mut mmr = MMR::new(store_rc, hasher, None);
 
-mmr.append("1".to_string()).expect("Failed to append");
-mmr.append("2".to_string()).expect("Failed to append");
-mmr.append("3".to_string()).expect("Failed to append");
+mmr.append("1".to_string()).await.expect("Failed to append");
+mmr.append("2".to_string()).await.expect("Failed to append");
+mmr.append("3".to_string()).await.expect("Failed to append");
 let example_value = "4".to_string();
-let example_append = mmr.append(example_value.clone()).expect("Failed to append");
+let example_append = mmr
+    .append(example_value.clone())
+    .await
+    .expect("Failed to append");
 
 let proof = mmr
     .get_proof(example_append.element_index, None)
+    .await
     .expect("Failed to get proof");
 
 assert!(mmr
     .verify_proof(proof, example_value, None)
+    .await
     .expect("Failed to verify proof"));
 ```
 
@@ -54,27 +59,34 @@ use accumulators::{
 };
 
 let store = InMemoryStore::new();
-let store = Rc::new(store);
-let hasher = StarkPoseidonHasher::new(Some(false));
+let store = Arc::new(store);
+let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
 let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
 
 let example_value = "1".to_string();
-let example_append = mmr.append(example_value.clone()).expect("Failed to append");
+let example_append = mmr
+    .append(example_value.clone())
+    .await
+    .expect("Failed to append");
 
-let sub_mmrs = vec![(mmr.elements_count.get(), mmr.get_metadata())];
+let sub_mmrs = vec![(mmr.elements_count.get().await, mmr.get_metadata())];
 
-let mut stacked_mmr = MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone());
+let mut stacked_mmr =
+    MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone()).await;
 stacked_mmr
     .append("2".to_string())
+    .await
     .expect("Failed to append");
 
 let proof = stacked_mmr
     .get_proof(example_append.element_index, None)
+    .await
     .expect("Failed to get proof");
 
 assert!(stacked_mmr
     .verify_proof(proof, example_value, None)
+    .await
     .unwrap());
 ```
 
@@ -92,42 +104,58 @@ use accumulators::{
 };
 
 let store = InMemoryStore::new();
-let store = Rc::new(store);
-let hasher = StarkPoseidonHasher::new(Some(false));
+let store = Arc::new(store);
+let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
 let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
 
-mmr.append("1".to_string()).expect("Failed to append");
-mmr.append("2".to_string()).expect("Failed to append");
+mmr.append("1".to_string()).await.expect("Failed to append");
+mmr.append("2".to_string()).await.expect("Failed to append");
 
-let mut draft = mmr.start_draft();
-draft.mmr.append("3".to_string()).expect("Failed to append");
-draft.mmr.append("4".to_string()).expect("Failed to append");
+let mut draft = mmr.start_draft().await;
+draft
+    .mmr
+    .append("3".to_string())
+    .await
+    .expect("Failed to append");
+draft
+    .mmr
+    .append("4".to_string())
+    .await
+    .expect("Failed to append");
 
-let draft_bag = draft.mmr.bag_the_peaks(None).unwrap();
+let draft_bag = draft.mmr.bag_the_peaks(None).await.unwrap();
 let draft_root = draft
     .mmr
-    .calculate_root_hash(&draft_bag, draft.mmr.elements_count.get())
+    .calculate_root_hash(&draft_bag, draft.mmr.elements_count.get().await)
     .expect("Failed to calculate root hash");
 
-draft.commit();
+draft.commit().await;
 
-let bag = mmr.bag_the_peaks(None).unwrap();
+let bag = mmr.bag_the_peaks(None).await.unwrap();
 let root = mmr
-    .calculate_root_hash(&bag, mmr.elements_count.get())
+    .calculate_root_hash(&bag, mmr.elements_count.get().await)
     .expect("Failed to calculate root hash");
 
 assert_eq!(draft_root, root);
 
-let mut draft = mmr.start_draft();
-draft.mmr.append("5".to_string()).expect("Failed to append");
-draft.mmr.append("6".to_string()).expect("Failed to append");
+let mut draft = mmr.start_draft().await;
+draft
+    .mmr
+    .append("5".to_string())
+    .await
+    .expect("Failed to append");
+draft
+    .mmr
+    .append("6".to_string())
+    .await
+    .expect("Failed to append");
 
-draft.discard();
+draft.discard().await;
 
-let after_discard_bag = mmr.bag_the_peaks(None).unwrap();
+let after_discard_bag = mmr.bag_the_peaks(None).await.unwrap();
 let after_discard_root = mmr
-    .calculate_root_hash(&after_discard_bag, mmr.elements_count.get())
+    .calculate_root_hash(&after_discard_bag, mmr.elements_count.get().await)
     .expect("Failed to calculate root hash");
 
 assert_eq!(after_discard_root, root);

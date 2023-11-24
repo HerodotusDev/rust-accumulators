@@ -1,10 +1,10 @@
 use anyhow::Result;
 use std::collections::{HashMap, VecDeque};
-use std::rc::Rc;
 use std::str::FromStr;
+use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::hasher::Hasher;
+use crate::hasher::{Hasher, HashingFunction};
 use crate::store::{InStoreCounter, InStoreTable, Store, SubKey};
 
 use crate::mmr::{
@@ -16,41 +16,35 @@ use crate::mmr::{
     },
 };
 
-pub struct MMR<H>
-where
-    H: Hasher,
-{
-    pub store: Rc<dyn Store>,
-    pub hasher: H,
+pub struct MMR {
+    pub store: Arc<dyn Store>,
+    pub hasher: Arc<dyn Hasher>,
     pub mmr_id: String,
     pub leaves_count: InStoreCounter,
     pub elements_count: InStoreCounter,
     pub hashes: InStoreTable,
     pub root_hash: InStoreTable,
     #[cfg(feature = "stacked_mmr")]
-    pub sub_mmrs: SizesToMMRs<H>,
+    pub sub_mmrs: SizesToMMRs,
 }
 
 #[derive(Clone)]
-pub struct MmrMetadata<H> {
+pub struct MmrMetadata {
     pub mmr_id: String,
-    pub store: Rc<dyn Store>,
-    pub hasher: H,
+    pub store: Arc<dyn Store>,
+    pub hasher: HashingFunction,
 }
 
 /// A tuple of the size at which the MMR is stacked and the MMR itself.
 #[cfg(feature = "stacked_mmr")]
-pub type SizesToMMRs<H> = Vec<(usize, MmrMetadata<H>)>;
+pub type SizesToMMRs = Vec<(usize, MmrMetadata)>;
 
-impl<H> MMR<H>
-where
-    H: Hasher + Clone,
-{
-    pub fn new(store: Rc<dyn Store>, hasher: H, mmr_id: Option<String>) -> Self {
+impl MMR {
+    pub fn new(store: Arc<dyn Store>, hasher: Arc<dyn Hasher>, mmr_id: Option<String>) -> Self {
         let mmr_id = mmr_id.unwrap_or_else(|| Uuid::new_v4().to_string());
 
         let (leaves_count, elements_count, root_hash, hashes) =
-            MMR::<H>::get_stores(&mmr_id, store.clone());
+            MMR::get_stores(&mmr_id, store.clone());
 
         Self {
             leaves_count,
@@ -65,11 +59,24 @@ where
         }
     }
 
-    pub fn get_metadata(&self) -> MmrMetadata<H> {
+    pub async fn create_with_genesis(
+        store: Arc<dyn Store>,
+        hasher: Arc<dyn Hasher>,
+        mmr_id: Option<String>,
+    ) -> Result<Self> {
+        let mut mmr = MMR::new(store, hasher, mmr_id);
+        let elements_count: usize = mmr.elements_count.get().await;
+        assert_eq!(elements_count, 0, "Cannot call create_with_genesis on a non-empty MMR. Please provide an empty store or change the MMR id.");
+        let genesis = mmr.hasher.get_genesis();
+        let _ = mmr.append(genesis).await;
+        Ok(mmr)
+    }
+
+    pub fn get_metadata(&self) -> MmrMetadata {
         MmrMetadata {
             mmr_id: self.mmr_id.clone(),
             store: self.store.clone(),
-            hasher: self.hasher.clone(),
+            hasher: self.hasher.get_name(),
         }
     }
 
@@ -104,10 +111,10 @@ where
 
     pub fn get_stores(
         mmr_id: &str,
-        store_rc: Rc<dyn Store>,
+        store_rc: Arc<dyn Store>,
     ) -> (InStoreCounter, InStoreCounter, InStoreTable, InStoreTable) {
         let (leaves_count_key, elements_count_key, root_hash_key, hashes_key) =
-            MMR::<H>::get_store_keys(mmr_id);
+            MMR::get_store_keys(mmr_id);
 
         (
             InStoreCounter::new(store_rc.clone(), leaves_count_key),
@@ -115,19 +122,6 @@ where
             InStoreTable::new(store_rc.clone(), root_hash_key),
             InStoreTable::new(store_rc.clone(), hashes_key),
         )
-    }
-
-    pub async fn create_with_genesis(
-        store: Rc<dyn Store>,
-        hasher: H,
-        mmr_id: Option<String>,
-    ) -> Result<Self> {
-        let mut mmr = MMR::new(store, hasher, mmr_id);
-        let elements_count: usize = mmr.elements_count.get().await;
-        assert_eq!(elements_count, 0, "Cannot call create_with_genesis on a non-empty MMR. Please provide an empty store or change the MMR id.");
-        let genesis = mmr.hasher.get_genesis();
-        let _ = mmr.append(genesis).await;
-        Ok(mmr)
     }
 
     pub async fn append(&mut self, value: String) -> Result<AppendResult> {

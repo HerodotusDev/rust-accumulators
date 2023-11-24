@@ -1,15 +1,15 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::Store;
 use anyhow::Result;
 
 pub struct InStoreCounter {
-    pub store: Rc<dyn Store>,
+    pub store: Arc<dyn Store>,
     pub key: String,
 }
 
 impl InStoreCounter {
-    pub fn new(store: Rc<dyn Store>, key: String) -> Self {
+    pub fn new(store: Arc<dyn Store>, key: String) -> Self {
         Self { store, key }
     }
 

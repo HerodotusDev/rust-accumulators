@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use accumulators::{
     hasher::stark_poseidon::StarkPoseidonHasher,
@@ -11,7 +11,7 @@ async fn initialize() {
     let store = SQLiteStore::new(":memory:").await.unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
 
-    let store = Rc::new(store);
+    let store = Arc::new(store);
 
     let tree =
         IncrementalMerkleTree::initialize(1024, "0x0".to_string(), hasher, store, None).await;
@@ -26,7 +26,7 @@ async fn get_path() {
     let store = SQLiteStore::new(":memory:").await.unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
 
-    let store = Rc::new(store);
+    let store = Arc::new(store);
     let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None).await;
 
     let path = tree.get_inclusion_proof(10).await.unwrap();
@@ -54,7 +54,7 @@ async fn verify_proof() {
     let store = SQLiteStore::new(":memory:").await.unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
 
-    let store = Rc::new(store);
+    let store = Arc::new(store);
     let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None).await;
 
     let path = tree.get_inclusion_proof(10).await.unwrap();
@@ -70,7 +70,7 @@ async fn update() {
     let store = SQLiteStore::new(":memory:").await.unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
 
-    let store = Rc::new(store);
+    let store = Arc::new(store);
     let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None).await;
 
     let path = tree.get_inclusion_proof(7).await.unwrap();
@@ -98,7 +98,7 @@ async fn invalid_update() {
     let store = SQLiteStore::new(":memory:").await.unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
 
-    let store = Rc::new(store);
+    let store = Arc::new(store);
     let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None).await;
     let path = tree.get_inclusion_proof(7).await.unwrap();
     let empty_root = tree.get_root().await;
@@ -114,7 +114,7 @@ async fn generate_and_verify_multi_proof() {
     let store = SQLiteStore::new(":memory:").await.unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
 
-    let store = Rc::new(store);
+    let store = Arc::new(store);
 
     let tree_size = 64;
     let default_hash = "0x0".to_string();
@@ -170,7 +170,7 @@ async fn example() {
     };
 
     let store = InMemoryStore::new();
-    let store = Rc::new(store);
+    let store = Arc::new(store);
     let hasher = StarkPoseidonHasher::new(Some(false));
 
     let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None).await;

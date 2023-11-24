@@ -2,7 +2,7 @@ use accumulators::store::{
     memory::InMemoryStore,
     InStoreCounter, Store, {InStoreTable, SubKey},
 };
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, sync::Arc};
 
 #[tokio::test]
 async fn set_and_get_value() {
@@ -71,7 +71,7 @@ async fn should_delete_a_value() {
 #[tokio::test]
 async fn test_in_store_counter() {
     let store = InMemoryStore::default();
-    let store = Rc::new(store);
+    let store = Arc::new(store);
 
     // Create an in-store counter
     let counter = InStoreCounter::new(store.clone(), "counter".to_string());
@@ -85,7 +85,7 @@ async fn test_in_store_counter() {
 #[tokio::test]
 async fn test_get_none_in_store_table() {
     let store = InMemoryStore::default();
-    let store = Rc::new(store);
+    let store = Arc::new(store);
 
     // Create an in-store counter
     let table = InStoreTable::new(store.clone(), "table".to_string());
@@ -97,7 +97,7 @@ async fn test_get_none_in_store_table() {
 #[tokio::test]
 async fn test_get_many_none_in_store_table() {
     let store = InMemoryStore::default();
-    let store = Rc::new(store);
+    let store = Arc::new(store);
 
     // Create an in-store counter
     let table = InStoreTable::new(store.clone(), "table".to_string());
@@ -123,7 +123,7 @@ async fn test_get_many_none_in_store_table() {
 #[tokio::test]
 async fn test_get_some_in_store_table() {
     let store = InMemoryStore::default();
-    let store = Rc::new(store);
+    let store = Arc::new(store);
 
     // Create an in-store counter
     let table = InStoreTable::new(store.clone(), "table".to_string());
