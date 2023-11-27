@@ -1,19 +1,28 @@
 use anyhow::Result;
 
 use async_trait::async_trait;
-use sqlx::{Pool, Row, Sqlite, SqlitePool};
+use sqlx::{sqlite::SqliteConnectOptions, Pool, Row, Sqlite, SqlitePool};
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 
 use super::super::Store;
 
+#[derive(Debug)]
 pub struct SQLiteStore {
     db: Mutex<Pool<Sqlite>>,
 }
 
 impl SQLiteStore {
-    pub async fn new(path: &str) -> Result<Self> {
-        let pool = SqlitePool::connect(path).await?;
+    pub async fn new(path: &str, create_file_if_not_exists: Option<bool>) -> Result<Self> {
+        let pool = if let Some(create_file_if_not_exists) = create_file_if_not_exists {
+            let options = SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(create_file_if_not_exists);
+            SqlitePool::connect_with(options).await?
+        } else {
+            SqlitePool::connect(path).await?
+        };
+
         let store = SQLiteStore {
             db: Mutex::new(pool),
         };
