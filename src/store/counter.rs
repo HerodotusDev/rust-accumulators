@@ -3,6 +3,7 @@ use std::sync::Arc;
 use super::Store;
 use anyhow::Result;
 
+#[derive(Debug)]
 pub struct InStoreCounter {
     pub store: Arc<dyn Store>,
     pub key: String,

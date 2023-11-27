@@ -6,7 +6,7 @@ use accumulators::{
 
 #[tokio::test]
 async fn should_stack_two_mmrs() {
-    let store = SQLiteStore::new(":memory:").await.unwrap();
+    let store = SQLiteStore::new(":memory:", None).await.unwrap();
     let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
     let store = Arc::new(store);
@@ -66,7 +66,7 @@ async fn should_stack_two_mmrs() {
 
 #[tokio::test]
 async fn should_stack_4_mmrs() {
-    let store = SQLiteStore::new(":memory:").await.unwrap();
+    let store = SQLiteStore::new(":memory:", None).await.unwrap();
     let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
     let store = Arc::new(store);

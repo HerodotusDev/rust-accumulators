@@ -16,6 +16,7 @@ use crate::mmr::{
     },
 };
 
+#[derive(Debug)]
 pub struct MMR {
     pub store: Arc<dyn Store>,
     pub hasher: Arc<dyn Hasher>,
@@ -28,7 +29,7 @@ pub struct MMR {
     pub sub_mmrs: SizesToMMRs,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct MmrMetadata {
     pub mmr_id: String,
     pub store: Arc<dyn Store>,

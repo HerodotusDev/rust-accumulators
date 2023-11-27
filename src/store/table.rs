@@ -40,14 +40,14 @@ pub type GetFullKeysAndStoresFn =
     fn(&InStoreTable, Vec<SubKey>) -> Vec<(Arc<dyn Store>, Vec<String>)>;
 
 #[cfg(feature = "stacked_mmr")]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct SubMMR {
     pub size: usize,
     pub key: String,
     pub store: Arc<dyn Store>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct InStoreTable {
     /// Always use this store for setters
     ///

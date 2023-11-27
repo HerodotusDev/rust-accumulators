@@ -10,7 +10,7 @@ use tokio::runtime::Runtime;
 async fn prepare_incremental(count: usize) -> IncrementalMerkleTree<StarkPoseidonHasher> {
     let hasher = StarkPoseidonHasher::new(Some(false));
 
-    let store = SQLiteStore::new(":memory:").await.unwrap();
+    let store = SQLiteStore::new(":memory:", None).await.unwrap();
 
     let store = Arc::new(store);
 
