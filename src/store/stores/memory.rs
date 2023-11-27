@@ -6,6 +6,7 @@ use parking_lot::RwLock;
 
 use crate::store::Store;
 
+#[derive(Debug)]
 pub struct InMemoryStore {
     pub store: RwLock<HashMap<String, String>>,
 }

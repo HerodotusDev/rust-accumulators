@@ -8,7 +8,7 @@ use accumulators::{
 
 #[tokio::test]
 async fn initialize() {
-    let store = SQLiteStore::new(":memory:").await.unwrap();
+    let store = SQLiteStore::new(":memory:", None).await.unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
 
     let store = Arc::new(store);
@@ -23,7 +23,7 @@ async fn initialize() {
 
 #[tokio::test]
 async fn get_path() {
-    let store = SQLiteStore::new(":memory:").await.unwrap();
+    let store = SQLiteStore::new(":memory:", None).await.unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
 
     let store = Arc::new(store);
@@ -51,7 +51,7 @@ async fn get_path() {
 
 #[tokio::test]
 async fn verify_proof() {
-    let store = SQLiteStore::new(":memory:").await.unwrap();
+    let store = SQLiteStore::new(":memory:", None).await.unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
 
     let store = Arc::new(store);
@@ -67,7 +67,7 @@ async fn verify_proof() {
 
 #[tokio::test]
 async fn update() {
-    let store = SQLiteStore::new(":memory:").await.unwrap();
+    let store = SQLiteStore::new(":memory:", None).await.unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
 
     let store = Arc::new(store);
@@ -95,7 +95,7 @@ async fn update() {
 
 #[tokio::test]
 async fn invalid_update() {
-    let store = SQLiteStore::new(":memory:").await.unwrap();
+    let store = SQLiteStore::new(":memory:", None).await.unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
 
     let store = Arc::new(store);
@@ -111,7 +111,7 @@ async fn invalid_update() {
 
 #[tokio::test]
 async fn generate_and_verify_multi_proof() {
-    let store = SQLiteStore::new(":memory:").await.unwrap();
+    let store = SQLiteStore::new(":memory:", None).await.unwrap();
     let hasher = StarkPoseidonHasher::new(Some(false));
 
     let store = Arc::new(store);

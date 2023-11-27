@@ -7,6 +7,7 @@ use crate::hasher::HashingFunction;
 
 use super::super::Hasher;
 
+#[derive(Debug)]
 pub struct KeccakHasher {
     block_size_bits: usize,
 }
