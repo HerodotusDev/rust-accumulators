@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::{fmt::Debug, str::FromStr};
+use strum_macros::EnumIter;
 
 // Default Hasher Options
 pub const DEFAULT_BLOCK_SIZE_BITS: usize = 256;
@@ -12,7 +13,7 @@ pub trait Hasher: Send + Sync + Debug {
     fn get_name(&self) -> HashingFunction;
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(EnumIter, Debug, PartialEq, Eq, Clone, Copy)]
 pub enum HashingFunction {
     Keccak256,
     Poseidon,
