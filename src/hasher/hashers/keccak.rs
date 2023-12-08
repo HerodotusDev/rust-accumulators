@@ -43,7 +43,7 @@ impl Hasher for KeccakHasher {
         }
 
         let res = keccak.finalize();
-        Ok(format!("0x{}", hex::encode(res)))
+        Ok(format!("0x{:0>64}", hex::encode(res)))
     }
 
     fn is_element_size_valid(&self, element: &str) -> bool {
