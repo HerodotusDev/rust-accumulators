@@ -34,7 +34,8 @@ fn should_compute_a_hash() {
 #[test]
 fn should_apply_padding() {
     let hasher = KeccakHasher::new();
-    let a = "3".to_string();
-    let b = "4".to_string();
-    hasher.hash(vec![a, b]).unwrap();
+    let a = "131".to_string();
+    let b = "10".to_string();
+    let hash = hasher.hash(vec![a, b]).unwrap();
+    assert_eq!(hash.len(), 64 + 2)
 }

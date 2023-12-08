@@ -46,8 +46,7 @@ impl Hasher for StarkPedersenHasher {
         .to_string();
 
         let computed_result = U256::from_dec_str(result.trim()).expect("Failed to convert to U256");
-        let hex_str = format!("{:064x}", computed_result);
-        let padded_hex_str = format!("0x{}", hex_str);
+        let padded_hex_str = format!("0x{:064x}", computed_result);
 
         Ok(padded_hex_str)
     }
