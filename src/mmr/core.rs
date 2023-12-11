@@ -16,6 +16,8 @@ use crate::mmr::{
     },
 };
 
+use super::PeaksOptions;
+
 #[derive(Debug)]
 pub struct MMR {
     pub store: Arc<dyn Store>,
@@ -379,6 +381,19 @@ impl MMR {
             .await?;
 
         Ok(peak_hashes[peak_index] == hash)
+    }
+
+    pub async fn get_peaks(&self, option: PeaksOptions) -> Result<Vec<String>> {
+        let elements_count = self.elements_count.get().await;
+        let tree_size = option.elements_count.unwrap_or(elements_count);
+
+        let peaks_idxs = find_peaks(tree_size);
+        let peaks = self.retrieve_peaks_hashes(peaks_idxs, None).await?;
+        if (option.formatting_opts).is_some() {
+            format_peaks(peaks, &option.formatting_opts.unwrap())
+        } else {
+            Ok(peaks)
+        }
     }
 
     pub async fn retrieve_peaks_hashes(

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use accumulators::{
     hasher::{stark_poseidon::StarkPoseidonHasher, Hasher},
-    mmr::{AppendResult, Proof, MMR},
+    mmr::{AppendResult, PeaksOptions, Proof, MMR},
     store::{memory::InMemoryStore, sqlite::SQLiteStore, SubKey},
 };
 
@@ -256,4 +256,59 @@ async fn example() {
         .verify_proof(proof, example_value, None)
         .await
         .expect("Failed to verify proof"));
+}
+
+#[tokio::test]
+async fn test_get_peaks() {
+    let store = InMemoryStore::default();
+    let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
+
+    let store = Arc::new(store);
+
+    let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
+
+    mmr.append("1".to_string()).await.unwrap();
+
+    let peaks = mmr
+        .get_peaks(PeaksOptions {
+            elements_count: None,
+            formatting_opts: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(peaks, vec!["1".to_string()]);
+
+    mmr.append("2".to_string()).await.unwrap();
+
+    let peaks = mmr
+        .get_peaks(PeaksOptions {
+            elements_count: None,
+            formatting_opts: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        peaks,
+        vec![hasher.hash(vec!["1".to_string(), "2".to_string()]).unwrap()]
+    );
+
+    mmr.append("3".to_string()).await.unwrap();
+
+    let peaks = mmr
+        .get_peaks(PeaksOptions {
+            elements_count: None,
+            formatting_opts: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        peaks,
+        vec![
+            hasher.hash(vec!["1".to_string(), "2".to_string()]).unwrap(),
+            "3".to_string()
+        ]
+    );
 }
