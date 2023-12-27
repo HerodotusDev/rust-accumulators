@@ -110,6 +110,10 @@ pub fn find_peaks(mut elements_count: usize) -> Vec<usize> {
     peaks
 }
 
+pub fn map_leaf_index_to_element_index(leaf_index: usize) -> usize {
+    2 * leaf_index + 1 - leaf_index.count_ones() as usize
+}
+
 pub fn leaf_count_to_peaks_count(leaf_count: usize) -> u32 {
     leaf_count.count_ones()
 }
