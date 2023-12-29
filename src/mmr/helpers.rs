@@ -80,7 +80,7 @@ impl Display for TreeMetadataKeys {
 }
 
 /// Append Result
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct AppendResult {
     pub leaves_count: usize,
     pub elements_count: usize,
