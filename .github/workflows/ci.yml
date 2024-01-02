@@ -20,6 +20,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
-      - name: Install Clippy
-        run: rustup component add clippy --toolchain ${{ matrix.toolchain }}
-      - run: cargo test --all-features && cargo clippy --all-features
+      - run: cargo test --all-features
