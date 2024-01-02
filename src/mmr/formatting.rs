@@ -1,5 +1,4 @@
-use anyhow::anyhow;
-use anyhow::Result;
+use thiserror::Error;
 /// Formatting
 #[derive(Clone)]
 pub struct FormattingOptions {
@@ -22,14 +21,21 @@ pub type PeaksFormattingOptions = FormattingOptions;
 //     Ok(())
 // }
 
+/// Formatting error
+#[derive(Error, Debug)]
+pub enum FormattingError {
+    #[error("Formatting: Expected peaks output size is smaller than the actual size")]
+    PeaksOutputSizeError,
+    #[error("Formatting: Expected proof output size is smaller than the actual size")]
+    ProofOutputSizeError,
+}
+
 pub fn format_peaks(
     mut peaks: Vec<String>,
     formatting_opts: &PeaksFormattingOptions,
-) -> Result<Vec<String>> {
+) -> Result<Vec<String>, FormattingError> {
     if peaks.len() > formatting_opts.output_size {
-        return Err(anyhow!(
-            "Formatting: Expected peaks output size is smaller than the actual size".to_string()
-        ));
+        return Err(FormattingError::PeaksOutputSizeError);
     }
 
     let expected_peaks_size_remainder = formatting_opts.output_size - peaks.len();
@@ -44,11 +50,9 @@ pub fn format_peaks(
 pub fn format_proof(
     siblings_hashes: Vec<String>,
     formatting_opts: ProofFormattingOptions,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, FormattingError> {
     if siblings_hashes.len() > formatting_opts.output_size {
-        return Err(
-            "Formatting: Expected proof output size is smaller than the actual size".to_string(),
-        );
+        return Err(FormattingError::ProofOutputSizeError);
     }
 
     let expected_proof_size_remainder = formatting_opts.output_size - siblings_hashes.len();

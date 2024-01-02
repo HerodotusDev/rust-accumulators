@@ -13,10 +13,11 @@ async fn initialize() {
 
     let store = Arc::new(store);
 
-    let tree =
-        IncrementalMerkleTree::initialize(1024, "0x0".to_string(), hasher, store, None).await;
+    let tree = IncrementalMerkleTree::initialize(1024, "0x0".to_string(), hasher, store, None)
+        .await
+        .unwrap();
     assert_eq!(
-        tree.get_root().await,
+        tree.get_root().await.unwrap(),
         "0x4a21358c3e754766216b4c93ecfae222e86822f746e706e563f3a05ef398959"
     );
 }
@@ -27,7 +28,9 @@ async fn get_path() {
     let hasher = StarkPoseidonHasher::new(Some(false));
 
     let store = Arc::new(store);
-    let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None).await;
+    let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None)
+        .await
+        .unwrap();
 
     let path = tree.get_inclusion_proof(10).await.unwrap();
     let expected_nodes = vec![
@@ -38,7 +41,7 @@ async fn get_path() {
     ];
 
     // Await the async call and store the result
-    let node_map = tree.nodes.get_many(expected_nodes.clone()).await;
+    let node_map = tree.nodes.get_many(expected_nodes.clone()).await.unwrap();
 
     // Now use the resulting HashMap
     let expected_path: Vec<String> = expected_nodes
@@ -55,7 +58,9 @@ async fn verify_proof() {
     let hasher = StarkPoseidonHasher::new(Some(false));
 
     let store = Arc::new(store);
-    let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None).await;
+    let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None)
+        .await
+        .unwrap();
 
     let path = tree.get_inclusion_proof(10).await.unwrap();
     let valid_proof = tree.verify_proof(10, "0x0", &path).await.unwrap();
@@ -71,7 +76,9 @@ async fn update() {
     let hasher = StarkPoseidonHasher::new(Some(false));
 
     let store = Arc::new(store);
-    let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None).await;
+    let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None)
+        .await
+        .unwrap();
 
     let path = tree.get_inclusion_proof(7).await.unwrap();
     let valid_proof = tree.verify_proof(7, "0x0", &path).await.unwrap();
@@ -88,7 +95,7 @@ async fn update() {
     assert!(updated_proof);
 
     assert_eq!(
-        tree.get_root().await,
+        tree.get_root().await.unwrap(),
         "0x53228c039bc23bffa7a0ba7a864088f98c92dbc41c3737b681cdd7b1bcfe1f2"
     );
 }
@@ -99,14 +106,16 @@ async fn invalid_update() {
     let hasher = StarkPoseidonHasher::new(Some(false));
 
     let store = Arc::new(store);
-    let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None).await;
+    let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None)
+        .await
+        .unwrap();
     let path = tree.get_inclusion_proof(7).await.unwrap();
-    let empty_root = tree.get_root().await;
+    let empty_root = tree.get_root().await.unwrap();
     let result = tree
         .update(7, "0x1".to_string(), "0x2".to_string(), path.clone())
         .await;
     assert!(result.is_err());
-    assert_eq!(tree.get_root().await, empty_root);
+    assert_eq!(tree.get_root().await.unwrap(), empty_root);
 }
 
 #[tokio::test]
@@ -120,7 +129,8 @@ async fn generate_and_verify_multi_proof() {
     let default_hash = "0x0".to_string();
     let tree =
         IncrementalMerkleTree::initialize(tree_size, default_hash.clone(), hasher, store, None)
-            .await;
+            .await
+            .unwrap();
 
     for i in 0..tree_size {
         let path = tree.get_inclusion_proof(i).await.unwrap();
@@ -157,7 +167,8 @@ async fn generate_and_verify_multi_proof() {
 
     let is_valid = tree
         .verify_multi_proof(&mut test, &mut test_values, &mut multiproof)
-        .await;
+        .await
+        .unwrap();
 
     assert!(is_valid);
 }
@@ -173,7 +184,9 @@ async fn example() {
     let store = Arc::new(store);
     let hasher = StarkPoseidonHasher::new(Some(false));
 
-    let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None).await;
+    let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None)
+        .await
+        .unwrap();
 
     let path = tree.get_inclusion_proof(10).await.unwrap();
     let valid_proof = tree.verify_proof(10, "0x0", &path).await.unwrap();

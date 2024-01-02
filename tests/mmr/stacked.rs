@@ -18,7 +18,7 @@ async fn should_stack_two_mmrs() {
     assert_eq!(append_1.leaves_count, 1);
     let bag_1 = mmr.bag_the_peaks(None).await.unwrap();
     let root_1 = mmr
-        .calculate_root_hash(&bag_1, mmr.elements_count.get().await)
+        .calculate_root_hash(&bag_1, mmr.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
     assert_eq!(root_1, append_1.root_hash);
 
@@ -27,7 +27,7 @@ async fn should_stack_two_mmrs() {
     assert_eq!(append_2.leaves_count, 2);
     let bag_2 = mmr.bag_the_peaks(None).await.unwrap();
     let root_2 = mmr
-        .calculate_root_hash(&bag_2, mmr.elements_count.get().await)
+        .calculate_root_hash(&bag_2, mmr.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
     assert_eq!(root_2, append_2.root_hash);
 
@@ -35,13 +35,14 @@ async fn should_stack_two_mmrs() {
         store.clone(),
         hasher.clone(),
         Some("is".to_string()),
-        vec![(mmr.elements_count.get().await, mmr.get_metadata())],
+        vec![(mmr.elements_count.get().await.unwrap(), mmr.get_metadata())],
     )
-    .await;
+    .await
+    .unwrap();
 
     let i_s_bag = i_s_mmr.bag_the_peaks(None).await.unwrap();
     let i_s_root_2 = i_s_mmr
-        .calculate_root_hash(&i_s_bag, i_s_mmr.elements_count.get().await)
+        .calculate_root_hash(&i_s_bag, i_s_mmr.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
     assert_eq!(i_s_root_2, root_2);
 
@@ -50,7 +51,7 @@ async fn should_stack_two_mmrs() {
     assert_eq!(append_3.leaves_count, 3);
     let bag_3 = mmr.bag_the_peaks(None).await.unwrap();
     let root_3 = mmr
-        .calculate_root_hash(&bag_3, mmr.elements_count.get().await)
+        .calculate_root_hash(&bag_3, mmr.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
 
     //? Append element 3 to i_s
@@ -58,7 +59,7 @@ async fn should_stack_two_mmrs() {
     assert_eq!(i_s_append_3.leaves_count, 3);
     let i_s_bag_3 = i_s_mmr.bag_the_peaks(None).await.unwrap();
     let i_s_root_3 = i_s_mmr
-        .calculate_root_hash(&i_s_bag_3, i_s_mmr.elements_count.get().await)
+        .calculate_root_hash(&i_s_bag_3, i_s_mmr.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
 
     assert_eq!(root_3, i_s_root_3);
@@ -83,10 +84,15 @@ async fn should_stack_4_mmrs() {
         .expect("Failed to append");
 
     //? Start gathering sub mmrs
-    let mut sub_mmrs = vec![(mmr_1.elements_count.get().await, mmr_1.get_metadata())];
+    let mut sub_mmrs = vec![(
+        mmr_1.elements_count.get().await.unwrap(),
+        mmr_1.get_metadata(),
+    )];
 
     //? Another mmr
-    let mut mmr_2 = MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone()).await;
+    let mut mmr_2 = MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone())
+        .await
+        .unwrap();
     mmr_2
         .append("3".to_string())
         .await
@@ -97,10 +103,15 @@ async fn should_stack_4_mmrs() {
         .expect("Failed to append");
 
     //? Add the new sub mmr
-    sub_mmrs.push((mmr_2.elements_count.get().await, mmr_2.get_metadata()));
+    sub_mmrs.push((
+        mmr_2.elements_count.get().await.unwrap(),
+        mmr_2.get_metadata(),
+    ));
 
     //? Another mmr
-    let mut mmr_3 = MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone()).await;
+    let mut mmr_3 = MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone())
+        .await
+        .unwrap();
     mmr_3
         .append("5".to_string())
         .await
@@ -112,9 +123,14 @@ async fn should_stack_4_mmrs() {
         .expect("Failed to append");
 
     //? Add the new sub mmr
-    sub_mmrs.push((mmr_3.elements_count.get().await, mmr_3.get_metadata()));
+    sub_mmrs.push((
+        mmr_3.elements_count.get().await.unwrap(),
+        mmr_3.get_metadata(),
+    ));
     //? Another mmr
-    let mut mmr_4 = MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone()).await;
+    let mut mmr_4 = MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone())
+        .await
+        .unwrap();
     mmr_4
         .append("7".to_string())
         .await
@@ -126,10 +142,10 @@ async fn should_stack_4_mmrs() {
 
     //? All MMRs are now stacked
 
-    assert_eq!(mmr_4.leaves_count.get().await, 8);
+    assert_eq!(mmr_4.leaves_count.get().await.unwrap(), 8);
     let mmr_4_bag = mmr_4.bag_the_peaks(None).await.unwrap();
     let mmr_4_root = mmr_4
-        .calculate_root_hash(&mmr_4_bag, mmr_4.elements_count.get().await)
+        .calculate_root_hash(&mmr_4_bag, mmr_4.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
 
     let mut ref_mmr = MMR::new(store.clone(), hasher.clone(), None);
@@ -167,7 +183,7 @@ async fn should_stack_4_mmrs() {
         .expect("Failed to append");
     let ref_bag = ref_mmr.bag_the_peaks(None).await.unwrap();
     let ref_root = ref_mmr
-        .calculate_root_hash(&ref_bag, ref_mmr.elements_count.get().await)
+        .calculate_root_hash(&ref_bag, ref_mmr.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
 
     assert_eq!(mmr_4_root, ref_root);
@@ -208,10 +224,11 @@ async fn example() {
         .await
         .expect("Failed to append");
 
-    let sub_mmrs = vec![(mmr.elements_count.get().await, mmr.get_metadata())];
+    let sub_mmrs = vec![(mmr.elements_count.get().await.unwrap(), mmr.get_metadata())];
 
-    let mut stacked_mmr =
-        MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone()).await;
+    let mut stacked_mmr = MMR::new_stacked(store.clone(), hasher.clone(), None, sub_mmrs.clone())
+        .await
+        .unwrap();
     stacked_mmr
         .append("2".to_string())
         .await

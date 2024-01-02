@@ -2,17 +2,17 @@ use accumulators::hasher::{keccak::KeccakHasher, Hasher};
 
 #[test]
 fn genesis() {
-    let hasher = KeccakHasher::new();
+    let hasher = KeccakHasher::default();
 
     assert_eq!(
-        hasher.get_genesis(),
+        hasher.get_genesis().unwrap(),
         "0xce92cc894a17c107be8788b58092c22cd0634d1489ca0ce5b4a045a1ce31b168".to_string()
     );
 }
 
 #[test]
 fn should_compute_a_hash() {
-    let hasher = KeccakHasher::new();
+    let hasher = KeccakHasher::default();
 
     let a = "0xa4b1d5793b631de611c922ea3ec938b359b3a49e687316d9a79c27be8ce84590".to_string();
     let b = "0xa4b1d5793b631de611c922ea3ec938b359b3a49e687316d9a79c27be8ce84590".to_string();
@@ -33,7 +33,7 @@ fn should_compute_a_hash() {
 
 #[test]
 fn should_apply_padding() {
-    let hasher = KeccakHasher::new();
+    let hasher = KeccakHasher::default();
     let a = "131".to_string();
     let b = "10".to_string();
     let hash = hasher.hash(vec![a, b]).unwrap();

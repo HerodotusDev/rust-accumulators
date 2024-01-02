@@ -18,7 +18,7 @@ sqlx = { version = "0.7", features = [
     "runtime-tokio",
     "sqlite",
 ] } # SQLite for rust
-anyhow = "1.0" # Error handling
+thiserror = "1.0" # Error handling
 async-trait = "0.1.74" # Async traits
 hex = "0.4.3" # Hex encoding
 sha3 = "0.10.8" # Keccak hashing

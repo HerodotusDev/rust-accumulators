@@ -2,7 +2,7 @@ use accumulators::hasher::{stark_poseidon::StarkPoseidonHasher, Hasher};
 
 #[test]
 fn should_compute_a_hash() {
-    let hasher = StarkPoseidonHasher::new(Some(false));
+    let hasher = StarkPoseidonHasher::default();
 
     let a = "0x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d17761".to_string();
     let b = "0x0194791558611599fe4ae0fcfa48f095659c90db18e54de86f2d2f547f7369bf".to_string();
@@ -20,10 +20,10 @@ fn should_compute_a_hash() {
 
 #[test]
 fn check_genesis_hash() {
-    let hasher = StarkPoseidonHasher::new(Some(false));
+    let hasher = StarkPoseidonHasher::default();
 
     assert_eq!(
-        hasher.get_genesis(),
+        hasher.get_genesis().unwrap(),
         "0x2241b3b7f1c4b9cf63e670785891de91f7237b1388f6635c1898ae397ad32dd".to_string()
     );
 }
@@ -42,7 +42,7 @@ fn check_genesis_hash() {
 
 #[test]
 fn should_throw() {
-    let hasher = StarkPoseidonHasher::new(Some(false));
+    let hasher = StarkPoseidonHasher::default();
     let a = "0x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d177610x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d177610x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d177610x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d177610x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d177610x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d177610x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d177610x6109f1949f6a7555eccf40x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d177610x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d177610x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d177610x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d177610x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d177610x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d177610x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d177610x6109f1949f6a7555eccf4".to_string();
 
     assert!(!hasher.is_element_size_valid(&a));
