@@ -18,6 +18,7 @@ use crate::mmr::{
 
 use super::{FormattingError, PeaksOptions, TreeMetadataKeysError};
 
+/// An error that can occur when using an MMR
 #[derive(Error, Debug)]
 pub enum MMRError {
     #[error("Store error: {0}")]
@@ -292,7 +293,10 @@ impl MMR {
         let tree_size = options.elements_count.unwrap_or(element_count);
 
         for &element_index in &elements_indexes {
-            if element_index == 0 && element_index > tree_size {
+            if element_index == 0 {
+                return Err(MMRError::InvalidElementIndex);
+            }
+            if element_index > tree_size {
                 return Err(MMRError::InvalidElementIndex);
             }
         }

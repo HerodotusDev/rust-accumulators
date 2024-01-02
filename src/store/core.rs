@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use std::{collections::HashMap, fmt::Debug};
+use std::{collections::HashMap, fmt::Debug, num::ParseIntError};
 use thiserror::Error;
 
 /// An error that can occur when using a store
@@ -20,10 +20,10 @@ pub enum StoreError {
     SetManyError,
     #[error("Fail to delete many values from store")]
     DeleteManyError,
-    #[error("SQLite error")]
+    #[error("SQLite error: {0}")]
     SQLite(#[from] sqlx::Error),
-    #[error("Parse error")]
-    Parse(#[from] std::num::ParseIntError),
+    #[error("Parse error: {0}")]
+    Parse(#[from] ParseIntError),
 }
 
 /// Define common behavior for all stores

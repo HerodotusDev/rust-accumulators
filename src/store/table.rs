@@ -53,7 +53,7 @@ pub struct SubMMR {
 pub enum InStoreTableError {
     #[error("Some keys were not found")]
     NotFound,
-    #[error("Store error")]
+    #[error("Store error: {0}")]
     Store(#[from] StoreError),
     #[error("Could not decode store key")]
     CouldNotDecodeStoreKey,
