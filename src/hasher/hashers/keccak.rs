@@ -19,7 +19,7 @@ impl Hasher for KeccakHasher {
     ///
     /// NOTE: data have no limit in length of elements
     fn hash(&self, data: Vec<String>) -> Result<String, HasherError> {
-        let mut keccak = Keccak256::default();
+        let mut keccak = Keccak256::new();
 
         //? We deliberately don't validate the size of the elements here, because we want to allow hashing of the RLP encoded block to get a block hash
 
