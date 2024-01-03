@@ -1,12 +1,12 @@
-use anyhow::Result;
+use crate::hasher::{byte_size, HasherError, HashingFunction};
 use sha3::{Digest, Keccak256};
-
-use crate::hasher::HashingFunction;
 
 use super::super::Hasher;
 
-#[derive(Debug)]
+/// Hasher for Keccak256
+#[derive(Debug, Clone)]
 pub struct KeccakHasher {
+    /// The block size in bits for Keccak256 is 256
     block_size_bits: usize,
 }
 
@@ -15,8 +15,13 @@ impl Hasher for KeccakHasher {
         HashingFunction::Keccak256
     }
 
-    fn hash(&self, data: Vec<String>) -> Result<String> {
+    /// Hashes a data which is a vector of strings (all elements must be hex encoded)
+    ///
+    /// NOTE: data have no limit in length of elements
+    fn hash(&self, data: Vec<String>) -> Result<String, HasherError> {
         let mut keccak = Keccak256::new();
+
+        //? We deliberately don't validate the size of the elements here, because we want to allow hashing of the RLP encoded block to get a block hash
 
         if data.is_empty() {
             keccak.update([]);
@@ -38,19 +43,32 @@ impl Hasher for KeccakHasher {
         Ok(format!("0x{:0>64}", hex::encode(res)))
     }
 
-    fn is_element_size_valid(&self, element: &str) -> bool {
-        byte_size(element) <= self.block_size_bits
+    fn is_element_size_valid(&self, element: &str) -> Result<bool, HasherError> {
+        let size = byte_size(element);
+        if size <= self.block_size_bits {
+            Ok(true)
+        } else {
+            Err(HasherError::InvalidElementSize {
+                element_size: size,
+                block_size_bits: self.block_size_bits,
+            })
+        }
     }
 
-    fn hash_single(&self, data: &str) -> Result<String> {
+    /// Hashes a single data which is a string (must be hex encoded)
+    fn hash_single(&self, data: &str) -> Result<String, HasherError> {
         self.hash(vec![data.to_string()])
     }
 
-    fn get_genesis(&self) -> Result<String> {
+    fn get_genesis(&self) -> Result<String, HasherError> {
         let genesis_str = "brave new world";
         let hex = hex::encode(genesis_str);
 
         self.hash_single(&hex)
+    }
+
+    fn get_block_size_bits(&self) -> usize {
+        self.block_size_bits
     }
 }
 
@@ -66,10 +84,4 @@ impl Default for KeccakHasher {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn byte_size(hex: &str) -> usize {
-    let hex = hex.strip_prefix("0x").unwrap_or(hex);
-
-    hex.len() / 2
 }

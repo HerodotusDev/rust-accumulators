@@ -16,21 +16,22 @@ let store = InMemoryStore::new();
 let store = Arc::new(store);
 let hasher = StarkPoseidonHasher::new(Some(false));
 
-let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None);
+let tree = IncrementalMerkleTree::initialize(16, "0x0".to_string(), hasher, store, None).await?;
 
-let path = tree.get_inclusion_proof(10).unwrap();
-let valid_proof = tree.verify_proof(10, "0x0", &path).unwrap();
+let path = tree.get_inclusion_proof(10).await?;
+let valid_proof = tree.verify_proof(10, "0x0", &path).await?;
 assert!(valid_proof);
 
-let invalid_proof = tree.verify_proof(10, "0x1", &path).unwrap();
+let invalid_proof = tree.verify_proof(10, "0x1", &path).await?;
 assert!(!invalid_proof);
 ```
 
 ### Benchmark
 
-```sh
-Incremental Merkle Tree insertion/times/10000
-                        time:   [154.39 ms 154.89 ms 155.38 ms]
-Incremental Merkle Tree insertion/times/1000000
-                        time:   [17.946 s 18.027 s 18.125 s]
-```
+ARM - M1
+Insertion, check code [here](https://github.com/HerodotusDev/rust-accumulators/blob/develop/benches/incremental_benchmark.rs)
+
+| N   | speed     |
+| --- | --------- |
+| 10k | 321.26 ms |
+| 1M  | 35.413 s  |

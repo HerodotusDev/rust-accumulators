@@ -14,7 +14,9 @@ async fn prepare_incremental(count: usize) -> IncrementalMerkleTree<StarkPoseido
 
     let store = Arc::new(store);
 
-    IncrementalMerkleTree::initialize(count, "0x0".to_string(), hasher, store, None).await
+    IncrementalMerkleTree::initialize(count, "0x0".to_string(), hasher, store, None)
+        .await
+        .unwrap()
 }
 
 fn bench(c: &mut Criterion) {

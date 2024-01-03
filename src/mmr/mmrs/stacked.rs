@@ -2,9 +2,14 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     hasher::Hasher,
-    mmr::{elements_count_to_leaf_count, SizesToMMRs, TreeMetadataKeys, MMR},
-    store::{InStoreTable, Store, SubKey, SubMMR},
+    mmr::{elements_count_to_leaf_count, MMRError, SizesToMMRs, TreeMetadataKeys, MMR},
+    store::{InStoreTable, InStoreTableError, Store, SubKey, SubMMR},
 };
+
+type StoreArc = Arc<dyn Store>;
+type KeyList = Vec<String>;
+type StoreKeysPair = (StoreArc, KeyList);
+type StoreKeysList = Vec<StoreKeysPair>;
 
 impl MMR {
     pub async fn new_stacked(
@@ -12,7 +17,7 @@ impl MMR {
         hasher: Arc<dyn Hasher>,
         mmr_id: Option<String>,
         sub_mmrs_metadata: SizesToMMRs,
-    ) -> Self {
+    ) -> Result<Self, MMRError> {
         let mut mmr = MMR::new(store, hasher, mmr_id);
         let sub_mmrs_count = sub_mmrs_metadata.len();
         let mut sub_mmrs: Vec<SubMMR> = Vec::with_capacity(sub_mmrs_count);
@@ -33,38 +38,34 @@ impl MMR {
             }
 
             let elements_count = size;
-            let current_elements_count = mmr.elements_count.get().await;
+            let current_elements_count = mmr.elements_count.get().await?;
 
             //? If the current MMR is already larger than the sub MMR, we don't need to do anything
             if current_elements_count >= elements_count {
                 continue;
             }
 
-            let leaves_count = elements_count_to_leaf_count(elements_count)
-                .expect("Could not calculate leaves count");
+            let leaves_count = elements_count_to_leaf_count(elements_count)?;
 
-            mmr.elements_count
-                .set(elements_count)
-                .await
-                .expect("Could not set elements count");
-            mmr.leaves_count
-                .set(leaves_count)
-                .await
-                .expect("Could not set leaves count");
+            mmr.elements_count.set(elements_count).await?;
+            mmr.leaves_count.set(leaves_count).await?;
         }
 
         mmr.hashes.get_store_and_full_key = MMR::get_store_and_full_key;
         mmr.hashes.get_stores_and_full_keys = MMR::get_stores_and_full_keys;
         mmr.hashes.sub_mmrs = Some(sub_mmrs);
 
-        mmr
+        Ok(mmr)
     }
 
     pub fn get_store_and_full_key(
         table: &InStoreTable,
         sub_key: SubKey,
-    ) -> (Arc<dyn Store>, String) {
-        let (_, key, _) = MMR::decode_store_key(&table.key).expect("Could not decode store key");
+    ) -> Result<(StoreArc, String), InStoreTableError> {
+        let (_, key, _) = match MMR::decode_store_key(&table.key) {
+            Ok((_, key, _)) => (table.store.clone(), key, table.key.clone()),
+            Err(_) => return Err(InStoreTableError::CouldNotDecodeStoreKey),
+        };
 
         match key {
             TreeMetadataKeys::Hashes => {}
@@ -81,7 +82,7 @@ impl MMR {
         let sub_mmrs = table
             .sub_mmrs
             .as_ref()
-            .expect("Sub MMRs are not set")
+            .ok_or(InStoreTableError::SubMMRsNotSet)?
             .iter();
 
         let this_mmr = SubMMR {
@@ -100,17 +101,20 @@ impl MMR {
 
         let use_mmr = use_mmr.unwrap_or(this_mmr.clone());
 
-        (
+        Ok((
             use_mmr.store.clone(),
             InStoreTable::get_full_key(&use_mmr.key, &sub_key.to_string()),
-        )
+        ))
     }
 
     pub fn get_stores_and_full_keys(
         table: &InStoreTable,
         sub_keys: Vec<SubKey>,
-    ) -> Vec<(Arc<dyn Store>, Vec<String>)> {
-        let (_, key, _) = MMR::decode_store_key(&table.key).expect("Could not decode store key");
+    ) -> Result<StoreKeysList, InStoreTableError> {
+        let (_, key, _) = match MMR::decode_store_key(&table.key) {
+            Ok((_, key, _)) => (table.store.clone(), key, table.key.clone()),
+            Err(_) => return Err(InStoreTableError::CouldNotDecodeStoreKey),
+        };
 
         match key {
             TreeMetadataKeys::Hashes => {}
@@ -149,9 +153,9 @@ impl MMR {
                 .or_insert((use_mmr, vec![full_key]));
         }
 
-        stores_and_keys
+        Ok(stores_and_keys
             .into_iter()
             .map(|(_, (sub_mmr, keys))| (sub_mmr.store.clone(), keys))
-            .collect()
+            .collect())
     }
 }

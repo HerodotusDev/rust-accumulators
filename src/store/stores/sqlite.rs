@@ -1,19 +1,21 @@
-use anyhow::Result;
-
 use async_trait::async_trait;
+use sqlx::Error;
 use sqlx::{sqlite::SqliteConnectOptions, Pool, Row, Sqlite, SqlitePool};
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 
+use crate::store::StoreError;
+
 use super::super::Store;
 
+/// A store that is stored in SQLite
 #[derive(Debug)]
 pub struct SQLiteStore {
     db: Mutex<Pool<Sqlite>>,
 }
 
 impl SQLiteStore {
-    pub async fn new(path: &str, create_file_if_not_exists: Option<bool>) -> Result<Self> {
+    pub async fn new(path: &str, create_file_if_not_exists: Option<bool>) -> Result<Self, Error> {
         let pool = if let Some(create_file_if_not_exists) = create_file_if_not_exists {
             let options = SqliteConnectOptions::new()
                 .filename(path)
@@ -30,7 +32,7 @@ impl SQLiteStore {
         Ok(store)
     }
 
-    async fn init(&self) -> Result<()> {
+    async fn init(&self) -> Result<(), Error> {
         let pool = self.db.lock().await;
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS store (
@@ -46,7 +48,7 @@ impl SQLiteStore {
 
 #[async_trait]
 impl Store for SQLiteStore {
-    async fn get(&self, key: &str) -> Result<Option<String>> {
+    async fn get(&self, key: &str) -> Result<Option<String>, StoreError> {
         let pool = self.db.lock().await;
 
         let row = sqlx::query("SELECT value FROM store WHERE key = ?")
@@ -63,7 +65,7 @@ impl Store for SQLiteStore {
         }
     }
 
-    async fn get_many(&self, keys: Vec<&str>) -> Result<HashMap<String, String>> {
+    async fn get_many(&self, keys: Vec<&str>) -> Result<HashMap<String, String>, StoreError> {
         let pool = self.db.lock().await;
         let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
         let query_statement = format!(
@@ -87,7 +89,7 @@ impl Store for SQLiteStore {
         Ok(map)
     }
 
-    async fn set(&self, key: &str, value: &str) -> Result<()> {
+    async fn set(&self, key: &str, value: &str) -> Result<(), StoreError> {
         let pool = self.db.lock().await;
         sqlx::query("INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)")
             .bind(key)
@@ -98,7 +100,7 @@ impl Store for SQLiteStore {
         Ok(())
     }
 
-    async fn set_many(&self, entries: HashMap<String, String>) -> Result<()> {
+    async fn set_many(&self, entries: HashMap<String, String>) -> Result<(), StoreError> {
         let pool = self.db.lock().await;
         let mut transaction = pool.begin().await?;
 
@@ -114,7 +116,7 @@ impl Store for SQLiteStore {
         Ok(())
     }
 
-    async fn delete(&self, key: &str) -> Result<()> {
+    async fn delete(&self, key: &str) -> Result<(), StoreError> {
         let pool = self.db.lock().await;
         sqlx::query("DELETE FROM store WHERE key = ?")
             .bind(key)
@@ -124,7 +126,7 @@ impl Store for SQLiteStore {
         Ok(())
     }
 
-    async fn delete_many(&self, keys: Vec<&str>) -> Result<()> {
+    async fn delete_many(&self, keys: Vec<&str>) -> Result<(), StoreError> {
         let pool = self.db.lock().await;
         let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
 

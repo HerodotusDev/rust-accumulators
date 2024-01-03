@@ -45,10 +45,10 @@ async fn should_discard_properly() {
         .expect("Failed to append");
     let ref_bag = ref_mmr.bag_the_peaks(None).await.unwrap();
     let ref_root = ref_mmr
-        .calculate_root_hash(&ref_bag, ref_mmr.elements_count.get().await)
+        .calculate_root_hash(&ref_bag, ref_mmr.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
 
-    let mut draft = ref_mmr.start_draft().await;
+    let mut draft = ref_mmr.start_draft().await.unwrap();
     draft
         .mmr
         .append("9".to_string())
@@ -57,13 +57,13 @@ async fn should_discard_properly() {
     let draft_bag = draft.mmr.bag_the_peaks(None).await.unwrap();
     let draft_root = draft
         .mmr
-        .calculate_root_hash(&draft_bag, draft.mmr.elements_count.get().await)
+        .calculate_root_hash(&draft_bag, draft.mmr.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
-    draft.discard().await;
+    draft.discard();
 
     let ref_after_bag = ref_mmr.bag_the_peaks(None).await.unwrap();
     let ref_after_root = ref_mmr
-        .calculate_root_hash(&ref_after_bag, ref_mmr.elements_count.get().await)
+        .calculate_root_hash(&ref_after_bag, ref_mmr.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
     assert_eq!(ref_root, ref_after_root);
 
@@ -73,7 +73,7 @@ async fn should_discard_properly() {
         .expect("Failed to append");
     let ref_after_bag = ref_mmr.bag_the_peaks(None).await.unwrap();
     let ref_after_root = ref_mmr
-        .calculate_root_hash(&ref_after_bag, ref_mmr.elements_count.get().await)
+        .calculate_root_hash(&ref_after_bag, ref_mmr.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
     assert_eq!(draft_root, ref_after_root);
 }
@@ -94,7 +94,7 @@ async fn should_apply() {
     mmr.append("7".to_string()).await.expect("Failed to append");
     mmr.append("8".to_string()).await.expect("Failed to append");
 
-    let mut draft = mmr.start_draft().await;
+    let mut draft = mmr.start_draft().await.unwrap();
     let eg_value = "9".to_string();
     let eg_append = draft
         .mmr
@@ -104,13 +104,13 @@ async fn should_apply() {
     let draft_bag = draft.mmr.bag_the_peaks(None).await.unwrap();
     let draft_root = draft
         .mmr
-        .calculate_root_hash(&draft_bag, draft.mmr.elements_count.get().await)
+        .calculate_root_hash(&draft_bag, draft.mmr.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
-    draft.commit().await;
+    draft.commit().await.unwrap();
 
     let bag = mmr.bag_the_peaks(None).await.unwrap();
     let root = mmr
-        .calculate_root_hash(&bag, mmr.elements_count.get().await)
+        .calculate_root_hash(&bag, mmr.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
     assert_eq!(draft_root, root);
 
@@ -143,7 +143,7 @@ async fn example() {
     mmr.append("1".to_string()).await.expect("Failed to append");
     mmr.append("2".to_string()).await.expect("Failed to append");
 
-    let mut draft = mmr.start_draft().await;
+    let mut draft = mmr.start_draft().await.unwrap();
     draft
         .mmr
         .append("3".to_string())
@@ -158,19 +158,19 @@ async fn example() {
     let draft_bag = draft.mmr.bag_the_peaks(None).await.unwrap();
     let draft_root = draft
         .mmr
-        .calculate_root_hash(&draft_bag, draft.mmr.elements_count.get().await)
+        .calculate_root_hash(&draft_bag, draft.mmr.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
 
-    draft.commit().await;
+    draft.commit().await.unwrap();
 
     let bag = mmr.bag_the_peaks(None).await.unwrap();
     let root = mmr
-        .calculate_root_hash(&bag, mmr.elements_count.get().await)
+        .calculate_root_hash(&bag, mmr.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
 
     assert_eq!(draft_root, root);
 
-    let mut draft = mmr.start_draft().await;
+    let mut draft = mmr.start_draft().await.unwrap();
     draft
         .mmr
         .append("5".to_string())
@@ -182,11 +182,11 @@ async fn example() {
         .await
         .expect("Failed to append");
 
-    draft.discard().await;
+    draft.discard();
 
     let after_discard_bag = mmr.bag_the_peaks(None).await.unwrap();
     let after_discard_root = mmr
-        .calculate_root_hash(&after_discard_bag, mmr.elements_count.get().await)
+        .calculate_root_hash(&after_discard_bag, mmr.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
 
     assert_eq!(after_discard_root, root);

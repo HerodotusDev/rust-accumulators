@@ -1,13 +1,12 @@
-use anyhow::{anyhow, bail, Result};
-
 use indexmap::IndexMap;
 use std::{collections::HashMap, sync::Arc};
+use thiserror::Error;
 
 use uuid::Uuid;
 
 use crate::{
-    hasher::Hasher,
-    store::{InStoreTable, Store, SubKey},
+    hasher::{Hasher, HasherError},
+    store::{InStoreTable, InStoreTableError, Store, SubKey},
 };
 
 #[derive(Debug)]
@@ -20,6 +19,23 @@ struct Node {
     hash: String,
     index: usize,
     depth: usize,
+}
+
+/// Error for Incremental Merkle Tree
+#[derive(Error, Debug)]
+pub enum IncrementalMerkleTreeError {
+    #[error("Invalid proof")]
+    InvalidProof,
+    #[error("Root hash not found for mmr_id: {0}")]
+    RootHashNotFound(String),
+    #[error("Invalid index")]
+    InvalidIndex,
+    #[error("Wanted value not found")]
+    WantedValueNotFound,
+    #[error("Hasher error: {0}")]
+    HasherError(#[from] HasherError),
+    #[error("Store table error: {0}")]
+    InStoreTableError(#[from] InStoreTableError),
 }
 
 pub struct IncrementalMerkleTree<H> {
@@ -68,9 +84,9 @@ where
         hasher: H,
         store: Arc<dyn Store>,
         mmr_id: Option<String>,
-    ) -> Self {
+    ) -> Result<Self, IncrementalMerkleTreeError> {
         let tree = IncrementalMerkleTree::new(size, null_value, hasher, store, mmr_id);
-        let nodes = tree.render_empty_tree();
+        let nodes = tree.render_empty_tree()?;
         let nodes_hashmap: HashMap<SubKey, String> =
             nodes
                 .iter()
@@ -81,19 +97,25 @@ where
                     acc
                 });
 
-        tree.nodes.set_many(nodes_hashmap).await;
+        tree.nodes.set_many(nodes_hashmap).await?;
 
         tree.root_hash
             .set(&nodes[nodes.len() - 1][0].hash, SubKey::None)
-            .await;
-        tree
+            .await?;
+        Ok(tree)
     }
 
-    pub async fn get_root(&self) -> String {
-        self.root_hash.get(SubKey::None).await.unwrap()
+    pub async fn get_root(&self) -> Result<String, IncrementalMerkleTreeError> {
+        self.root_hash
+            .get(SubKey::None)
+            .await?
+            .ok_or_else(|| IncrementalMerkleTreeError::RootHashNotFound(self.mmr_id.to_string()))
     }
 
-    pub async fn get_inclusion_proof(&self, index: usize) -> Result<Vec<String>> {
+    pub async fn get_inclusion_proof(
+        &self,
+        index: usize,
+    ) -> Result<Vec<String>, IncrementalMerkleTreeError> {
         let mut required_nodes_by_height = Vec::new();
         let tree_depth = self.get_tree_depth();
         let mut current_index = index;
@@ -114,7 +136,7 @@ where
             .map(|(height, index)| SubKey::String(format!("{}:{}", height, index)))
             .collect();
 
-        let nodes_hash_map = self.nodes.get_many(kv_entries).await;
+        let nodes_hash_map = self.nodes.get_many(kv_entries).await?;
 
         let mut ordered_nodes = Vec::with_capacity(required_nodes_by_height.len());
         for (height, index) in required_nodes_by_height {
@@ -130,7 +152,7 @@ where
         index: usize,
         value: &str,
         proof: &Vec<String>,
-    ) -> Result<bool> {
+    ) -> Result<bool, IncrementalMerkleTreeError> {
         let mut current_index = index;
         let mut current_value = value.to_string();
 
@@ -138,17 +160,15 @@ where
             let is_current_index_even = current_index % 2 == 0;
             current_value = if is_current_index_even {
                 self.hasher
-                    .hash(vec![current_value.to_string(), p.to_string()])
-                    .unwrap()
+                    .hash(vec![current_value.to_string(), p.to_string()])?
             } else {
                 self.hasher
-                    .hash(vec![p.to_string(), current_value.to_string()])
-                    .unwrap()
+                    .hash(vec![p.to_string(), current_value.to_string()])?
             };
             current_index /= 2;
         }
 
-        let root = self.root_hash.get(SubKey::None).await.unwrap();
+        let root = self.get_root().await?;
         Ok(root == current_value)
     }
 
@@ -158,10 +178,10 @@ where
         old_value: String,
         new_value: String,
         proof: Vec<String>,
-    ) -> Result<String> {
-        let is_proof_valid = self.verify_proof(index, &old_value, &proof).await.unwrap();
+    ) -> Result<String, IncrementalMerkleTreeError> {
+        let is_proof_valid = self.verify_proof(index, &old_value, &proof).await?;
         if !is_proof_valid {
-            bail!("Invalid proof");
+            return Err(IncrementalMerkleTreeError::InvalidProof);
         }
 
         let mut kv_updates: HashMap<SubKey, String> = HashMap::new();
@@ -178,12 +198,10 @@ where
 
             current_value = if is_current_index_even {
                 self.hasher
-                    .hash(vec![current_value.to_string(), p.to_string()])
-                    .unwrap()
+                    .hash(vec![current_value.to_string(), p.to_string()])?
             } else {
                 self.hasher
-                    .hash(vec![p.to_string(), current_value.to_string()])
-                    .unwrap()
+                    .hash(vec![p.to_string(), current_value.to_string()])?
             };
 
             current_depth -= 1;
@@ -197,15 +215,15 @@ where
             );
         }
 
-        self.nodes.set_many(kv_updates).await;
-        self.root_hash.set(&current_value, SubKey::None).await;
+        self.nodes.set_many(kv_updates).await?;
+        self.root_hash.set(&current_value, SubKey::None).await?;
         Ok(current_value)
     }
 
     pub async fn get_inclusion_multi_proof(
         &self,
         indexes_to_prove: Vec<usize>,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<String>, IncrementalMerkleTreeError> {
         let tree_depth = self.get_tree_depth();
 
         let mut proof: IndexMap<String, bool> = indexes_to_prove
@@ -227,7 +245,11 @@ where
 
             for kv in current_level.keys() {
                 let kv_parts: Vec<&str> = kv.split(':').collect();
-                let current_node_idx = kv_parts[1].parse::<usize>().expect("Invalid index");
+                let current_node_idx = match kv_parts[1].parse::<usize>() {
+                    Ok(idx) => idx,
+                    Err(_) => return Err(IncrementalMerkleTreeError::InvalidIndex),
+                };
+
                 let child_idx = current_node_idx / 2;
 
                 if next_level.contains_key(&format!("{}:{}", curr_depth - 1, child_idx)) {
@@ -264,7 +286,7 @@ where
             })
             .collect();
 
-        let nodes_hash_map = self.nodes.get_many(kv_entries.clone()).await;
+        let nodes_hash_map = self.nodes.get_many(kv_entries.clone()).await?;
 
         let mut nodes_values: Vec<String> = Vec::with_capacity(kv_entries.len());
         for kv in kv_entries {
@@ -281,13 +303,11 @@ where
         indexes: &mut Vec<usize>,
         values: &mut Vec<String>,
         proof: &mut Vec<String>,
-    ) -> bool {
-        let root = self.root_hash.get(SubKey::None).await.unwrap();
-        let calculated_root = self
-            .calculate_multiproof_root_hash(indexes, values, proof)
-            .unwrap();
+    ) -> Result<bool, IncrementalMerkleTreeError> {
+        let root = self.get_root().await?;
+        let calculated_root = self.calculate_multiproof_root_hash(indexes, values, proof)?;
 
-        root == calculated_root
+        Ok(root == calculated_root)
     }
 
     fn calculate_multiproof_root_hash(
@@ -295,7 +315,7 @@ where
         indexes: &mut Vec<usize>,
         values: &mut Vec<String>,
         proof: &mut Vec<String>,
-    ) -> Result<String> {
+    ) -> Result<String, IncrementalMerkleTreeError> {
         let mut new_indexes = Vec::new();
         let mut new_values = Vec::new();
 
@@ -315,7 +335,7 @@ where
             };
 
             if wanted_value.is_empty() {
-                return Err(anyhow!("Wanted value not found"));
+                return Err(IncrementalMerkleTreeError::WantedValueNotFound);
             }
 
             let hash = if is_even {
@@ -335,14 +355,14 @@ where
 
         new_values
             .pop()
-            .ok_or_else(|| anyhow!("No root hash found".to_string()))
+            .ok_or_else(|| IncrementalMerkleTreeError::RootHashNotFound(self.mmr_id.to_string()))
     }
 
     fn get_tree_depth(&self) -> usize {
         (self.size as f64).log2().ceil() as usize
     }
 
-    fn render_empty_tree(&self) -> Vec<Vec<Node>> {
+    fn render_empty_tree(&self) -> Result<Vec<Vec<Node>>, IncrementalMerkleTreeError> {
         let mut current_height_nodes_count = self.size;
         let mut current_depth = self.get_tree_depth();
         let mut tree: Vec<Vec<Node>> = vec![(0..self.size)
@@ -366,8 +386,7 @@ where
                 let node = Node {
                     hash: self
                         .hasher
-                        .hash(vec![left_sibling.to_string(), right_sibling.to_string()])
-                        .unwrap(),
+                        .hash(vec![left_sibling.to_string(), right_sibling.to_string()])?,
                     index: i / 2,
                     depth: current_depth,
                 };
@@ -377,6 +396,6 @@ where
             current_height_nodes_count = next_height_nodes.len();
             tree.push(next_height_nodes);
         }
-        tree
+        Ok(tree)
     }
 }
