@@ -2,7 +2,7 @@ use accumulators::hasher::{keccak::KeccakHasher, Hasher};
 
 #[test]
 fn genesis() {
-    let hasher = KeccakHasher::new();
+    let hasher = KeccakHasher::default();
 
     assert_eq!(
         hasher.get_genesis().unwrap(),
@@ -12,13 +12,13 @@ fn genesis() {
 
 #[test]
 fn should_compute_a_hash() {
-    let hasher = KeccakHasher::new();
+    let hasher = KeccakHasher::default();
 
     let a = "0xa4b1d5793b631de611c922ea3ec938b359b3a49e687316d9a79c27be8ce84590".to_string();
     let b = "0xa4b1d5793b631de611c922ea3ec938b359b3a49e687316d9a79c27be8ce84590".to_string();
 
-    assert!(hasher.is_element_size_valid(&a));
-    assert!(hasher.is_element_size_valid(&b));
+    assert!(hasher.is_element_size_valid(&a).unwrap());
+    assert!(hasher.is_element_size_valid(&b).unwrap());
 
     let result = hasher.hash(vec![a, b]).unwrap();
 

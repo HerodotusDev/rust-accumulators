@@ -1,11 +1,10 @@
-use std::collections::HashMap;
-
-use anyhow::Result;
 use async_trait::async_trait;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 
-use crate::store::Store;
+use crate::store::{Store, StoreError};
 
+/// A store that is stored in memory
 #[derive(Debug)]
 pub struct InMemoryStore {
     pub store: RwLock<HashMap<String, String>>,
@@ -21,12 +20,12 @@ impl Default for InMemoryStore {
 
 #[async_trait]
 impl Store for InMemoryStore {
-    async fn get(&self, key: &str) -> Result<Option<String>> {
+    async fn get(&self, key: &str) -> Result<Option<String>, StoreError> {
         let store = self.store.read();
         Ok(store.get(key).cloned())
     }
 
-    async fn get_many(&self, keys: Vec<&str>) -> Result<HashMap<String, String>> {
+    async fn get_many(&self, keys: Vec<&str>) -> Result<HashMap<String, String>, StoreError> {
         let store = self.store.read();
         let result = keys
             .into_iter()
@@ -35,13 +34,13 @@ impl Store for InMemoryStore {
         Ok(result)
     }
 
-    async fn set(&self, key: &str, value: &str) -> Result<()> {
+    async fn set(&self, key: &str, value: &str) -> Result<(), StoreError> {
         let mut store = self.store.write();
         store.insert(key.to_string(), value.to_string());
         Ok(())
     }
 
-    async fn set_many(&self, entries: HashMap<String, String>) -> Result<()> {
+    async fn set_many(&self, entries: HashMap<String, String>) -> Result<(), StoreError> {
         let mut store = self.store.write();
         for (key, value) in entries {
             store.insert(key, value);
@@ -49,13 +48,13 @@ impl Store for InMemoryStore {
         Ok(())
     }
 
-    async fn delete(&self, key: &str) -> Result<()> {
+    async fn delete(&self, key: &str) -> Result<(), StoreError> {
         let mut store = self.store.write();
         store.remove(key);
         Ok(())
     }
 
-    async fn delete_many(&self, keys: Vec<&str>) -> Result<()> {
+    async fn delete_many(&self, keys: Vec<&str>) -> Result<(), StoreError> {
         let mut store = self.store.write();
         for key in keys {
             store.remove(key);

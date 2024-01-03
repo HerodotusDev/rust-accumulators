@@ -219,7 +219,7 @@ async fn test_new() {
         .unwrap();
 
     assert_eq!(
-        core_mmr.root_hash.get(SubKey::None).await.unwrap(),
+        core_mmr.root_hash.get(SubKey::None).await.unwrap().unwrap(),
         hasher
             .hash(vec!["1".to_string(), hasher.get_genesis().unwrap()])
             .unwrap()

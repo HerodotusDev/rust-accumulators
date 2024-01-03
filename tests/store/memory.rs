@@ -76,7 +76,7 @@ async fn test_in_store_counter() {
     // Create an in-store counter
     let counter = InStoreCounter::new(store.clone(), "counter".to_string());
     let _ = counter.set(10).await;
-    let value = counter.get().await;
+    let value = counter.get().await.unwrap();
     assert_eq!(value, 10);
     let newcounter = counter.increment().await.unwrap();
     assert_eq!(newcounter, 11);
@@ -89,8 +89,8 @@ async fn test_get_none_in_store_table() {
 
     // Create an in-store counter
     let table = InStoreTable::new(store.clone(), "table".to_string());
-    table.set("value1", SubKey::None).await;
-    let value = table.get(SubKey::None).await;
+    table.set("value1", SubKey::None).await.unwrap();
+    let value = table.get(SubKey::None).await.unwrap();
     assert_eq!(value.unwrap(), "value1".to_string());
 }
 
@@ -104,10 +104,10 @@ async fn test_get_many_none_in_store_table() {
     let mut entries = HashMap::new();
     entries.insert(SubKey::String("key1".to_string()), "value1".to_string());
     entries.insert(SubKey::String("key2".to_string()), "value2".to_string());
-    table.set_many(entries).await;
-    let value = table.get(SubKey::String("key1".to_string())).await;
+    table.set_many(entries).await.unwrap();
+    let value = table.get(SubKey::String("key1".to_string())).await.unwrap();
     assert_eq!(value.unwrap(), "value1".to_string());
-    let value = table.get(SubKey::String("key2".to_string())).await;
+    let value = table.get(SubKey::String("key2".to_string())).await.unwrap();
     assert_eq!(value.unwrap(), "value2".to_string());
 
     let values = table
@@ -115,7 +115,8 @@ async fn test_get_many_none_in_store_table() {
             SubKey::String("key1".to_string()),
             SubKey::String("key2".to_string()),
         ])
-        .await;
+        .await
+        .unwrap();
     assert_eq!(values.get("tablekey1"), Some(&"value1".to_string()));
     assert_eq!(values.get("tablekey2"), Some(&"value2".to_string()));
 }
@@ -129,7 +130,11 @@ async fn test_get_some_in_store_table() {
     let table = InStoreTable::new(store.clone(), "table".to_string());
     table
         .set("value1", SubKey::String("suffix1".to_string()))
-        .await;
-    let value = table.get(SubKey::String("suffix1".to_string())).await;
+        .await
+        .unwrap();
+    let value = table
+        .get(SubKey::String("suffix1".to_string()))
+        .await
+        .unwrap();
     assert_eq!(value.unwrap(), "value1".to_string());
 }

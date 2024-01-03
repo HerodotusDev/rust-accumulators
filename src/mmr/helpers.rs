@@ -1,10 +1,11 @@
-use anyhow::{anyhow, Result};
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::str::FromStr;
+use thiserror::Error;
 
 use super::formatting::{PeaksFormattingOptions, ProofFormattingOptions};
+use super::MMRError;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Proof {
@@ -46,6 +47,13 @@ pub struct FormattingOptionsBundle {
     pub peaks: PeaksFormattingOptions,
 }
 
+/// Tree metadata keys error
+#[derive(Debug, Error)]
+pub enum TreeMetadataKeysError {
+    #[error("Invalid tree metadata key")]
+    InvalidKey,
+}
+
 #[derive(Debug)]
 pub enum TreeMetadataKeys {
     LeafCount,
@@ -55,17 +63,17 @@ pub enum TreeMetadataKeys {
 }
 
 impl FromStr for TreeMetadataKeys {
-    fn from_str(text: &str) -> Result<Self> {
+    fn from_str(text: &str) -> Result<Self, TreeMetadataKeysError> {
         match text {
             "leaf_count" => Ok(TreeMetadataKeys::LeafCount),
             "elements_count" => Ok(TreeMetadataKeys::ElementCount),
             "root_hash" => Ok(TreeMetadataKeys::RootHash),
             "hashes" => Ok(TreeMetadataKeys::Hashes),
-            _ => Err(anyhow!("Invalid tree metadata key")),
+            _ => Err(TreeMetadataKeysError::InvalidKey),
         }
     }
 
-    type Err = anyhow::Error;
+    type Err = TreeMetadataKeysError;
 }
 
 impl Display for TreeMetadataKeys {
@@ -131,7 +139,7 @@ fn count_trailing_ones(mut num: usize) -> usize {
     count
 }
 
-pub fn find_siblings(element_index: usize, elements_count: usize) -> Result<Vec<usize>> {
+pub fn find_siblings(element_index: usize, elements_count: usize) -> Result<Vec<usize>, MMRError> {
     let mut leaf_index = element_index_to_leaf_index(element_index)?;
     let mut height = 0;
     let mut siblings = Vec::new();
@@ -156,17 +164,14 @@ pub fn find_siblings(element_index: usize, elements_count: usize) -> Result<Vec<
     Ok(siblings)
 }
 
-pub fn element_index_to_leaf_index(element_index: usize) -> Result<usize> {
+pub fn element_index_to_leaf_index(element_index: usize) -> Result<usize, MMRError> {
     if element_index == 0 {
-        return Err(anyhow!("Invalid element index"));
+        return Err(MMRError::InvalidElementIndex);
     }
-    match elements_count_to_leaf_count(element_index - 1) {
-        Ok(val) => Ok(val),
-        Err(_) => Err(anyhow!("Invalid element index")),
-    }
+    elements_count_to_leaf_count(element_index - 1)
 }
 
-pub fn elements_count_to_leaf_count(elements_count: usize) -> Result<usize> {
+pub fn elements_count_to_leaf_count(elements_count: usize) -> Result<usize, MMRError> {
     let mut leaf_count = 0;
     let mut mountain_leaf_count = 1 << bit_length(elements_count);
     let mut current_elements_count = elements_count;
@@ -181,10 +186,10 @@ pub fn elements_count_to_leaf_count(elements_count: usize) -> Result<usize> {
     }
 
     if current_elements_count > 0 {
-        return Err(anyhow!("Invalid elements count"));
+        Err(MMRError::InvalidElementCount)
+    } else {
+        Ok(leaf_count)
     }
-
-    Ok(leaf_count)
 }
 
 fn bit_length(num: usize) -> usize {
