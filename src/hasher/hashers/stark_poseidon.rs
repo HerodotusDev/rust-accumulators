@@ -56,11 +56,11 @@ impl Hasher for StarkPoseidonHasher {
         byte_size(element) <= self.block_size_bits
     }
 
-    fn hash_single(&self, data: &str) -> String {
-        self.hash(vec![data.to_string()]).unwrap()
+    fn hash_single(&self, data: &str) -> Result<String> {
+        self.hash(vec![data.to_string()])
     }
 
-    fn get_genesis(&self) -> String {
+    fn get_genesis(&self) -> Result<String> {
         let genesis_str = "brave new world";
         let hex: String = genesis_str
             .as_bytes()

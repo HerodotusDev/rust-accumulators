@@ -70,7 +70,7 @@ impl MMR {
         let mut mmr = MMR::new(store, hasher, mmr_id);
         let elements_count: usize = mmr.elements_count.get().await;
         assert_eq!(elements_count, 0, "Cannot call create_with_genesis on a non-empty MMR. Please provide an empty store or change the MMR id.");
-        let genesis = mmr.hasher.get_genesis();
+        let genesis = mmr.hasher.get_genesis()?;
         let _ = mmr.append(genesis).await;
         Ok(mmr)
     }

@@ -23,22 +23,10 @@ fn check_genesis_hash() {
     let hasher = StarkPoseidonHasher::new(Some(false));
 
     assert_eq!(
-        hasher.get_genesis(),
+        hasher.get_genesis().unwrap(),
         "0x2241b3b7f1c4b9cf63e670785891de91f7237b1388f6635c1898ae397ad32dd".to_string()
     );
 }
-
-// #[test]
-// fn try_one() {
-//     let hasher = StarkPoseidonHasher::new(Some(false));
-
-//     assert_eq!(
-//         hasher
-//             .hash(vec!["0x0".to_string(), "1".to_string()])
-//             .unwrap(),
-//         "0x293d3e8a80f400daaaffdd5932e2bcc8814bab8f414a75dcacf87318f8b14c5".to_string()
-//     );
-// }
 
 #[test]
 fn should_throw() {

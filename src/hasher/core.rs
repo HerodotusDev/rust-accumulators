@@ -8,8 +8,8 @@ pub const DEFAULT_BLOCK_SIZE_BITS: usize = 256;
 pub trait Hasher: Send + Sync + Debug {
     fn hash(&self, data: Vec<String>) -> Result<String>;
     fn is_element_size_valid(&self, element: &str) -> bool;
-    fn hash_single(&self, data: &str) -> String;
-    fn get_genesis(&self) -> String;
+    fn hash_single(&self, data: &str) -> Result<String>;
+    fn get_genesis(&self) -> Result<String>;
     fn get_name(&self) -> HashingFunction;
 }
 
