@@ -1,8 +1,5 @@
-use num_bigint::BigInt;
-use num_traits::{identities::Zero, Num};
-use sha3::{Digest, Keccak256};
-
 use crate::hasher::{byte_size, HasherError, HashingFunction};
+use sha3::{Digest, Keccak256};
 
 use super::super::Hasher;
 
@@ -18,40 +15,27 @@ impl Hasher for KeccakHasher {
         HashingFunction::Keccak256
     }
 
-    /// Hashes a data which is a vector of strings
+    /// Hashes a data which is a vector of strings (all elements must be hex encoded)
     ///
     /// NOTE: data have no limit in length of elements
     fn hash(&self, data: Vec<String>) -> Result<String, HasherError> {
-        for element in &data {
-            if !self.is_element_size_valid(element) {
-                return Err(HasherError::InvalidElementSize {
-                    element: element.clone(),
-                    block_size_bits: self.block_size_bits,
-                });
-            }
-        }
+        let mut keccak = Keccak256::default();
 
-        let mut keccak = Keccak256::new();
+        //? We deliberately don't validate the size of the elements here, because we want to allow hashing of the RLP encoded block to get a block hash
 
         if data.is_empty() {
             keccak.update([]);
         } else if data.len() == 1 {
-            keccak.update(data[0].as_bytes());
+            let no_prefix = data[0].strip_prefix("0x").unwrap_or(&data[0]);
+            keccak.update(hex::decode(no_prefix)?);
         } else {
             let mut result: Vec<u8> = Vec::new();
 
             for e in data.iter() {
                 let no_prefix = e.strip_prefix("0x").unwrap_or(e);
-
-                let n = BigInt::from_str_radix(no_prefix, 16).unwrap_or(BigInt::zero());
-                let hex = format!("{:0>64x}", n);
-
-                for byte_pair in hex.as_bytes().chunks(2) {
-                    let byte_str = std::str::from_utf8(byte_pair).unwrap();
-                    let byte = u8::from_str_radix(byte_str, 16).unwrap();
-                    result.push(byte);
-                }
+                result.extend(hex::decode(no_prefix)?)
             }
+
             keccak.update(&result);
         }
 
@@ -59,17 +43,28 @@ impl Hasher for KeccakHasher {
         Ok(format!("0x{:0>64}", hex::encode(res)))
     }
 
-    fn is_element_size_valid(&self, element: &str) -> bool {
-        byte_size(element) <= self.block_size_bits
+    fn is_element_size_valid(&self, element: &str) -> Result<bool, HasherError> {
+        let size = byte_size(element);
+        if size <= self.block_size_bits {
+            Ok(true)
+        } else {
+            Err(HasherError::InvalidElementSize {
+                element_size: size,
+                block_size_bits: self.block_size_bits,
+            })
+        }
     }
 
+    /// Hashes a single data which is a string (must be hex encoded)
     fn hash_single(&self, data: &str) -> Result<String, HasherError> {
         self.hash(vec![data.to_string()])
     }
 
     fn get_genesis(&self) -> Result<String, HasherError> {
         let genesis_str = "brave new world";
-        self.hash_single(genesis_str)
+        let hex = hex::encode(genesis_str);
+
+        self.hash_single(&hex)
     }
 
     fn get_block_size_bits(&self) -> usize {

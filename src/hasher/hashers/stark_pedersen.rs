@@ -26,12 +26,7 @@ impl Hasher for StarkPedersenHasher {
         }
 
         for element in &data {
-            if !self.is_element_size_valid(element) {
-                return Err(HasherError::InvalidElementSize {
-                    element: element.clone(),
-                    block_size_bits: self.block_size_bits,
-                });
-            }
+            self.is_element_size_valid(element)?;
         }
 
         let mut clean_data = Vec::with_capacity(data.len());
@@ -61,8 +56,16 @@ impl Hasher for StarkPedersenHasher {
         Ok(padded_hex_str)
     }
 
-    fn is_element_size_valid(&self, element: &str) -> bool {
-        byte_size(element) <= self.block_size_bits
+    fn is_element_size_valid(&self, element: &str) -> Result<bool, HasherError> {
+        let size = byte_size(element);
+        if size <= self.block_size_bits {
+            Ok(true)
+        } else {
+            Err(HasherError::InvalidElementSize {
+                element_size: size,
+                block_size_bits: self.block_size_bits,
+            })
+        }
     }
 
     fn hash_single(&self, data: &str) -> Result<String, HasherError> {

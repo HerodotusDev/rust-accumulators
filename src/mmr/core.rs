@@ -157,12 +157,7 @@ impl MMR {
     }
 
     pub async fn append(&mut self, value: String) -> Result<AppendResult, MMRError> {
-        if !self.hasher.is_element_size_valid(&value) {
-            return Err(MMRError::Hasher(HasherError::InvalidElementSize {
-                element: value,
-                block_size_bits: self.hasher.get_block_size_bits(),
-            }));
-        }
+        self.hasher.is_element_size_valid(&value)?;
 
         let elements_count = self.elements_count.get().await?;
 

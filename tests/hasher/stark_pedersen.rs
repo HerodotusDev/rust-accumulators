@@ -6,8 +6,8 @@ fn should_compute_a_hash() {
     let a = "0x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d17761".to_string();
     let b = "0x0194791558611599fe4ae0fcfa48f095659c90db18e54de86f2d2f547f7369bf".to_string();
 
-    assert!(hasher.is_element_size_valid(&a));
-    assert!(hasher.is_element_size_valid(&b));
+    assert!(hasher.is_element_size_valid(&a).is_ok());
+    assert!(hasher.is_element_size_valid(&b).is_ok());
 
     let result = hasher.hash(vec![a, b]).unwrap();
 
@@ -26,6 +26,6 @@ fn should_throw() {
             .to_string();
     let b = "0x0194791558611599fe4ae0fcfa48f095659c90db18e54de86f2d2f547f7369bf".to_string();
 
-    assert!(!hasher.is_element_size_valid(&a));
-    let _ = hasher.hash(vec![a, b]);
+    assert!(hasher.is_element_size_valid(&a).is_err());
+    hasher.hash(vec![a, b]).unwrap();
 }

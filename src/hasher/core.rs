@@ -7,15 +7,19 @@ use thiserror::Error;
 pub enum HasherError {
     #[error("Invalid hashing function")]
     InvalidHashingFunction,
-    #[error("Element {} is size {} bits. It is not of valid size {} bits", .element, .element.len() * 8, .block_size_bits)]
+    #[error(
+        "Element size {element_size} is too big for hashing function with block size {block_size_bits}"
+    )]
     InvalidElementSize {
-        element: String,
+        element_size: usize,
         block_size_bits: usize,
     },
     #[error("Invalid elements length for hashing function")]
     InvalidElementsLength,
     #[error("Fail to convert to U256")]
     U256ConversionError,
+    #[error("Fail to decode hex")]
+    HexDecodeError(#[from] hex::FromHexError),
 }
 
 /// A trait for hash functions
@@ -24,7 +28,7 @@ pub trait Hasher: Send + Sync + Debug {
     fn hash(&self, data: Vec<String>) -> Result<String, HasherError>;
 
     /// Checks if the element size is valid, i.e. if it is less than the block size
-    fn is_element_size_valid(&self, element: &str) -> bool;
+    fn is_element_size_valid(&self, element: &str) -> Result<bool, HasherError>;
 
     /// Hashes a single element
     fn hash_single(&self, data: &str) -> Result<String, HasherError>;

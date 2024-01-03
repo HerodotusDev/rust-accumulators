@@ -23,12 +23,7 @@ impl Hasher for StarkPoseidonHasher {
     /// NOTE: data should be more than 1 element
     fn hash(&self, data: Vec<String>) -> Result<String, HasherError> {
         for element in &data {
-            if !self.is_element_size_valid(element) {
-                return Err(HasherError::InvalidElementSize {
-                    element: element.to_string(),
-                    block_size_bits: self.block_size_bits,
-                });
-            }
+            self.is_element_size_valid(element)?;
         }
 
         let field_elements: Vec<FieldElement> =
@@ -49,8 +44,16 @@ impl Hasher for StarkPoseidonHasher {
         Ok(hash)
     }
 
-    fn is_element_size_valid(&self, element: &str) -> bool {
-        byte_size(element) <= self.block_size_bits
+    fn is_element_size_valid(&self, element: &str) -> Result<bool, HasherError> {
+        let size = byte_size(element);
+        if size <= self.block_size_bits {
+            Ok(true)
+        } else {
+            Err(HasherError::InvalidElementSize {
+                element_size: size,
+                block_size_bits: self.block_size_bits,
+            })
+        }
     }
 
     fn hash_single(&self, data: &str) -> Result<String, HasherError> {
