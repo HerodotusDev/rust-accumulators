@@ -221,7 +221,7 @@ async fn test_new() {
     assert_eq!(
         core_mmr.root_hash.get(SubKey::None).await.unwrap(),
         hasher
-            .hash(vec!["1".to_string(), hasher.get_genesis()])
+            .hash(vec!["1".to_string(), hasher.get_genesis().unwrap()])
             .unwrap()
     );
 }

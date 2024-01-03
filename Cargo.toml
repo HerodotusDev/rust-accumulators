@@ -1,6 +1,6 @@
 [package]
 name = "accumulators"
-version = "0.1.6"
+version = "0.2.0"
 edition = "2021"
 license-file = "LICENSE"
 description = "Complete package of multiple Accumulators with Stores and hashing functions (Hashers)"

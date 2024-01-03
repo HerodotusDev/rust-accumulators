@@ -55,11 +55,11 @@ impl Hasher for StarkPedersenHasher {
         byte_size(element) <= *self.options.get("blockSizeBits").unwrap()
     }
 
-    fn hash_single(&self, data: &str) -> String {
-        self.hash(vec![data.to_string(), "".to_string()]).unwrap()
+    fn hash_single(&self, data: &str) -> Result<String> {
+        self.hash(vec![data.to_string(), "".to_string()])
     }
 
-    fn get_genesis(&self) -> String {
+    fn get_genesis(&self) -> Result<String> {
         let genesis_str = "brave new world";
         self.hash_single(genesis_str)
     }
