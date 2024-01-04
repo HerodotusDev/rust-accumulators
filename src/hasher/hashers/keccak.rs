@@ -1,4 +1,5 @@
 use crate::hasher::{byte_size, HasherError, HashingFunction};
+use num_bigint::BigInt;
 use sha3::{Digest, Keccak256};
 
 use super::super::Hasher;
@@ -33,7 +34,11 @@ impl Hasher for KeccakHasher {
 
             for e in data.iter() {
                 let no_prefix = e.strip_prefix("0x").unwrap_or(e);
-                result.extend(hex::decode(no_prefix)?)
+
+                let bigint = BigInt::parse_bytes(no_prefix.as_bytes(), 16).unwrap();
+                let hex = format!("{:0>64}", bigint.to_str_radix(16));
+                let bytes = hex::decode(hex).unwrap();
+                result.extend(bytes);
             }
 
             keccak.update(&result);
