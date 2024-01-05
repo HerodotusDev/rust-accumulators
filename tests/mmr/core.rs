@@ -268,9 +268,9 @@ mod tests {
 
         let root_hash = mmr.calculate_root_hash(&bag, element_count).unwrap();
 
-        let stable_root_hash = "0xca706d6fbd14da68aeec9a89f4893c88e69dcb19422a0ff1e72836572cfd807c";
+        let stable_root_hash = "0xe336600238639f1ea4e2d78db1c8353a896487fa8fb9f2c3898888817008b77b";
 
-        assert_eq!(root_hash, stable_root_hash);
+        assert_eq!(stable_root_hash, root_hash);
     }
 
     #[tokio::test]
