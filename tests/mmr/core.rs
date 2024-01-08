@@ -208,7 +208,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_new() {
+    async fn test_create_with_genesis_for_poseidon() {
         // Arrange
         let store = SQLiteStore::new(":memory:", None).await.unwrap();
         let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
@@ -229,7 +229,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_get_a_stable_root_hash_for_given_args() {
+    async fn test_create_with_genesis_for_keccak() {
+        // Arrange
+        let store = SQLiteStore::new(":memory:", None).await.unwrap();
+        let hasher = Arc::new(KeccakHasher::new());
+
+        let store = Arc::new(store);
+
+        // Act
+        let core_mmr = MMR::create_with_genesis(store, hasher.clone(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            core_mmr.root_hash.get(SubKey::None).await.unwrap().unwrap(),
+            hasher
+                .hash(vec!["1".to_string(), hasher.get_genesis().unwrap()])
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn should_get_a_stable_root_hash_for_given_args_keccak_hasher() {
         let store = SQLiteStore::new(":memory:", None).await.unwrap();
         let hasher = Arc::new(KeccakHasher::new());
 
@@ -269,6 +290,51 @@ mod tests {
         let root_hash = mmr.calculate_root_hash(&bag, element_count).unwrap();
 
         let stable_root_hash = "0xe336600238639f1ea4e2d78db1c8353a896487fa8fb9f2c3898888817008b77b";
+
+        assert_eq!(stable_root_hash, root_hash);
+    }
+
+    #[tokio::test]
+    async fn should_get_a_stable_root_hash_for_given_args_poseidon_hasher() {
+        let store = SQLiteStore::new(":memory:", None).await.unwrap();
+        let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
+
+        let store = Arc::new(store);
+
+        let mut mmr = MMR::create_with_genesis(store, hasher.clone(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            mmr.root_hash.get(SubKey::None).await.unwrap().unwrap(),
+            hasher
+                .hash(vec!["1".to_string(), hasher.get_genesis().unwrap()])
+                .unwrap()
+        );
+
+        assert_eq!(mmr.leaves_count.get().await.unwrap(), 1);
+
+        mmr.append("1".to_string()).await.unwrap();
+        mmr.append("0x1".to_string()).await.unwrap();
+        mmr.append("2".to_string()).await.unwrap();
+        mmr.append("0x2".to_string()).await.unwrap();
+        mmr.append("3".to_string()).await.unwrap();
+        mmr.append("0x3".to_string()).await.unwrap();
+
+        let stable_bag = "0x1b6fe636cf8f005b539f3d5c9ca5b5f435e995ecf51894fd3045a5e8389d467";
+
+        let element_count = mmr.leaves_count.get().await.unwrap();
+
+        assert_eq!(element_count, 7);
+        let bag = mmr.bag_the_peaks(None).await.unwrap();
+
+        assert_eq!(&bag, stable_bag);
+
+        let element_count = mmr.leaves_count.get().await.unwrap();
+
+        let root_hash = mmr.calculate_root_hash(&bag, element_count).unwrap();
+
+        let stable_root_hash = "0x113e2abc1e91aa48aa7c12940061c924437fcd27829b8594de54a0cea57d232";
 
         assert_eq!(stable_root_hash, root_hash);
     }
