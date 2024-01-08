@@ -7,7 +7,7 @@ use thiserror::Error;
 use super::formatting::{PeaksFormattingOptions, ProofFormattingOptions};
 use super::MMRError;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Proof {
     /// The index of the proven element.
     /// For example: 1
@@ -118,12 +118,21 @@ pub fn find_peaks(mut elements_count: usize) -> Vec<usize> {
     peaks
 }
 
+pub(crate) fn count_ones(mut value: usize) -> usize {
+    let mut ones_count = 0;
+    while value > 0 {
+        value &= value - 1;
+        ones_count += 1;
+    }
+    ones_count
+}
+
 pub fn map_leaf_index_to_element_index(leaf_index: usize) -> usize {
-    2 * leaf_index + 1 - leaf_index.count_ones() as usize
+    2 * leaf_index + 1 - count_ones(leaf_index)
 }
 
 pub fn leaf_count_to_peaks_count(leaf_count: usize) -> u32 {
-    leaf_count.count_ones()
+    count_ones(leaf_count) as u32
 }
 
 pub fn leaf_count_to_append_no_merges(leaf_count: usize) -> usize {
