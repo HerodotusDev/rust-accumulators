@@ -195,7 +195,7 @@ async fn example() {
 }
 
 #[tokio::test]
-async fn append_block_range_poseidon() {
+async fn append_block_range_poseidon_aggregator() {
     use accumulators::{
         hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::memory::InMemoryStore,
     };
@@ -204,42 +204,18 @@ async fn append_block_range_poseidon() {
     let store = Arc::new(store);
     let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
-    let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
+    let mut mmr = MMR::create_with_genesis(store.clone(), hasher.clone(), Some("mmr".to_string()))
+        .await
+        .unwrap();
 
     let mut draft = mmr.start_draft().await.unwrap();
+
     // block 9734438
     draft
         .mmr
         .append("0x07b8996d5b585da92efa32a57223dfb28fa12e6c04d36d7edb03690f03bec56".to_string())
         .await
         .expect("Failed to append");
-    assert_eq!(
-        draft.mmr.leaves_count.get().await.unwrap(),
-        1,
-        "leaves_count  should be 1"
-    );
-    assert_eq!(
-        draft.mmr.elements_count.get().await.unwrap(),
-        1,
-        "elements_count  should be 1"
-    );
-    let elements_count = draft.mmr.elements_count.get().await.unwrap();
-    let draft_bag = draft.mmr.bag_the_peaks(Some(elements_count)).await.unwrap();
-    let draft_root = draft
-        .mmr
-        .calculate_root_hash(&draft_bag, draft.mmr.elements_count.get().await.unwrap())
-        .expect("Failed to calculate root hash");
-    assert_eq!(
-        draft_root, "0x6a276abac77c58ddc28e87135620a45b6d06ea5de494ed9eabd0699ac12392a",
-        "draft_root "
-    );
-    // block 9734439
-    draft
-        .mmr
-        .append("0x312134454804550b4a38e1d60dc1f0be80ff62dfea8f3c6be0c257efce3b833".to_string())
-        .await
-        .expect("Failed to append");
-
     assert_eq!(
         draft.mmr.leaves_count.get().await.unwrap(),
         2,
@@ -254,10 +230,38 @@ async fn append_block_range_poseidon() {
     let draft_bag = draft.mmr.bag_the_peaks(Some(elements_count)).await.unwrap();
     let draft_root = draft
         .mmr
-        .calculate_root_hash(&draft_bag, draft.mmr.elements_count.get().await.unwrap())
+        .calculate_root_hash(&draft_bag, elements_count)
         .expect("Failed to calculate root hash");
     assert_eq!(
-        draft_root, "0xbb04c027ae6df73a33010d9b29237d3535994599801265cafc51e42dca9570",
+        draft_root, "0x1070995027591e1b97c73c0e59933ee1a4227781434dd94b2d4dc87fd94cf92",
+        "draft_root "
+    );
+
+    // block 9734439
+    draft
+        .mmr
+        .append("0x312134454804550b4a38e1d60dc1f0be80ff62dfea8f3c6be0c257efce3b833".to_string())
+        .await
+        .expect("Failed to append");
+
+    assert_eq!(
+        draft.mmr.leaves_count.get().await.unwrap(),
+        3,
+        "leaves_count  should be 3"
+    );
+    assert_eq!(
+        draft.mmr.elements_count.get().await.unwrap(),
+        4,
+        "elements_count  should be 4"
+    );
+    let elements_count = draft.mmr.elements_count.get().await.unwrap();
+    let draft_bag = draft.mmr.bag_the_peaks(Some(elements_count)).await.unwrap();
+    let draft_root = draft
+        .mmr
+        .calculate_root_hash(&draft_bag, elements_count)
+        .expect("Failed to calculate root hash");
+    assert_eq!(
+        draft_root, "0x1a2be63d0560708d3eb87319be0442016ba8757557da8009096e95c4b0682d9",
         "draft_root "
     );
     // block 9734440
@@ -268,13 +272,13 @@ async fn append_block_range_poseidon() {
         .expect("Failed to append");
     assert_eq!(
         draft.mmr.leaves_count.get().await.unwrap(),
-        3,
-        "leaves_count  should be 3"
+        4,
+        "leaves_count  should be 4"
     );
     assert_eq!(
         draft.mmr.elements_count.get().await.unwrap(),
-        4,
-        "elements_count  should be 4"
+        7,
+        "elements_count  should be 7"
     );
     // block 9734441
     draft
@@ -321,37 +325,39 @@ async fn append_block_range_poseidon() {
         .expect("Failed to append");
     assert_eq!(
         draft.mmr.leaves_count.get().await.unwrap(),
-        10,
-        "leaves_count  should be 10"
+        11,
+        "leaves_count  should be 11"
     );
     assert_eq!(
         draft.mmr.elements_count.get().await.unwrap(),
-        18,
-        "elements_count  should be 18"
+        19,
+        "elements_count  should be 19"
     );
     let elements_count = draft.mmr.elements_count.get().await.unwrap();
     let draft_bag = draft.mmr.bag_the_peaks(Some(elements_count)).await.unwrap();
     let draft_root = draft
         .mmr
-        .calculate_root_hash(&draft_bag, draft.mmr.elements_count.get().await.unwrap())
+        .calculate_root_hash(&draft_bag, elements_count)
         .expect("Failed to calculate root hash");
 
     //TODO: onchain root should be 0x06bdd6350f4f5600876f13fb1ee9be09565e37f4ab97971268bc0eb2df5ed6b9
     assert_eq!(
         draft_root,
-        "0x60cd9ba780f766b4292bfad77c2b98258da56c0a333707a5f9c9041af027434"
+        "0x2ca29d4ac90ce8715232f2af120c77a4d647771d76e0720afc1fd330aa64577"
     );
 }
 
 #[tokio::test]
-async fn append_block_range_keccak() {
+async fn append_block_range_keccak_aggregator() {
     use accumulators::{mmr::MMR, store::memory::InMemoryStore};
 
     let store = InMemoryStore::new();
     let store = Arc::new(store);
     let hasher = Arc::new(KeccakHasher::new());
 
-    let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
+    let mut mmr = MMR::create_with_genesis(store.clone(), hasher.clone(), Some("mmr".to_string()))
+        .await
+        .unwrap();
 
     let mut draft = mmr.start_draft().await.unwrap();
     // block 9734438
@@ -360,24 +366,6 @@ async fn append_block_range_keccak() {
         .append("0xcd5631a363d4c9bfc86d3504102595c39d7cd90a940fd165e1bdd911aa504d0a".to_string())
         .await
         .expect("Failed to append");
-    assert_eq!(
-        draft.mmr.leaves_count.get().await.unwrap(),
-        1,
-        "leaves_count  should be 1"
-    );
-    assert_eq!(
-        draft.mmr.elements_count.get().await.unwrap(),
-        1,
-        "elements_count  should be 1"
-    );
-
-    // block 9734439
-    draft
-        .mmr
-        .append("0x62154309a502f33764c4ec3267e2cabf561dc9e428b0607f6f458942bbe0e02d".to_string())
-        .await
-        .expect("Failed to append");
-
     assert_eq!(
         draft.mmr.leaves_count.get().await.unwrap(),
         2,
@@ -389,12 +377,13 @@ async fn append_block_range_keccak() {
         "elements_count  should be 3"
     );
 
-    // block 9734440
+    // block 9734439
     draft
         .mmr
-        .append("0x5104aee2cb3cc519cca3580144624c197a0e8b80ef080fe29698221f9963207d".to_string())
+        .append("0x62154309a502f33764c4ec3267e2cabf561dc9e428b0607f6f458942bbe0e02d".to_string())
         .await
         .expect("Failed to append");
+
     assert_eq!(
         draft.mmr.leaves_count.get().await.unwrap(),
         3,
@@ -404,6 +393,23 @@ async fn append_block_range_keccak() {
         draft.mmr.elements_count.get().await.unwrap(),
         4,
         "elements_count  should be 4"
+    );
+
+    // block 9734440
+    draft
+        .mmr
+        .append("0x5104aee2cb3cc519cca3580144624c197a0e8b80ef080fe29698221f9963207d".to_string())
+        .await
+        .expect("Failed to append");
+    assert_eq!(
+        draft.mmr.leaves_count.get().await.unwrap(),
+        4,
+        "leaves_count  should be 4"
+    );
+    assert_eq!(
+        draft.mmr.elements_count.get().await.unwrap(),
+        7,
+        "elements_count  should be 7"
     );
     // block 9734441
     draft
@@ -450,24 +456,24 @@ async fn append_block_range_keccak() {
         .expect("Failed to append");
     assert_eq!(
         draft.mmr.leaves_count.get().await.unwrap(),
-        10,
-        "leaves_count  should be 10"
+        11,
+        "leaves_count  should be 11"
     );
     assert_eq!(
         draft.mmr.elements_count.get().await.unwrap(),
-        18,
-        "elements_count  should be 18"
+        19,
+        "elements_count  should be 19"
     );
     let elements_count = draft.mmr.elements_count.get().await.unwrap();
     let draft_bag = draft.mmr.bag_the_peaks(Some(elements_count)).await.unwrap();
     let draft_root = draft
         .mmr
-        .calculate_root_hash(&draft_bag, draft.mmr.elements_count.get().await.unwrap())
+        .calculate_root_hash(&draft_bag, elements_count)
         .expect("Failed to calculate root hash");
 
     //TODO: onchain root should be 0xc87c3ba0942e428ad5432078aa7bb0b9d423616a3a1c8c7fc27b546a81465aaf
     assert_eq!(
         draft_root,
-        "0xfa6b3a43dda261466fe3197ade3d0585f612b9b958d2edc7481c9a257265bb99"
+        "0x3833c0ee0a0f3b2d8fa8597c49eed0e53054463fc9ecf05150a188c85142050b"
     );
 }
