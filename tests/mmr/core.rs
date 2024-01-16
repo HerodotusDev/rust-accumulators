@@ -804,8 +804,18 @@ async fn append_block_range_keccak_aggregator() {
         .await
         .unwrap();
 
+    let peaks = mmr
+        .get_peaks(PeaksOptions {
+            elements_count: None,
+            formatting_opts: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(peaks, vec![hasher.get_genesis().unwrap()]);
+
     // block 9734438
-    mmr.append("0xcd5631a363d4c9bfc86d3504102595c39d7cd90a940fd165e1bdd911aa504d0a".to_string())
+    let node2 = "0xcd5631a363d4c9bfc86d3504102595c39d7cd90a940fd165e1bdd911aa504d0a";
+    mmr.append(node2.to_string())
         .await
         .expect("Failed to append");
     assert_eq!(
@@ -827,9 +837,24 @@ async fn append_block_range_keccak_aggregator() {
         root,
         "0xffbb02de013f6837d8e0da5f4215c53634c32a4f5eb2520f26a1d6d2f615db72"
     );
+    let peaks = mmr
+        .get_peaks(PeaksOptions {
+            elements_count: None,
+            formatting_opts: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        peaks,
+        vec![hasher
+            .hash(vec![hasher.get_genesis().unwrap(), node2.to_string()])
+            .unwrap()]
+    );
 
     // block 9734439
-    mmr.append("0x62154309a502f33764c4ec3267e2cabf561dc9e428b0607f6f458942bbe0e02d".to_string())
+    let node3: &str = "0x62154309a502f33764c4ec3267e2cabf561dc9e428b0607f6f458942bbe0e02d";
+    mmr.append(node3.to_string())
         .await
         .expect("Failed to append");
 
@@ -852,9 +877,26 @@ async fn append_block_range_keccak_aggregator() {
         root,
         "0xaeb642d0f47f806382c66494ccf42c7d37eb3e09ba507a3b842e2a080c745200"
     );
+    let peaks = mmr
+        .get_peaks(PeaksOptions {
+            elements_count: None,
+            formatting_opts: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        peaks,
+        vec![
+            hasher
+                .hash(vec![hasher.get_genesis().unwrap(), node2.to_string()])
+                .unwrap(),
+            node3.to_string()
+        ]
+    );
 
     // block 9734440
-    mmr.append("0x5104aee2cb3cc519cca3580144624c197a0e8b80ef080fe29698221f9963207d".to_string())
+    let node4 = "0x5104aee2cb3cc519cca3580144624c197a0e8b80ef080fe29698221f9963207d";
+    mmr.append(node4.to_string())
         .await
         .expect("Failed to append");
     assert_eq!(
@@ -876,9 +918,28 @@ async fn append_block_range_keccak_aggregator() {
         root,
         "0xdae951c569985cea6033958972846338710ba372aef365053428d1eccfe5e5ce"
     );
+    let peaks = mmr
+        .get_peaks(PeaksOptions {
+            elements_count: None,
+            formatting_opts: None,
+        })
+        .await
+        .unwrap();
+    let hash = hasher
+        .hash(vec![
+            hasher
+                .hash(vec![hasher.get_genesis().unwrap(), node2.to_string()])
+                .unwrap(),
+            hasher
+                .hash(vec![node3.to_string(), node4.to_string()])
+                .unwrap(),
+        ])
+        .unwrap();
+    assert_eq!(peaks, vec![hash]);
 
     // block 9734441
-    mmr.append("0x09ab9ad1513282a5c1e1b4c15436aee479e9759712ebe6e5dbb02411537633e1".to_string())
+    let node5 = "0x09ab9ad1513282a5c1e1b4c15436aee479e9759712ebe6e5dbb02411537633e1";
+    mmr.append(node5.to_string())
         .await
         .expect("Failed to append");
     assert_eq!(
@@ -900,9 +961,28 @@ async fn append_block_range_keccak_aggregator() {
         root,
         "0xd4675f556d04ea6828165e6ad778f3162978588890061692189a55002d93572a"
     );
+    let peaks = mmr
+        .get_peaks(PeaksOptions {
+            elements_count: None,
+            formatting_opts: None,
+        })
+        .await
+        .unwrap();
+    let hash = hasher
+        .hash(vec![
+            hasher
+                .hash(vec![hasher.get_genesis().unwrap(), node2.to_string()])
+                .unwrap(),
+            hasher
+                .hash(vec![node3.to_string(), node4.to_string()])
+                .unwrap(),
+        ])
+        .unwrap();
+    assert_eq!(peaks, vec![hash, node5.to_string()]);
 
     // block 9734442
-    mmr.append("0x5cb8bb916e22e6ab4c0fca4bebc13b05dcaaa7eccacd7636b755d944de4e9217".to_string())
+    let node6 = "0x5cb8bb916e22e6ab4c0fca4bebc13b05dcaaa7eccacd7636b755d944de4e9217";
+    mmr.append(node6.to_string())
         .await
         .expect("Failed to append");
     assert_eq!(
@@ -924,6 +1004,62 @@ async fn append_block_range_keccak_aggregator() {
     assert_eq!(
         root,
         "0x1a0a347398081822baeed647ee46c1a50e406133341a0de3f33bb7805092d20d"
+    );
+    let peaks = mmr
+        .get_peaks(PeaksOptions {
+            elements_count: None,
+            formatting_opts: None,
+        })
+        .await
+        .unwrap();
+
+    println!("peaks: {:?}", peaks);
+
+    let hash = hasher
+        .hash(vec![
+            hasher
+                .hash(vec![hasher.get_genesis().unwrap(), node2.to_string()])
+                .unwrap(),
+            hasher
+                .hash(vec![node3.to_string(), node4.to_string()])
+                .unwrap(),
+        ])
+        .unwrap();
+    println!(
+        "hash:{:?}",
+        hasher
+            .hash(vec![
+                hash.to_string(),
+                hasher
+                    .hash(vec![node5.to_string(), node6.to_string()])
+                    .unwrap()
+            ])
+            .unwrap()
+    );
+    assert_eq!(
+        peaks,
+        vec![
+            hash.to_string(),
+            hasher
+                .hash(vec![node5.to_string(), node6.to_string()])
+                .unwrap()
+        ]
+    );
+    assert_eq!(
+        hasher
+            .hash(vec![
+                "10".to_string(),
+                hasher
+                    .hash(vec![
+                        hash.to_string(),
+                        hasher
+                            .hash(vec![node5.to_string(), node6.to_string()])
+                            .unwrap()
+                    ])
+                    .unwrap()
+            ])
+            .unwrap(),
+        "0x1a0a347398081822baeed647ee46c1a50e406133341a0de3f33bb7805092d20d".to_string()
     );
 
     // block 9734443
