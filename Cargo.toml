@@ -1,6 +1,6 @@
 [package]
 name = "accumulators"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 license-file = "LICENSE"
 description = "Complete package of multiple Accumulators with Stores and hashing functions (Hashers)"
@@ -21,7 +21,7 @@ sqlx = { version = "0.7", features = [
 thiserror = "1.0" # Error handling
 async-trait = "0.1.74" # Async traits
 hex = "0.4.3" # Hex encoding
-sha3 = "0.10.8" # Keccak hashing
+tiny-keccak = "2.0.2" # Keccak hashing
 starknet = "0.6.0" # StarkNet pedersen
 starknet-crypto = "0.6.0" # StarkNet poseidon
 primitive-types = "0.10" # U256 primitive type in pedersen

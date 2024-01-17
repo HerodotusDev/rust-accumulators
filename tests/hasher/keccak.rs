@@ -33,6 +33,31 @@ mod test {
     }
 
     #[test]
+    fn should_compute_a_hash_for_non_hex() {
+        let hasher = KeccakHasher::new();
+
+        let a = "0xbd946409a993b84d18be8dc09081a9cdcecedfedf3a1ff984175e5f3667af887".to_string();
+        let b = "0x9cfabdfca79eb1ae44266614b731aa30d2aed697fa01d83b933498f1095f0941".to_string();
+
+        assert!(hasher.is_element_size_valid(&a).unwrap());
+        assert!(hasher.is_element_size_valid(&b).unwrap());
+
+        let result = hasher.hash(vec![a.to_string(), b.to_string()]).unwrap();
+
+        assert_eq!(
+            result,
+            "0xead5d1fa438c36f2c341756e97b2327214f21fee27aaeae4c91238c2c76374f5".to_string()
+        );
+
+        let final_result: String = hasher.hash(vec!["10".to_string(), result]).unwrap();
+
+        assert_eq!(
+            final_result,
+            "0x70c01463d822d2205868c5a46eefc55658828015b83e4553c8462d2c6711d0e0".to_string()
+        );
+    }
+
+    #[test]
     fn should_correctly_compute_a_hash_of_a_single_element() {
         let hasher = KeccakHasher::new();
 
