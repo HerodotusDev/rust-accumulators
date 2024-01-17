@@ -1,6 +1,6 @@
 use accumulators::mmr::{
     element_index_to_leaf_index, elements_count_to_leaf_count, find_peaks, find_siblings,
-    get_peak_info,
+    get_peak_info, map_leaf_index_to_element_index,
 };
 
 #[test]
@@ -83,6 +83,22 @@ fn test_element_index_to_leaf_index() {
             None => assert!(element_index_to_leaf_index(i).is_err()),
         }
     }
+}
+
+//================================================================================================
+// Tests for map_leaf_index_to_element_index
+//================================================================================================
+
+#[tokio::test]
+async fn test_map_element_index_to_leaf_index() {
+    let expected_indices = [1, 2, 4, 5, 8, 9, 11, 12, 16, 17, 19];
+    expected_indices
+        .iter()
+        .enumerate()
+        .for_each(|(arr_idx, &expected_index)| {
+            let element_index = map_leaf_index_to_element_index(arr_idx);
+            assert_eq!(element_index, expected_index);
+        });
 }
 
 #[test]
