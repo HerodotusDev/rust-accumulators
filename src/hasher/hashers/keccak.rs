@@ -30,7 +30,6 @@ impl Hasher for KeccakHasher {
         let mut keccak = Keccak::v256();
 
         //? We deliberately don't validate the size of the elements here, because we want to allow hashing of the RLP encoded block to get a block hash
-
         if data.is_empty() {
             keccak.update(&[]);
         } else if data.len() == 1 {
@@ -79,7 +78,7 @@ impl Hasher for KeccakHasher {
 
     fn get_genesis(&self) -> Result<String, HasherError> {
         let genesis_str = "brave new world";
-        let hex = hex::encode(genesis_str);
+        let hex = format!("0x{}", hex::encode(genesis_str));
 
         self.hash_single(&hex)
     }
