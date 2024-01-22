@@ -284,8 +284,11 @@ impl MMR {
         options: Option<ProofOptions>,
     ) -> Result<Vec<Proof>, MMRError> {
         let options = options.unwrap_or_default();
-        let element_count = self.elements_count.get().await?;
-        let tree_size = options.elements_count.unwrap_or(element_count);
+        let tree_size = if let Some(count) = options.elements_count {
+            count
+        } else {
+            self.elements_count.get().await?
+        };
 
         for &element_index in &elements_indexes {
             if element_index == 0 {
