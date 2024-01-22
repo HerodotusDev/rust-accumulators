@@ -226,8 +226,10 @@ impl MMR {
         }
 
         let options = options.unwrap_or_default();
-        let element_count = self.elements_count.get().await?;
-        let tree_size = options.elements_count.unwrap_or(element_count);
+        let tree_size = match options.elements_count {
+            Some(count) => count,
+            None => self.elements_count.get().await?,
+        };
 
         if element_index > tree_size {
             return Err(MMRError::InvalidElementIndex);
@@ -284,10 +286,9 @@ impl MMR {
         options: Option<ProofOptions>,
     ) -> Result<Vec<Proof>, MMRError> {
         let options = options.unwrap_or_default();
-        let tree_size = if let Some(count) = options.elements_count {
-            count
-        } else {
-            self.elements_count.get().await?
+        let tree_size = match options.elements_count {
+            Some(count) => count,
+            None => self.elements_count.get().await?,
         };
 
         for &element_index in &elements_indexes {
@@ -352,8 +353,10 @@ impl MMR {
         options: Option<ProofOptions>,
     ) -> Result<bool, MMRError> {
         let options = options.unwrap_or_default();
-        let element_count = self.elements_count.get().await?;
-        let tree_size = options.elements_count.unwrap_or(element_count);
+        let tree_size = match options.elements_count {
+            Some(count) => count,
+            None => self.elements_count.get().await?,
+        };
 
         let leaf_count = mmr_size_to_leaf_count(tree_size);
         let peaks_count = leaf_count_to_peaks_count(leaf_count);
