@@ -424,8 +424,10 @@ impl MMR {
     }
 
     pub async fn get_peaks(&self, option: PeaksOptions) -> Result<Vec<String>, MMRError> {
-        let elements_count = self.elements_count.get().await?;
-        let tree_size = option.elements_count.unwrap_or(elements_count);
+        let tree_size = match option.elements_count {
+            Some(count) => count,
+            None => self.elements_count.get().await?,
+        };
 
         let peaks_idxs = find_peaks(tree_size);
         let peaks = self.retrieve_peaks_hashes(peaks_idxs, None).await?;
@@ -464,8 +466,10 @@ impl MMR {
     }
 
     pub async fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String, MMRError> {
-        let element_count_result = self.elements_count.get().await;
-        let tree_size = elements_count.unwrap_or(element_count_result?);
+        let tree_size = match elements_count {
+            Some(count) => count,
+            None => self.elements_count.get().await?,
+        };
         let peaks_idxs = find_peaks(tree_size);
 
         let peaks_hashes = self.retrieve_peaks_hashes(peaks_idxs.clone(), None).await?;
