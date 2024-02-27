@@ -22,12 +22,12 @@ impl MMR {
         let sub_mmrs_count = sub_mmrs_metadata.len();
         let mut sub_mmrs: Vec<SubMMR> = Vec::with_capacity(sub_mmrs_count);
 
-        for (idx, (size, mmr_metadata)) in sub_mmrs_metadata.into_iter().enumerate() {
+        for (idx, (size, mmr_metadata)) in sub_mmrs_metadata.iter().enumerate() {
             let (_, _, _, hashes_table) =
                 MMR::get_stores(&mmr_metadata.mmr_id, mmr_metadata.store.clone());
 
             sub_mmrs.push(SubMMR {
-                size,
+                size: *size,
                 store: mmr_metadata.store.clone(),
                 key: hashes_table.key.clone(),
             });
@@ -41,19 +41,20 @@ impl MMR {
             let current_elements_count = mmr.elements_count.get().await?;
 
             //? If the current MMR is already larger than the sub MMR, we don't need to do anything
-            if current_elements_count >= elements_count {
+            if current_elements_count >= *elements_count {
                 continue;
             }
 
-            let leaves_count = elements_count_to_leaf_count(elements_count)?;
+            let leaves_count = elements_count_to_leaf_count(*elements_count)?;
 
-            mmr.elements_count.set(elements_count).await?;
+            mmr.elements_count.set(*elements_count).await?;
             mmr.leaves_count.set(leaves_count).await?;
         }
 
         mmr.hashes.get_store_and_full_key = MMR::get_store_and_full_key;
         mmr.hashes.get_stores_and_full_keys = MMR::get_stores_and_full_keys;
         mmr.hashes.sub_mmrs = Some(sub_mmrs);
+        mmr.sub_mmrs = sub_mmrs_metadata;
 
         Ok(mmr)
     }

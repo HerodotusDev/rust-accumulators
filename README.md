@@ -4,6 +4,19 @@
 
 [![Cargo Test](https://github.com/HerodotusDev/rust-mmr/actions/workflows/ci.yml/badge.svg)](https://github.com/HerodotusDev/rust-mmr/actions/workflows/ci.yml)
 
+# Quick Start
+
+Add dependency on `Cargo.toml`
+
+```rust
+accumulators = { version = "0.4.0", features = ["all"] }
+```
+
+# Development
+
+Test : `cargo test --all-features`
+Bench : `cargo bench --all-features`
+
 ## Accumulators
 
 ### - [MMR](./src/mmr/README.md)
@@ -53,4 +66,4 @@ Key value stores used for storing the accumulator data.
 
 ---
 
-Herodotus Dev Ltd - 2023
+Herodotus Dev Ltd - 2024
