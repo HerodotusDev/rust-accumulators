@@ -7,12 +7,14 @@ use crate::store::{Store, StoreError};
 /// A store that is stored in memory
 #[derive(Debug)]
 pub struct InMemoryStore {
+    pub id: Option<String>,
     pub store: RwLock<HashMap<String, String>>,
 }
 
 impl Default for InMemoryStore {
     fn default() -> Self {
         Self {
+            id: None,
             store: RwLock::new(HashMap::new()),
         }
     }
@@ -20,6 +22,10 @@ impl Default for InMemoryStore {
 
 #[async_trait]
 impl Store for InMemoryStore {
+    fn id(&self) -> String {
+        self.id.clone().unwrap_or_default()
+    }
+
     async fn get(&self, key: &str) -> Result<Option<String>, StoreError> {
         let store = self.store.read();
         Ok(store.get(key).cloned())
@@ -64,8 +70,11 @@ impl Store for InMemoryStore {
 }
 
 impl InMemoryStore {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(id: Option<&str>) -> Self {
+        Self {
+            id: id.map(|v| v.to_string()),
+            ..Default::default()
+        }
     }
 
     pub fn clear(&self) {

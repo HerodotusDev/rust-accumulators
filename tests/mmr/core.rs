@@ -626,7 +626,9 @@ async fn should_append_to_poseidon_mmr() {
 
 #[tokio::test]
 async fn should_append_duplicate_to_mmr() {
-    let store = SQLiteStore::new(":memory:", None).await.unwrap();
+    let store = SQLiteStore::new(":memory:", None, Some("test"))
+        .await
+        .unwrap();
     let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
     let store = Arc::new(store);
