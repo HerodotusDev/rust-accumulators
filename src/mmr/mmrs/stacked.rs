@@ -16,12 +16,14 @@ impl MMR {
         store: Arc<dyn Store>,
         hasher: Arc<dyn Hasher>,
         mmr_id: Option<String>,
+        //? The sizes of the sub MMRs should be the stacks at size, not the actual current size
         sub_mmrs_metadata: SizesToMMRs,
     ) -> Result<Self, MMRError> {
         let mut mmr = MMR::new(store, hasher, mmr_id);
         let sub_mmrs_count = sub_mmrs_metadata.len();
         let mut sub_mmrs: Vec<SubMMR> = Vec::with_capacity(sub_mmrs_count);
 
+        //? size here should be stacks at size
         for (idx, (size, mmr_metadata)) in sub_mmrs_metadata.iter().enumerate() {
             let (_, _, _, hashes_table) =
                 MMR::get_stores(&mmr_metadata.mmr_id, mmr_metadata.store.clone());

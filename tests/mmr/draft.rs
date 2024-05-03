@@ -134,7 +134,7 @@ async fn example() {
         hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::memory::InMemoryStore,
     };
 
-    let store = InMemoryStore::new();
+    let store = InMemoryStore::new(Some("test"));
     let store = Arc::new(store);
     let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 

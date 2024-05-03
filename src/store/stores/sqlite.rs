@@ -11,11 +11,16 @@ use super::super::Store;
 /// A store that is stored in SQLite
 #[derive(Debug)]
 pub struct SQLiteStore {
+    pub id: Option<String>,
     db: Mutex<Pool<Sqlite>>,
 }
 
 impl SQLiteStore {
-    pub async fn new(path: &str, create_file_if_not_exists: Option<bool>) -> Result<Self, Error> {
+    pub async fn new(
+        path: &str,
+        create_file_if_not_exists: Option<bool>,
+        id: Option<&str>,
+    ) -> Result<Self, Error> {
         let pool = if let Some(create_file_if_not_exists) = create_file_if_not_exists {
             let options = SqliteConnectOptions::new()
                 .filename(path)
@@ -26,6 +31,7 @@ impl SQLiteStore {
         };
 
         let store = SQLiteStore {
+            id: id.map(|v| v.to_string()),
             db: Mutex::new(pool),
         };
         store.init().await?;
@@ -48,6 +54,10 @@ impl SQLiteStore {
 
 #[async_trait]
 impl Store for SQLiteStore {
+    fn id(&self) -> String {
+        self.id.clone().unwrap_or_default()
+    }
+
     async fn get(&self, key: &str) -> Result<Option<String>, StoreError> {
         let pool = self.db.lock().await;
 

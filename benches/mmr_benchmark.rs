@@ -9,7 +9,9 @@ use tokio::runtime::Runtime;
 async fn prepare_mmr(count: usize) -> MMR {
     let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
-    let store = SQLiteStore::new(":memory:", None).await.unwrap();
+    let store = SQLiteStore::new(":memory:", None, Some("test"))
+        .await
+        .unwrap();
 
     let store = Arc::new(store);
 

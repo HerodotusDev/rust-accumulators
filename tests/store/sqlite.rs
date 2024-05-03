@@ -6,7 +6,9 @@ use std::{collections::HashMap, sync::Arc};
 
 #[tokio::test]
 async fn set_and_get_value() {
-    let store = SQLiteStore::new(":memory:", None).await.unwrap();
+    let store = SQLiteStore::new(":memory:", None, Some("test"))
+        .await
+        .unwrap();
 
     let key_value = (
         "6b9b77f2-a893-48bf-a52a-d5be5d0aaba3:RootHash",
@@ -24,7 +26,9 @@ async fn set_and_get_value() {
 
 #[tokio::test]
 async fn set_and_get_many_values() {
-    let store = SQLiteStore::new(":memory:", None).await.unwrap();
+    let store = SQLiteStore::new(":memory:", None, Some("test"))
+        .await
+        .unwrap();
 
     let mut entries = HashMap::new();
     entries.insert("key1".to_string(), "value1".to_string());
@@ -39,7 +43,9 @@ async fn set_and_get_many_values() {
 
 #[tokio::test]
 async fn get_many_values_in_correct_order() {
-    let store = SQLiteStore::new(":memory:", None).await.unwrap();
+    let store = SQLiteStore::new(":memory:", None, Some("test"))
+        .await
+        .unwrap();
 
     let mut entries = HashMap::new();
     entries.insert("a".to_string(), "value1".to_string());
@@ -61,7 +67,9 @@ async fn get_many_values_in_correct_order() {
 
 #[tokio::test]
 async fn should_delete_a_value() {
-    let store = SQLiteStore::new(":memory:", None).await.unwrap();
+    let store = SQLiteStore::new(":memory:", None, Some("test"))
+        .await
+        .unwrap();
 
     store.set("key", "value").await.unwrap();
     store.delete("key").await.unwrap();
@@ -72,7 +80,9 @@ async fn should_delete_a_value() {
 
 #[tokio::test]
 async fn test_in_store_counter() {
-    let store = SQLiteStore::new(":memory:", None).await.unwrap();
+    let store = SQLiteStore::new(":memory:", None, Some("test"))
+        .await
+        .unwrap();
     let store = Arc::new(store);
 
     // Create an in-store counter
@@ -86,7 +96,9 @@ async fn test_in_store_counter() {
 
 #[tokio::test]
 async fn test_get_none_in_store_table() {
-    let store = SQLiteStore::new(":memory:", None).await.unwrap();
+    let store = SQLiteStore::new(":memory:", None, Some("test"))
+        .await
+        .unwrap();
 
     let store = Arc::new(store);
 
@@ -99,7 +111,9 @@ async fn test_get_none_in_store_table() {
 
 #[tokio::test]
 async fn test_get_many_none_in_store_table() {
-    let store = SQLiteStore::new(":memory:", None).await.unwrap();
+    let store = SQLiteStore::new(":memory:", None, Some("test"))
+        .await
+        .unwrap();
 
     let store = Arc::new(store);
 
@@ -127,7 +141,9 @@ async fn test_get_many_none_in_store_table() {
 
 #[tokio::test]
 async fn test_get_some_in_store_table() {
-    let store = SQLiteStore::new(":memory:", None).await.unwrap();
+    let store = SQLiteStore::new(":memory:", None, Some("test"))
+        .await
+        .unwrap();
 
     let store = Arc::new(store);
 

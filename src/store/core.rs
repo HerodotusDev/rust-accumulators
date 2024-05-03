@@ -29,6 +29,8 @@ pub enum StoreError {
 /// Define common behavior for all stores
 #[async_trait]
 pub trait Store: Send + Sync + Debug {
+    /// Helper function to get the store identifier - useful for debugging
+    fn id(&self) -> String;
     /// Get a value from the store
     async fn get(&self, key: &str) -> Result<Option<String>, StoreError>;
 
