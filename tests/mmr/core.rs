@@ -789,3 +789,25 @@ async fn should_get_a_stable_root_hash_for_given_args_poseidon_hasher() {
 
     assert_eq!(stable_root_hash, root_hash);
 }
+
+#[tokio::test]
+async fn timestamp_remappers_test() {
+    let store = InMemoryStore::default();
+    let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
+    let store = Arc::new(store);
+
+    let mut mmr = MMR::new(store, hasher.clone(), None);
+
+    mmr.append("1715180160".to_string()).await.unwrap();
+    mmr.append("1715180172".to_string()).await.unwrap();
+
+    let element_count = mmr.elements_count.get().await.unwrap();
+    println!("element_count: {}", element_count);
+    let bag = mmr.bag_the_peaks(Some(element_count)).await.unwrap();
+    println!("bag: {}", bag);
+    let root_hash = mmr.calculate_root_hash(&bag, element_count).unwrap();
+    println!("root_hash: {}", root_hash);
+
+    let correct_root_hash = "0x32f5a2949cac3d06e854701c5a2a00ed51c0475a31c1bc17cc6d3ec46425e9";
+    assert_eq!(correct_root_hash, root_hash);
+}

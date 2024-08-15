@@ -33,7 +33,6 @@ indexmap = "2.1.0"
 strum = "0.25" # better enums
 strum_macros = "0.25" # better enums
 
-
 [dev-dependencies]
 criterion = { version = "0.4", features = [
     "html_reports",
