@@ -78,7 +78,6 @@ impl Display for MissingValues {
 #[derive(Error, Debug)]
 pub enum InStoreTableError {
     #[error("Some keys were not found for stores: {0}")]
-    // TODO: change this to from MissingValues - many (store: missing keys)
     NotFound(#[from] MissingValues),
     #[error("Store error: {0}")]
     Store(#[from] StoreError),
