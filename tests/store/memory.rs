@@ -33,7 +33,7 @@ async fn set_and_get_many_values() {
 
     let values = store.get_many(vec!["key1", "key2"]).await.unwrap();
 
-    assert_eq!(values.get("key1"), Some(&"value1".to_string()));
+    assert_eq!(values.get("key1"), Some(&"value1a".to_string()));
 }
 
 #[tokio::test]

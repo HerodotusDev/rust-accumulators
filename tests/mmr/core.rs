@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use accumulators::{
     hasher::{
@@ -8,6 +8,7 @@ use accumulators::{
     mmr::{AppendResult, PeaksOptions, Proof, ProofOptions, MMR},
     store::{memory::InMemoryStore, sqlite::SQLiteStore, SubKey},
 };
+use parking_lot::lock_api::RwLock;
 
 const LEAVES: [&str; 5] = ["1", "2", "3", "4", "5"];
 async fn setup() -> (
@@ -642,11 +643,15 @@ async fn should_append_duplicate_to_mmr() {
 
 #[tokio::test]
 async fn test_append_for_mmr() {
-    let store = InMemoryStore::default();
+    let ssstore = RwLock::new(HashMap::new());
+    let store = InMemoryStore {
+        store: ssstore,
+        id: Some("aaaa".to_string()),
+    };
     let store_rc = Arc::new(store);
     let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
-    let mut mmr = MMR::new(store_rc, hasher, None);
+    let mut mmr = MMR::new(store_rc, hasher, Some("aaaa".to_string()));
 
     mmr.append("1".to_string()).await.expect("Failed to append");
     mmr.append("2".to_string()).await.expect("Failed to append");
@@ -657,6 +662,10 @@ async fn test_append_for_mmr() {
         .await
         .expect("Failed to append");
 
+    let res = mmr.store.delete("aaaa:hashes:7").await;
+    println!("{:#?}", res);
+
+    //! InStoreTable(NotFound("aaaa", "aaaa:hashes:7"))
     let proof = mmr
         .get_proof(example_append.element_index, None)
         .await

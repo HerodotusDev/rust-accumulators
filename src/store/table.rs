@@ -51,8 +51,9 @@ pub struct SubMMR {
 /// An error that can occur when using an InStoreTable
 #[derive(Error, Debug)]
 pub enum InStoreTableError {
-    #[error("Some keys were not found")]
-    NotFound,
+    #[error("Some keys were not found for store {0}")]
+    // TODO: change this to from MissingValues - many (store: missing keys)
+    NotFound(MissingValues),
     #[error("Store error: {0}")]
     Store(#[from] StoreError),
     #[error("Could not decode store key")]
@@ -137,14 +138,16 @@ impl InStoreTable {
         &self,
         sub_keys: Vec<SubKey>,
     ) -> Result<HashMap<String, String>, InStoreTableError> {
-        let requested_len = sub_keys.len();
-        let stores_and_keys = (self.get_stores_and_full_keys)(self, sub_keys);
+        let stores_and_keys = (self.get_stores_and_full_keys)(self, sub_keys.clone())?;
 
-        let mut keyless = HashMap::new();
-        for store_and_keys in stores_and_keys? {
-            let (store, keys) = store_and_keys;
+        // TODO: grow this
+        let mut missing_keys = vec!["1"];
+        let mut retrieved_sub_keys_as_string = HashMap::new();
+        for (store, keys) in stores_and_keys {
             let keys_ref: Vec<&str> = keys.iter().map(AsRef::as_ref).collect();
             let fetched = store.get_many(keys_ref).await?;
+
+            // TODO: Here check if fetched worked and fetched all keys from stores_and_keys, if not append the full key and store id to missing keys
 
             for (key, value) in fetched.iter() {
                 let new_key: String = if key.contains(':') {
@@ -152,20 +155,27 @@ impl InStoreTable {
                 } else {
                     key.clone()
                 };
-                keyless.insert(new_key, value.clone());
+                retrieved_sub_keys_as_string.insert(new_key, value.clone());
             }
         }
 
-        if keyless.len() != requested_len {
-            Err(InStoreTableError::NotFound)
+        println!("[AAAAAA 🛑] {:#?}", missing_keys);
+
+        if !missing_keys.is_empty() {
+            // TODO: change this error - many missing keys with many store ids, not one store id many missing keys
+            Err(InStoreTableError::NotFound(
+                self.store.id(),
+                missing_keys.join(", "),
+            ))
         } else {
-            Ok(keyless)
+            Ok(retrieved_sub_keys_as_string)
         }
     }
 
     /// Set the value from full key that retrieved from the sub_key
     pub async fn set(&self, value: &str, sub_key: SubKey) -> Result<(), InStoreTableError> {
         let (store, key) = (self.get_store_and_full_key)(self, sub_key)?;
+        println!("🛑 key {}", &key);
         store.set(&key, value).await?;
         Ok(())
     }
