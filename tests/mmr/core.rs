@@ -643,15 +643,11 @@ async fn should_append_duplicate_to_mmr() {
 
 #[tokio::test]
 async fn test_append_for_mmr() {
-    let ssstore = RwLock::new(HashMap::new());
-    let store = InMemoryStore {
-        store: ssstore,
-        id: Some("aaaa".to_string()),
-    };
+    let store = InMemoryStore::default();
     let store_rc = Arc::new(store);
     let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
 
-    let mut mmr = MMR::new(store_rc, hasher, Some("aaaa".to_string()));
+    let mut mmr = MMR::new(store_rc, hasher, None);
 
     mmr.append("1".to_string()).await.expect("Failed to append");
     mmr.append("2".to_string()).await.expect("Failed to append");
@@ -662,10 +658,6 @@ async fn test_append_for_mmr() {
         .await
         .expect("Failed to append");
 
-    let res = mmr.store.delete("aaaa:hashes:7").await;
-    println!("{:#?}", res);
-
-    //! InStoreTable(NotFound("aaaa", "aaaa:hashes:7"))
     let proof = mmr
         .get_proof(example_append.element_index, None)
         .await
