@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use accumulators::{
     hasher::{
@@ -8,7 +8,6 @@ use accumulators::{
     mmr::{AppendResult, PeaksOptions, Proof, ProofOptions, MMR},
     store::{memory::InMemoryStore, sqlite::SQLiteStore, SubKey},
 };
-use parking_lot::lock_api::RwLock;
 
 const LEAVES: [&str; 5] = ["1", "2", "3", "4", "5"];
 async fn setup() -> (

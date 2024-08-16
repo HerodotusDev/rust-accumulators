@@ -171,16 +171,16 @@ impl InStoreTable {
             let keys_ref: Vec<&str> = keys.iter().map(AsRef::as_ref).collect();
             let fetched = store.get_many(keys_ref).await?;
 
+            //? Checking for missing keys
             let missing_keys = keys
-                .iter()
+                .into_iter()
                 .filter(|key| !fetched.contains_key(&key.to_string()))
-                .cloned()
                 .collect::<Vec<_>>();
-
             if !missing_keys.is_empty() {
                 stores_with_missing_keys.insert(store.id(), missing_keys);
             }
 
+            //? Strapping full key to sub_key format and saving in the final hash map
             for (key, value) in fetched.iter() {
                 let new_key: String = if key.contains(':') {
                     key.split(':').skip(2).collect::<Vec<&str>>().join(":")
