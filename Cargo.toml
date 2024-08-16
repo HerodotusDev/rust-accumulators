@@ -9,7 +9,7 @@ repository = "https://github.com/HerodotusDev/rust-accumulators"
 documentation = "https://github.com/HerodotusDev/rust-accumulators/blob/main/README.md"
 readme = "README.md"
 keywords = ["accumulators", "mmr", "merkle", "tree", "incremental"]
-categories = ["cryptography", "data-structures", "database", "blockchain"]
+categories = ["cryptography", "data-structures", "database"]
 exclude = [".github", ".vscode"]
 
 [dependencies]
