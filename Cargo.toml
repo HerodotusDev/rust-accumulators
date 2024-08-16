@@ -1,6 +1,6 @@
 [package]
 name = "accumulators"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2021"
 license-file = "LICENSE"
 description = "Complete package of multiple Accumulators with Stores and hashing functions (Hashers)"
@@ -32,7 +32,6 @@ num-traits = "0.2.17" # Bigints in hashers (TODO: double check if needed)
 indexmap = "2.1.0"
 strum = "0.25" # better enums
 strum_macros = "0.25" # better enums
-
 
 [dev-dependencies]
 criterion = { version = "0.4", features = [
