@@ -1,5 +1,6 @@
 use super::{Store, StoreError};
 use std::collections::HashMap;
+use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::hash::Hash;
 use std::sync::Arc;
 use thiserror::Error;
@@ -48,11 +49,36 @@ pub struct SubMMR {
     pub store: Arc<dyn Store>,
 }
 
+#[derive(Error, Debug)]
+pub struct MissingValues {
+    pub stores_with_missing_keys: HashMap<String, Vec<String>>,
+}
+
+impl Display for MissingValues {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        let mut formatted_output = String::new();
+
+        //? Iterate over the HashMap to build the string in the required format
+        for (store, keys) in &self.stores_with_missing_keys {
+            let keys_str = keys.join(", ");
+            formatted_output.push_str(&format!("{}: {}", store, keys_str));
+            formatted_output.push_str("; ");
+        }
+
+        //? Remove the trailing "; " for better formatting
+        if !formatted_output.is_empty() {
+            formatted_output.truncate(formatted_output.len() - 2);
+        }
+
+        write!(f, "{{{}}}", formatted_output)
+    }
+}
+
 /// An error that can occur when using an InStoreTable
 #[derive(Error, Debug)]
 pub enum InStoreTableError {
-    #[error("Some keys were not found")]
-    NotFound,
+    #[error("Some keys were not found for stores: {0}")]
+    NotFound(#[from] MissingValues),
     #[error("Store error: {0}")]
     Store(#[from] StoreError),
     #[error("Could not decode store key")]
@@ -137,29 +163,40 @@ impl InStoreTable {
         &self,
         sub_keys: Vec<SubKey>,
     ) -> Result<HashMap<String, String>, InStoreTableError> {
-        let requested_len = sub_keys.len();
-        let stores_and_keys = (self.get_stores_and_full_keys)(self, sub_keys);
+        let stores_and_keys = (self.get_stores_and_full_keys)(self, sub_keys.clone())?;
 
-        let mut keyless = HashMap::new();
-        for store_and_keys in stores_and_keys? {
-            let (store, keys) = store_and_keys;
+        let mut stores_with_missing_keys = HashMap::new();
+        let mut retrieved_sub_keys_as_string = HashMap::new();
+        for (store, keys) in stores_and_keys {
             let keys_ref: Vec<&str> = keys.iter().map(AsRef::as_ref).collect();
             let fetched = store.get_many(keys_ref).await?;
 
+            //? Checking for missing keys
+            let missing_keys = keys
+                .into_iter()
+                .filter(|key| !fetched.contains_key(&key.to_string()))
+                .collect::<Vec<_>>();
+            if !missing_keys.is_empty() {
+                stores_with_missing_keys.insert(store.id(), missing_keys);
+            }
+
+            //? Strapping full key to sub_key format and saving in the final hash map
             for (key, value) in fetched.iter() {
                 let new_key: String = if key.contains(':') {
                     key.split(':').skip(2).collect::<Vec<&str>>().join(":")
                 } else {
                     key.clone()
                 };
-                keyless.insert(new_key, value.clone());
+                retrieved_sub_keys_as_string.insert(new_key, value.clone());
             }
         }
 
-        if keyless.len() != requested_len {
-            Err(InStoreTableError::NotFound)
+        if !stores_with_missing_keys.is_empty() {
+            Err(InStoreTableError::NotFound(MissingValues {
+                stores_with_missing_keys,
+            }))
         } else {
-            Ok(keyless)
+            Ok(retrieved_sub_keys_as_string)
         }
     }
 
