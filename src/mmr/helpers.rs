@@ -135,6 +135,10 @@ pub fn leaf_count_to_peaks_count(leaf_count: usize) -> u32 {
     count_ones(leaf_count) as u32
 }
 
+pub fn leaf_count_to_mmr_size(leaf_count: usize) -> usize {
+    2 * leaf_count - leaf_count_to_peaks_count(leaf_count) as usize
+}
+
 pub fn leaf_count_to_append_no_merges(leaf_count: usize) -> usize {
     count_trailing_ones(leaf_count)
 }
