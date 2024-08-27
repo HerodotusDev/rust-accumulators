@@ -139,8 +139,12 @@ impl MMR {
                 _ => return table.default_get_stores_and_full_keys(sub_keys),
             };
 
+            //? Sort the sub MMRs by size in ascending order
+            let mut sub_mmrs = table.sub_mmrs.as_ref().unwrap().clone();
+            sub_mmrs.sort_by(|a, b| a.size.cmp(&b.size));
+
             let mut use_mmr: Option<SubMMR> = None;
-            for sub_mmr in table.sub_mmrs.as_ref().unwrap().iter() {
+            for sub_mmr in sub_mmrs.iter() {
                 if *element_index <= sub_mmr.size {
                     use_mmr = Some(sub_mmr.clone());
                     break;
