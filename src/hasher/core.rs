@@ -1,3 +1,4 @@
+use starknet::core::types::FromStrError;
 use std::{fmt::Debug, str::FromStr};
 use strum_macros::EnumIter;
 use thiserror::Error;
@@ -16,10 +17,10 @@ pub enum HasherError {
     },
     #[error("Invalid elements length for hashing function")]
     InvalidElementsLength,
-    #[error("Fail to convert to U256")]
-    U256ConversionError,
     #[error("Fail to decode hex")]
     HexDecodeError(#[from] hex::FromHexError),
+    #[error("Fail to convert to felt")]
+    FeltConversionError(#[from] FromStrError),
 }
 
 /// A trait for hash functions

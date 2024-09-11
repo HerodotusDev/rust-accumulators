@@ -1,6 +1,6 @@
 [package]
 name = "accumulators"
-version = "0.4.6"
+version = "0.4.7"
 edition = "2021"
 license-file = "LICENSE"
 description = "Complete package of multiple Accumulators with Stores and hashing functions (Hashers)"
@@ -24,7 +24,6 @@ hex = "0.4.3" # Hex encoding
 tiny-keccak = "2.0.2" # Keccak hashing
 starknet = "0.6.0" # StarkNet pedersen
 starknet-crypto = "0.6.0" # StarkNet poseidon
-primitive-types = "0.10" # U256 primitive type in pedersen
 uuid = { version = "1.4.1", features = ["v4"] } # UUID
 parking_lot = "0.12.1" # Sync mutex
 num-bigint = "0.4.4" # Bigints in hashers (TODO: double check if needed)
