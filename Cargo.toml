@@ -22,8 +22,9 @@ thiserror = "1.0" # Error handling
 async-trait = "0.1.74" # Async traits
 hex = "0.4.3" # Hex encoding
 tiny-keccak = "2.0.2" # Keccak hashing
-starknet = "0.6.0" # StarkNet pedersen
-starknet-crypto = "0.6.0" # StarkNet poseidon
+starknet = "0.11.0"
+starknet-crypto = "0.7.1"
+starknet-types-core = "0.1.5"
 uuid = { version = "1.4.1", features = ["v4"] } # UUID
 parking_lot = "0.12.1" # Sync mutex
 num-bigint = "0.4.4" # Bigints in hashers (TODO: double check if needed)
