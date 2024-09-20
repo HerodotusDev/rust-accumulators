@@ -1,4 +1,4 @@
-use starknet::core::types::FromStrError;
+use starknet_types_core::felt::FromStrError;
 use std::{fmt::Debug, str::FromStr};
 use strum_macros::EnumIter;
 use thiserror::Error;

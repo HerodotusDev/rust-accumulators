@@ -1,8 +1,7 @@
 use crate::hasher::{byte_size, HasherError, HashingFunction};
 
 use super::super::Hasher;
-use starknet::core::types::FieldElement;
-use starknet_crypto::{poseidon_hash, poseidon_hash_many, poseidon_hash_single};
+use starknet_crypto::{poseidon_hash, poseidon_hash_many, poseidon_hash_single, Felt};
 
 /// Hasher for Stark Poseidon
 #[derive(Debug, Clone)]
@@ -26,7 +25,7 @@ impl Hasher for StarkPoseidonHasher {
             self.is_element_size_valid(element)?;
         }
 
-        let field_elements: Vec<FieldElement> =
+        let field_elements: Vec<Felt> =
             data.iter().map(|e| e.parse().unwrap_or_default()).collect();
 
         let hash_core = match field_elements.len() {

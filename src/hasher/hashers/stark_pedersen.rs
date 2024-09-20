@@ -1,4 +1,5 @@
-use starknet::core::{crypto::pedersen_hash, types::FieldElement};
+use starknet::core::crypto::pedersen_hash;
+use starknet_crypto::Felt;
 
 use crate::hasher::{byte_size, HasherError, HashingFunction};
 
@@ -69,11 +70,8 @@ impl StarkPedersenHasher {
             self.is_element_size_valid(element)?;
         }
 
-        let result = pedersen_hash(
-            &FieldElement::from_hex_be(&data[0])?,
-            &FieldElement::from_hex_be(&data[1])?,
-        )
-        .to_bytes_be();
+        let result =
+            pedersen_hash(&Felt::from_hex(&data[0])?, &Felt::from_hex(&data[1])?).to_bytes_be();
 
         let padded_hex_str = format!("0x{:0>64}", hex::encode(result));
         Ok(padded_hex_str)
