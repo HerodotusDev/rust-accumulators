@@ -45,7 +45,7 @@ pub trait Hasher: Send + Sync + Debug {
 }
 
 /// Hashing functions types supported by the hasher
-#[derive(EnumIter, Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(EnumIter, Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum HashingFunction {
     Keccak256,
     Poseidon,
