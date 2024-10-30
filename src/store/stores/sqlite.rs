@@ -15,6 +15,10 @@ pub struct SQLiteStore {
     db: Mutex<Pool<Sqlite>>,
 }
 
+//? SQLite's default maximum number of variables per statement is 999.
+//? We use a smaller number to be safe.
+const MAX_VARIABLE_NUMBER: usize = 900;
+
 impl SQLiteStore {
     pub async fn new(
         path: &str,
@@ -66,7 +70,6 @@ impl Store for SQLiteStore {
             .fetch_optional(&*pool)
             .await?;
 
-        // Extract the value from the row, if it exists
         if let Some(row) = row {
             let value: String = row.try_get("value")?;
             Ok(Some(value))
@@ -77,23 +80,27 @@ impl Store for SQLiteStore {
 
     async fn get_many(&self, keys: Vec<&str>) -> Result<HashMap<String, String>, StoreError> {
         let pool = self.db.lock().await;
-        let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        let query_statement = format!(
-            "SELECT key, value FROM store WHERE key IN ({})",
-            placeholders
-        );
-        let mut query = sqlx::query(&query_statement);
-
-        for key in &keys {
-            query = query.bind(key);
-        }
-
-        let rows = query.fetch_all(&*pool).await?;
         let mut map = HashMap::new();
-        for row in rows {
-            let key: String = row.get("key");
-            let value: String = row.get("value");
-            map.insert(key, value);
+
+        for key_chunk in keys.chunks(MAX_VARIABLE_NUMBER) {
+            let placeholders = key_chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let query_statement = format!(
+                "SELECT key, value FROM store WHERE key IN ({})",
+                placeholders
+            );
+
+            let mut query = sqlx::query(&query_statement);
+
+            for key in key_chunk {
+                query = query.bind(*key);
+            }
+
+            let rows = query.fetch_all(&*pool).await?;
+            for row in rows {
+                let key: String = row.get("key");
+                let value: String = row.get("value");
+                map.insert(key, value);
+            }
         }
 
         Ok(map)
@@ -114,12 +121,25 @@ impl Store for SQLiteStore {
         let pool = self.db.lock().await;
         let mut transaction = pool.begin().await?;
 
-        for (key, value) in entries.iter() {
-            sqlx::query("INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)")
-                .bind(key)
-                .bind(value)
-                .execute(&mut *transaction)
-                .await?;
+        for entry_chunk in entries
+            .iter()
+            .collect::<Vec<_>>()
+            .chunks(MAX_VARIABLE_NUMBER)
+        {
+            let mut query = String::from("INSERT OR REPLACE INTO store (key, value) VALUES ");
+            let placeholders = entry_chunk
+                .iter()
+                .map(|_| "(?, ?)")
+                .collect::<Vec<_>>()
+                .join(", ");
+            query.push_str(&placeholders);
+
+            let mut sqlx_query = sqlx::query(&query);
+            for (key, value) in entry_chunk {
+                sqlx_query = sqlx_query.bind(key).bind(value);
+            }
+
+            sqlx_query.execute(&mut *transaction).await?;
         }
 
         transaction.commit().await?;
@@ -138,16 +158,19 @@ impl Store for SQLiteStore {
 
     async fn delete_many(&self, keys: Vec<&str>) -> Result<(), StoreError> {
         let pool = self.db.lock().await;
-        let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
 
-        let query_statement = format!("DELETE FROM store WHERE key IN ({})", placeholders);
-        let mut query = sqlx::query(&query_statement);
+        for key_chunk in keys.chunks(MAX_VARIABLE_NUMBER) {
+            let placeholders = key_chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let query_statement = format!("DELETE FROM store WHERE key IN ({})", placeholders);
 
-        for key in &keys {
-            query = query.bind(key);
+            let mut query = sqlx::query(&query_statement);
+
+            for key in key_chunk {
+                query = query.bind(*key);
+            }
+
+            query.execute(&*pool).await?;
         }
-
-        query.execute(&*pool).await?;
 
         Ok(())
     }
