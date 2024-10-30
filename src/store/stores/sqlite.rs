@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use sqlx::Error;
 use sqlx::{sqlite::SqliteConnectOptions, Pool, Row, Sqlite, SqlitePool};
-use std::cmp::min;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 
@@ -71,7 +70,6 @@ impl Store for SQLiteStore {
             .fetch_optional(&*pool)
             .await?;
 
-        // Extract the value from the row, if it exists
         if let Some(row) = row {
             let value: String = row.try_get("value")?;
             Ok(Some(value))
@@ -84,14 +82,8 @@ impl Store for SQLiteStore {
         let pool = self.db.lock().await;
         let mut map = HashMap::new();
 
-        let total_keys = keys.len();
-        let mut offset = 0;
-
-        while offset < total_keys {
-            let end = min(offset + MAX_VARIABLE_NUMBER, total_keys);
-            let key_slice = &keys[offset..end];
-
-            let placeholders = key_slice.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        for key_chunk in keys.chunks(MAX_VARIABLE_NUMBER) {
+            let placeholders = key_chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
             let query_statement = format!(
                 "SELECT key, value FROM store WHERE key IN ({})",
                 placeholders
@@ -99,7 +91,7 @@ impl Store for SQLiteStore {
 
             let mut query = sqlx::query(&query_statement);
 
-            for key in key_slice {
+            for key in key_chunk {
                 query = query.bind(*key);
             }
 
@@ -109,8 +101,6 @@ impl Store for SQLiteStore {
                 let value: String = row.get("value");
                 map.insert(key, value);
             }
-
-            offset = end;
         }
 
         Ok(map)
@@ -131,12 +121,25 @@ impl Store for SQLiteStore {
         let pool = self.db.lock().await;
         let mut transaction = pool.begin().await?;
 
-        for (key, value) in entries.iter() {
-            sqlx::query("INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)")
-                .bind(key)
-                .bind(value)
-                .execute(&mut *transaction)
-                .await?;
+        for entry_chunk in entries
+            .iter()
+            .collect::<Vec<_>>()
+            .chunks(MAX_VARIABLE_NUMBER)
+        {
+            let mut query = String::from("INSERT OR REPLACE INTO store (key, value) VALUES ");
+            let placeholders = entry_chunk
+                .iter()
+                .map(|_| "(?, ?)")
+                .collect::<Vec<_>>()
+                .join(", ");
+            query.push_str(&placeholders);
+
+            let mut sqlx_query = sqlx::query(&query);
+            for (key, value) in entry_chunk {
+                sqlx_query = sqlx_query.bind(key).bind(value);
+            }
+
+            sqlx_query.execute(&mut *transaction).await?;
         }
 
         transaction.commit().await?;
@@ -156,25 +159,17 @@ impl Store for SQLiteStore {
     async fn delete_many(&self, keys: Vec<&str>) -> Result<(), StoreError> {
         let pool = self.db.lock().await;
 
-        let total_keys = keys.len();
-        let mut offset = 0;
-
-        while offset < total_keys {
-            let end = min(offset + MAX_VARIABLE_NUMBER, total_keys);
-            let key_slice = &keys[offset..end];
-
-            let placeholders = key_slice.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        for key_chunk in keys.chunks(MAX_VARIABLE_NUMBER) {
+            let placeholders = key_chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
             let query_statement = format!("DELETE FROM store WHERE key IN ({})", placeholders);
 
             let mut query = sqlx::query(&query_statement);
 
-            for key in key_slice {
+            for key in key_chunk {
                 query = query.bind(*key);
             }
 
             query.execute(&*pool).await?;
-
-            offset = end;
         }
 
         Ok(())
