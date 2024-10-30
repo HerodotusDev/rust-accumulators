@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use sqlx::Error;
 use sqlx::{sqlite::SqliteConnectOptions, Pool, Row, Sqlite, SqlitePool};
+use std::cmp::min;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 
@@ -14,6 +15,10 @@ pub struct SQLiteStore {
     pub id: Option<String>,
     db: Mutex<Pool<Sqlite>>,
 }
+
+//? SQLite's default maximum number of variables per statement is 999.
+//? We use a smaller number to be safe.
+const MAX_VARIABLE_NUMBER: usize = 900;
 
 impl SQLiteStore {
     pub async fn new(
@@ -77,23 +82,35 @@ impl Store for SQLiteStore {
 
     async fn get_many(&self, keys: Vec<&str>) -> Result<HashMap<String, String>, StoreError> {
         let pool = self.db.lock().await;
-        let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        let query_statement = format!(
-            "SELECT key, value FROM store WHERE key IN ({})",
-            placeholders
-        );
-        let mut query = sqlx::query(&query_statement);
-
-        for key in &keys {
-            query = query.bind(key);
-        }
-
-        let rows = query.fetch_all(&*pool).await?;
         let mut map = HashMap::new();
-        for row in rows {
-            let key: String = row.get("key");
-            let value: String = row.get("value");
-            map.insert(key, value);
+
+        let total_keys = keys.len();
+        let mut offset = 0;
+
+        while offset < total_keys {
+            let end = min(offset + MAX_VARIABLE_NUMBER, total_keys);
+            let key_slice = &keys[offset..end];
+
+            let placeholders = key_slice.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let query_statement = format!(
+                "SELECT key, value FROM store WHERE key IN ({})",
+                placeholders
+            );
+
+            let mut query = sqlx::query(&query_statement);
+
+            for key in key_slice {
+                query = query.bind(*key);
+            }
+
+            let rows = query.fetch_all(&*pool).await?;
+            for row in rows {
+                let key: String = row.get("key");
+                let value: String = row.get("value");
+                map.insert(key, value);
+            }
+
+            offset = end;
         }
 
         Ok(map)
@@ -138,16 +155,27 @@ impl Store for SQLiteStore {
 
     async fn delete_many(&self, keys: Vec<&str>) -> Result<(), StoreError> {
         let pool = self.db.lock().await;
-        let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
 
-        let query_statement = format!("DELETE FROM store WHERE key IN ({})", placeholders);
-        let mut query = sqlx::query(&query_statement);
+        let total_keys = keys.len();
+        let mut offset = 0;
 
-        for key in &keys {
-            query = query.bind(key);
+        while offset < total_keys {
+            let end = min(offset + MAX_VARIABLE_NUMBER, total_keys);
+            let key_slice = &keys[offset..end];
+
+            let placeholders = key_slice.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let query_statement = format!("DELETE FROM store WHERE key IN ({})", placeholders);
+
+            let mut query = sqlx::query(&query_statement);
+
+            for key in key_slice {
+                query = query.bind(*key);
+            }
+
+            query.execute(&*pool).await?;
+
+            offset = end;
         }
-
-        query.execute(&*pool).await?;
 
         Ok(())
     }
