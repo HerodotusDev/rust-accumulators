@@ -159,3 +159,28 @@ async fn test_get_some_in_store_table() {
         .unwrap();
     assert_eq!(value.unwrap(), "value1".to_string());
 }
+
+#[tokio::test]
+async fn test_batch_insertion_and_retrieval() {
+    let store = SQLiteStore::new(":memory:", None, Some("test"))
+        .await
+        .unwrap();
+
+    let store = Arc::new(store);
+
+    let mut entries = HashMap::new();
+    for i in 0..10_000 {
+        entries.insert(format!("key{}", i), format!("value{}", i));
+    }
+
+    store.set_many(entries.clone()).await.unwrap();
+
+    let keys: Vec<_> = entries.keys().map(|k| k.as_str()).collect();
+    let values = store.get_many(keys).await.unwrap();
+
+    for i in 0..10_000 {
+        let key = format!("key{}", i);
+        let value = format!("value{}", i);
+        assert_eq!(values.get(&key), Some(&value));
+    }
+}
