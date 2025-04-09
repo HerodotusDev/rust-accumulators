@@ -1,5 +1,8 @@
 use starknet::core::types::FromStrError;
-use std::{fmt::Debug, str::FromStr};
+use std::{
+    fmt::{self, Debug},
+    str::FromStr,
+};
 use strum_macros::EnumIter;
 use thiserror::Error;
 
@@ -65,12 +68,12 @@ impl FromStr for HashingFunction {
     }
 }
 
-impl ToString for HashingFunction {
-    fn to_string(&self) -> String {
+impl fmt::Display for HashingFunction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HashingFunction::Keccak256 => "keccak".to_string(),
-            HashingFunction::Poseidon => "poseidon".to_string(),
-            HashingFunction::Pedersen => "pedersen".to_string(),
+            HashingFunction::Keccak256 => write!(f, "keccak"),
+            HashingFunction::Poseidon => write!(f, "poseidon"),
+            HashingFunction::Pedersen => write!(f, "pedersen"),
         }
     }
 }

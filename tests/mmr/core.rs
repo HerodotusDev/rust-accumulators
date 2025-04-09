@@ -811,3 +811,375 @@ async fn timestamp_remappers_test() {
     let correct_root_hash = "0x32f5a2949cac3d06e854701c5a2a00ed51c0475a31c1bc17cc6d3ec46425e9";
     assert_eq!(correct_root_hash, root_hash);
 }
+
+//================================================================================================
+// Tests for create_from_peaks
+//================================================================================================
+
+async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
+    hasher: Arc<H>,
+    mmr_id_prefix: &str,
+) {
+    // --- 1. Setup: Create a standard MMR and populate it ---
+    let store1 = Arc::new(InMemoryStore::default());
+    let mmr_id_orig = format!("{}_orig", mmr_id_prefix);
+    let mut original_mmr = MMR::new(store1.clone(), hasher.clone(), Some(mmr_id_orig.clone()));
+
+    let mut original_appends = Vec::new();
+    for leaf in LEAVES {
+        original_appends.push(original_mmr.append(leaf.to_string()).await.unwrap());
+    }
+
+    let original_elements_count = original_mmr.elements_count.get().await.unwrap();
+    let original_leaves_count = original_mmr.leaves_count.get().await.unwrap();
+    let original_peaks = original_mmr
+        .get_peaks(PeaksOptions {
+            elements_count: None,
+            formatting_opts: None,
+        })
+        .await
+        .unwrap();
+    let original_bag = original_mmr.bag_the_peaks(None).await.unwrap();
+    let original_root = original_mmr
+        .root_hash
+        .get(SubKey::None)
+        .await
+        .unwrap()
+        .unwrap(); // Assuming it's set
+
+    // --- 2. Create MMR from Peaks ---
+    let store2 = Arc::new(InMemoryStore::default()); // Use a separate store or MMR ID
+    let mmr_id_peaks = format!("{}_peaks", mmr_id_prefix);
+    let mut from_peaks_mmr = MMR::create_from_peaks(
+        store2.clone(),
+        hasher.clone(),
+        Some(mmr_id_peaks.clone()),
+        original_peaks.clone(),
+        original_elements_count,
+    )
+    .await
+    .unwrap();
+
+    // --- 3. Initial Comparison ---
+    assert_eq!(
+        from_peaks_mmr.elements_count.get().await.unwrap(),
+        original_elements_count,
+        "Initial elements_count mismatch"
+    );
+    assert_eq!(
+        from_peaks_mmr.leaves_count.get().await.unwrap(),
+        original_leaves_count,
+        "Initial leaves_count mismatch"
+    );
+    assert_eq!(
+        from_peaks_mmr
+            .get_peaks(PeaksOptions {
+                elements_count: None,
+                formatting_opts: None,
+            })
+            .await
+            .unwrap(),
+        original_peaks,
+        "Initial peaks mismatch"
+    );
+    assert_eq!(
+        from_peaks_mmr.bag_the_peaks(None).await.unwrap(),
+        original_bag,
+        "Initial bag mismatch"
+    );
+    assert_eq!(
+        from_peaks_mmr
+            .root_hash
+            .get(SubKey::None)
+            .await
+            .unwrap()
+            .unwrap(),
+        original_root,
+        "Initial root hash mismatch"
+    );
+
+    // --- 4. Append Comparison ---
+    let new_elements = ["6", "7", "8"];
+    let mut new_appends_orig = Vec::new();
+    let mut new_appends_peaks = Vec::new();
+
+    for &element in &new_elements {
+        new_appends_orig.push(original_mmr.append(element.to_string()).await.unwrap());
+        new_appends_peaks.push(from_peaks_mmr.append(element.to_string()).await.unwrap());
+    }
+
+    // Compare final state after appends
+    let final_elements_count_orig = original_mmr.elements_count.get().await.unwrap();
+    let final_leaves_count_orig = original_mmr.leaves_count.get().await.unwrap();
+    let final_peaks_orig = original_mmr
+        .get_peaks(PeaksOptions {
+            elements_count: None,
+            formatting_opts: None,
+        })
+        .await
+        .unwrap();
+    let final_bag_orig = original_mmr.bag_the_peaks(None).await.unwrap();
+    let final_root_orig = original_mmr
+        .root_hash
+        .get(SubKey::None)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        from_peaks_mmr.elements_count.get().await.unwrap(),
+        final_elements_count_orig,
+        "Final elements_count mismatch"
+    );
+    assert_eq!(
+        from_peaks_mmr.leaves_count.get().await.unwrap(),
+        final_leaves_count_orig,
+        "Final leaves_count mismatch"
+    );
+    assert_eq!(
+        from_peaks_mmr
+            .get_peaks(PeaksOptions {
+                elements_count: None,
+                formatting_opts: None,
+            })
+            .await
+            .unwrap(),
+        final_peaks_orig,
+        "Final peaks mismatch"
+    );
+    assert_eq!(
+        from_peaks_mmr.bag_the_peaks(None).await.unwrap(),
+        final_bag_orig,
+        "Final bag mismatch"
+    );
+    assert_eq!(
+        from_peaks_mmr
+            .root_hash
+            .get(SubKey::None)
+            .await
+            .unwrap()
+            .unwrap(),
+        final_root_orig,
+        "Final root hash mismatch"
+    );
+    assert_eq!(
+        new_appends_peaks, new_appends_orig,
+        "AppendResults mismatch"
+    );
+
+    // --- 5. Proof Comparison (New Values) ---
+    for i in 0..new_elements.len() {
+        let element_value = new_elements[i].to_string();
+        let element_index_orig = new_appends_orig[i].element_index;
+        let element_index_peaks = new_appends_peaks[i].element_index;
+
+        assert_eq!(
+            element_index_orig, element_index_peaks,
+            "New element indices mismatch"
+        );
+
+        let proof_orig = original_mmr
+            .get_proof(element_index_orig, None)
+            .await
+            .unwrap();
+        let proof_peaks = from_peaks_mmr
+            .get_proof(element_index_peaks, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            proof_orig, proof_peaks,
+            "Proofs for new element {} mismatch",
+            element_value
+        );
+
+        assert!(
+            original_mmr
+                .verify_proof(proof_orig.clone(), element_value.clone(), None)
+                .await
+                .unwrap(),
+            "Original MMR failed verifying new proof for {}",
+            element_value
+        );
+        assert!(
+            from_peaks_mmr
+                .verify_proof(proof_peaks.clone(), element_value.clone(), None)
+                .await
+                .unwrap(),
+            "FromPeaks MMR failed verifying new proof for {}",
+            element_value
+        );
+        // Cross-verify
+        assert!(
+            original_mmr
+                .verify_proof(proof_peaks.clone(), element_value.clone(), None)
+                .await
+                .unwrap(),
+            "Original MMR failed verifying FromPeaks new proof for {}",
+            element_value
+        );
+        assert!(
+            from_peaks_mmr
+                .verify_proof(proof_orig.clone(), element_value.clone(), None)
+                .await
+                .unwrap(),
+            "FromPeaks MMR failed verifying Original new proof for {}",
+            element_value
+        );
+    }
+
+    // --- 6. Proof Comparison (Old Values) ---
+    let old_element_index = original_appends[0].element_index; // e.g., index for "1"
+    let old_element_value = LEAVES[0].to_string();
+
+    // Proof from original MMR should work
+    let proof_orig_old = original_mmr
+        .get_proof(old_element_index, None)
+        .await
+        .unwrap();
+    assert!(
+        original_mmr
+            .verify_proof(proof_orig_old, old_element_value.clone(), None)
+            .await
+            .unwrap(),
+        "Original MMR failed verifying old proof"
+    );
+
+    // Getting proof from `from_peaks_mmr` for an old element might succeed but likely yields an invalid proof
+    // because intermediate hashes below the initial peaks are missing. Verification should fail.
+    let proof_peaks_old_res = from_peaks_mmr.get_proof(old_element_index, None).await;
+
+    // We expect verification to fail because the proof generated without intermediate nodes will be incorrect/incomplete.
+    // If get_proof itself errors (e.g., NoHashFoundForIndex), that's also acceptable, but current logic might not error.
+    if let Ok(proof_peaks_old) = proof_peaks_old_res {
+        assert!(
+            !from_peaks_mmr
+                .verify_proof(proof_peaks_old, old_element_value, None)
+                .await
+                .unwrap_or(false), // Expect verify to fail
+            "FromPeaks MMR incorrectly verified proof for an element below initial peaks"
+        );
+    }
+    // If get_proof failed, the test implicitly passes this part. Consider adding specific error checking if needed.
+
+    // --- 7. Additional Tests ---
+
+    // Test: Create from peaks with invalid peaks count
+    let store3 = Arc::new(InMemoryStore::default());
+    let mmr_id_err1 = format!("{}_err1", mmr_id_prefix);
+    let mut wrong_peaks = original_peaks.clone();
+    wrong_peaks.pop(); // Make the count incorrect
+    let err_res = MMR::create_from_peaks(
+        store3,
+        hasher.clone(),
+        Some(mmr_id_err1),
+        wrong_peaks,
+        original_elements_count,
+    )
+    .await;
+    assert!(
+        matches!(
+            err_res,
+            Err(accumulators::mmr::MMRError::InvalidPeaksCountForElements)
+        ),
+        "Expected InvalidPeaksCountForElements error"
+    );
+
+    // Test: Create from peaks on a non-empty MMR (using same ID as original)
+    let err_res_non_empty = MMR::create_from_peaks(
+        store1.clone(), // Use the store where original_mmr exists
+        hasher.clone(),
+        Some(mmr_id_orig.clone()), // Use the same MMR ID
+        original_peaks.clone(),
+        original_elements_count,
+    )
+    .await;
+    assert!(
+        matches!(
+            err_res_non_empty,
+            Err(accumulators::mmr::MMRError::NonEmptyMMR)
+        ),
+        "Expected NonEmptyMMR error"
+    );
+
+    // Test: Create from peaks with 0 elements
+    let store4 = Arc::new(InMemoryStore::default());
+    let mmr_id_zero = format!("{}_zero", mmr_id_prefix);
+    let mut zero_mmr = MMR::create_from_peaks(store4, hasher.clone(), Some(mmr_id_zero), vec![], 0)
+        .await
+        .unwrap();
+    assert_eq!(zero_mmr.elements_count.get().await.unwrap(), 0);
+    assert_eq!(zero_mmr.leaves_count.get().await.unwrap(), 0);
+    assert_eq!(
+        zero_mmr
+            .get_peaks(PeaksOptions {
+                elements_count: None,
+                formatting_opts: None,
+            })
+            .await
+            .unwrap()
+            .len(),
+        0
+    );
+    let zero_bag = zero_mmr.bag_the_peaks(None).await.unwrap();
+    let zero_root = zero_mmr.root_hash.get(SubKey::None).await.unwrap().unwrap();
+    let expected_zero_root = zero_mmr.calculate_root_hash(&zero_bag, 0).unwrap();
+    assert_eq!(zero_root, expected_zero_root);
+    // Append to zero MMR and check
+    let append_res_zero = zero_mmr.append("1000".to_string()).await.unwrap();
+    assert_eq!(append_res_zero.elements_count, 1);
+    assert_eq!(append_res_zero.leaves_count, 1);
+
+    // Test: Create from peaks with 1 element
+    let store5 = Arc::new(InMemoryStore::default());
+    let mmr_id_one = format!("{}_one", mmr_id_prefix);
+    let single_element_hash = "0x1001".to_string(); // Use a simple string for test
+    let mut one_mmr = MMR::create_from_peaks(
+        store5,
+        hasher.clone(),
+        Some(mmr_id_one),
+        vec![single_element_hash.clone()],
+        1, // elements_count = 1
+    )
+    .await
+    .unwrap();
+    assert_eq!(one_mmr.elements_count.get().await.unwrap(), 1);
+    assert_eq!(one_mmr.leaves_count.get().await.unwrap(), 1);
+    assert_eq!(
+        one_mmr
+            .get_peaks(PeaksOptions {
+                elements_count: None,
+                formatting_opts: None,
+            })
+            .await
+            .unwrap(),
+        vec![single_element_hash.clone()]
+    );
+    let one_bag = one_mmr.bag_the_peaks(None).await.unwrap();
+    assert_eq!(one_bag, single_element_hash); // Bagging 1 peak is the peak itself
+    let one_root = one_mmr.root_hash.get(SubKey::None).await.unwrap().unwrap();
+    let expected_one_root = one_mmr.calculate_root_hash(&one_bag, 1).unwrap();
+    assert_eq!(one_root, expected_one_root);
+    // Append and check
+    let append_res_one = one_mmr.append("2000".to_string()).await.unwrap();
+    assert_eq!(append_res_one.elements_count, 3); // 1 (leaf) + 1 (leaf) + 1 (parent)
+    assert_eq!(append_res_one.leaves_count, 2);
+}
+
+#[tokio::test]
+async fn test_create_from_peaks_poseidon() {
+    let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
+    test_create_from_peaks_scenario(hasher, "poseidon_peaks_test").await;
+}
+
+#[tokio::test]
+async fn test_create_from_peaks_keccak() {
+    let hasher = Arc::new(KeccakHasher::new());
+    test_create_from_peaks_scenario(hasher, "keccak_peaks_test").await;
+}
+
+#[tokio::test]
+async fn test_create_from_peaks_pedersen() {
+    let hasher = Arc::new(StarkPedersenHasher::new());
+    test_create_from_peaks_scenario(hasher, "pedersen_peaks_test").await;
+}
