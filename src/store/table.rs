@@ -1,6 +1,6 @@
 use super::{Store, StoreError};
 use std::collections::HashMap;
-use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::fmt::{self, Display, Formatter, Result as FmtResult};
 use std::hash::Hash;
 use std::sync::Arc;
 use thiserror::Error;
@@ -18,12 +18,12 @@ pub enum SubKey {
     None,
 }
 
-impl ToString for SubKey {
-    fn to_string(&self) -> String {
+impl Display for SubKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SubKey::String(sub_key) => sub_key.clone(),
-            SubKey::Usize(sub_key) => sub_key.to_string(),
-            SubKey::None => "".to_string(),
+            SubKey::String(sub_key) => write!(f, "{}", sub_key),
+            SubKey::Usize(sub_key) => write!(f, "{}", sub_key),
+            SubKey::None => write!(f, ""),
         }
     }
 }

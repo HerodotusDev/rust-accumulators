@@ -41,6 +41,8 @@ pub enum MMRError {
     Formatting(#[from] FormattingError),
     #[error("No hash found for index {0}")]
     NoHashFoundForIndex(usize),
+    #[error("Invalid peaks count for the given element count")]
+    InvalidPeaksCountForElements,
 }
 
 #[derive(Debug)]
@@ -85,6 +87,64 @@ impl MMR {
             #[cfg(feature = "stacked_mmr")]
             sub_mmrs: Vec::new(),
         }
+    }
+
+    /// Creates an MMR instance from a pre-computed set of peaks and element count.
+    ///
+    /// This function initializes the MMR state based on the provided peaks, allowing
+    /// subsequent appends. However, proofs for elements represented solely by these
+    /// initial peaks cannot be generated as their constituent hashes are not stored.
+    ///
+    /// # Arguments
+    ///
+    /// * `store` - The storage backend.
+    /// * `hasher` - The hashing implementation.
+    /// * `mmr_id` - An optional ID for the MMR; a new UUID will be generated if None.
+    /// * `peaks_hashes` - A vector of strings representing the hashes of the peaks.
+    /// * `elements_count` - The total number of elements the MMR represented when these peaks were calculated.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the initialized `MMR` or an `MMRError`.
+    pub async fn create_from_peaks(
+        store: Arc<dyn Store>,
+        hasher: Arc<dyn Hasher>,
+        mmr_id: Option<String>,
+        peaks_hashes: Vec<String>,
+        elements_count: usize,
+    ) -> Result<Self, MMRError> {
+        let mmr = MMR::new(store, hasher, mmr_id);
+
+        // Ensure the MMR is empty before initializing from peaks
+        let current_elements_count: usize = mmr.elements_count.get().await?;
+        if current_elements_count != 0 {
+            return Err(MMRError::NonEmptyMMR);
+        }
+
+        let expected_peak_indices = find_peaks(elements_count);
+        if expected_peak_indices.len() != peaks_hashes.len() {
+            return Err(MMRError::InvalidPeaksCountForElements);
+        }
+
+        // Set counts
+        let leaves_count_val = mmr_size_to_leaf_count(elements_count);
+        mmr.leaves_count.set(leaves_count_val).await?;
+        mmr.elements_count.set(elements_count).await?;
+
+        // Store the peak hashes
+        for (i, peak_hash) in peaks_hashes.iter().enumerate() {
+            let peak_index = expected_peak_indices[i];
+            mmr.hashes.set(peak_hash, SubKey::Usize(peak_index)).await?;
+        }
+
+        // Calculate and store the root hash based on the provided peaks
+        // Use the existing bag_the_peaks function, assuming store consistency.
+        let bag = mmr.bag_the_peaks(Some(elements_count)).await?;
+
+        let root_hash = mmr.calculate_root_hash(&bag, elements_count)?;
+        mmr.root_hash.set(&root_hash, SubKey::None).await?;
+
+        Ok(mmr)
     }
 
     pub async fn create_with_genesis(
@@ -137,7 +197,7 @@ impl MMR {
         let store_key = format!("{}:{}", mmr_id, key);
         match sub_key {
             SubKey::None => store_key,
-            _ => format!("{}:{}", store_key, sub_key.to_string()),
+            _ => format!("{}:{}", store_key, sub_key),
         }
     }
 
