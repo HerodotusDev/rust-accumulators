@@ -47,6 +47,8 @@ Hashing functions used for hashing inside accumulators.
 
 - pedersen: `features = ["pedersen"]`
 
+- blake: `features = ["blake"]`
+
 ### Stores:
 
 Key value stores used for storing the accumulator data.
