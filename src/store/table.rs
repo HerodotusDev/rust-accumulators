@@ -21,8 +21,8 @@ pub enum SubKey {
 impl Display for SubKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SubKey::String(sub_key) => write!(f, "{}", sub_key),
-            SubKey::Usize(sub_key) => write!(f, "{}", sub_key),
+            SubKey::String(sub_key) => write!(f, "{sub_key}"),
+            SubKey::Usize(sub_key) => write!(f, "{sub_key}"),
             SubKey::None => write!(f, ""),
         }
     }
@@ -61,7 +61,7 @@ impl Display for MissingValues {
         //? Iterate over the HashMap to build the string in the required format
         for (store, keys) in &self.stores_with_missing_keys {
             let keys_str = keys.join(", ");
-            formatted_output.push_str(&format!("{}: {}", store, keys_str));
+            formatted_output.push_str(&format!("{store}: {keys_str}"));
             formatted_output.push_str("; ");
         }
 
@@ -70,7 +70,7 @@ impl Display for MissingValues {
             formatted_output.truncate(formatted_output.len() - 2);
         }
 
-        write!(f, "{{{}}}", formatted_output)
+        write!(f, "{{{formatted_output}}}")
     }
 }
 
@@ -125,7 +125,7 @@ impl InStoreTable {
 
     /// Get the full key for a given sub_key/key
     pub fn get_full_key(key: &str, sub_key: &str) -> String {
-        format!("{}{}", key, sub_key)
+        format!("{key}{sub_key}")
     }
 
     /// Get the full key and store for a given sub_key

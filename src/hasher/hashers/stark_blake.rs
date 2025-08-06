@@ -188,8 +188,8 @@ mod tests {
         let data2: String = data1
             .clone()
             .iter()
-            .map(|e| e.strip_prefix("0x").unwrap_or(&e).to_string())
-            .reduce(|acc, e| format!("{}{}", acc, e))
+            .map(|e| e.strip_prefix("0x").unwrap_or(e).to_string())
+            .reduce(|acc, e| format!("{acc}{e}"))
             .unwrap();
         let data2 = vec![format!("0x{}", data2)];
         let hash2 = hasher.hash(data2).unwrap();

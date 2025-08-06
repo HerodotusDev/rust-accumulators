@@ -802,11 +802,11 @@ async fn timestamp_remappers_test() {
     mmr.append("1715180172".to_string()).await.unwrap();
 
     let element_count = mmr.elements_count.get().await.unwrap();
-    println!("element_count: {}", element_count);
+    println!("element_count: {element_count}");
     let bag = mmr.bag_the_peaks(Some(element_count)).await.unwrap();
-    println!("bag: {}", bag);
+    println!("bag: {bag}");
     let root_hash = mmr.calculate_root_hash(&bag, element_count).unwrap();
-    println!("root_hash: {}", root_hash);
+    println!("root_hash: {root_hash}");
 
     let correct_root_hash = "0x32f5a2949cac3d06e854701c5a2a00ed51c0475a31c1bc17cc6d3ec46425e9";
     assert_eq!(correct_root_hash, root_hash);
@@ -822,7 +822,7 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
 ) {
     // --- 1. Setup: Create a standard MMR and populate it ---
     let store1 = Arc::new(InMemoryStore::default());
-    let mmr_id_orig = format!("{}_orig", mmr_id_prefix);
+    let mmr_id_orig = format!("{mmr_id_prefix}_orig");
     let mut original_mmr = MMR::new(store1.clone(), hasher.clone(), Some(mmr_id_orig.clone()));
 
     let mut original_appends = Vec::new();
@@ -849,7 +849,7 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
 
     // --- 2. Create MMR from Peaks ---
     let store2 = Arc::new(InMemoryStore::default()); // Use a separate store or MMR ID
-    let mmr_id_peaks = format!("{}_peaks", mmr_id_prefix);
+    let mmr_id_peaks = format!("{mmr_id_prefix}_peaks");
     let mut from_peaks_mmr = MMR::create_from_peaks(
         store2.clone(),
         hasher.clone(),
@@ -989,8 +989,7 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
 
         assert_eq!(
             proof_orig, proof_peaks,
-            "Proofs for new element {} mismatch",
-            element_value
+            "Proofs for new element {element_value} mismatch"
         );
 
         assert!(
@@ -998,16 +997,14 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
                 .verify_proof(proof_orig.clone(), element_value.clone(), None)
                 .await
                 .unwrap(),
-            "Original MMR failed verifying new proof for {}",
-            element_value
+            "Original MMR failed verifying new proof for {element_value}"
         );
         assert!(
             from_peaks_mmr
                 .verify_proof(proof_peaks.clone(), element_value.clone(), None)
                 .await
                 .unwrap(),
-            "FromPeaks MMR failed verifying new proof for {}",
-            element_value
+            "FromPeaks MMR failed verifying new proof for {element_value}"
         );
         // Cross-verify
         assert!(
@@ -1015,16 +1012,14 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
                 .verify_proof(proof_peaks.clone(), element_value.clone(), None)
                 .await
                 .unwrap(),
-            "Original MMR failed verifying FromPeaks new proof for {}",
-            element_value
+            "Original MMR failed verifying FromPeaks new proof for {element_value}"
         );
         assert!(
             from_peaks_mmr
                 .verify_proof(proof_orig.clone(), element_value.clone(), None)
                 .await
                 .unwrap(),
-            "FromPeaks MMR failed verifying Original new proof for {}",
-            element_value
+            "FromPeaks MMR failed verifying Original new proof for {element_value}"
         );
     }
 
@@ -1066,7 +1061,7 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
 
     // Test: Create from peaks with invalid peaks count
     let store3 = Arc::new(InMemoryStore::default());
-    let mmr_id_err1 = format!("{}_err1", mmr_id_prefix);
+    let mmr_id_err1 = format!("{mmr_id_prefix}_err1");
     let mut wrong_peaks = original_peaks.clone();
     wrong_peaks.pop(); // Make the count incorrect
     let err_res = MMR::create_from_peaks(
@@ -1104,7 +1099,7 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
 
     // Test: Create from peaks with 0 elements
     let store4 = Arc::new(InMemoryStore::default());
-    let mmr_id_zero = format!("{}_zero", mmr_id_prefix);
+    let mmr_id_zero = format!("{mmr_id_prefix}_zero");
     let mut zero_mmr = MMR::create_from_peaks(store4, hasher.clone(), Some(mmr_id_zero), vec![], 0)
         .await
         .unwrap();
@@ -1132,7 +1127,7 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
 
     // Test: Create from peaks with 1 element
     let store5 = Arc::new(InMemoryStore::default());
-    let mmr_id_one = format!("{}_one", mmr_id_prefix);
+    let mmr_id_one = format!("{mmr_id_prefix}_one");
     let single_element_hash = "0x1001".to_string(); // Use a simple string for test
     let mut one_mmr = MMR::create_from_peaks(
         store5,

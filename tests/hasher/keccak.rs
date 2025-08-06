@@ -128,7 +128,7 @@ mod test {
         let b = hex::encode("10");
         let hash = hasher.hash(vec![a, b]).unwrap();
 
-        print!("{}", hash);
+        print!("{hash}");
 
         assert_eq!(hash.len(), 64 + 2)
     }

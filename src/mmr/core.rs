@@ -194,10 +194,10 @@ impl MMR {
     }
 
     pub fn encode_store_key(mmr_id: &str, key: TreeMetadataKeys, sub_key: SubKey) -> String {
-        let store_key = format!("{}:{}", mmr_id, key);
+        let store_key = format!("{mmr_id}:{key}");
         match sub_key {
             SubKey::None => store_key,
-            _ => format!("{}:{}", store_key, sub_key),
+            _ => format!("{store_key}:{sub_key}"),
         }
     }
 

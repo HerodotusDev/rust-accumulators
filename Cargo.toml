@@ -1,6 +1,6 @@
 [package]
 name = "accumulators"
-version = "0.4.10"
+version = "0.5.0"
 edition = "2021"
 license-file = "LICENSE"
 description = "Complete package of multiple Accumulators with Stores and hashing functions (Hashers)"
@@ -13,28 +13,28 @@ categories = ["cryptography", "data-structures", "database"]
 exclude = [".github", ".vscode"]
 
 [dependencies]
-tokio = { version = "1.33.0", features = ["full"] } # Async runtime
-sqlx = { version = "0.7", features = [
+tokio = { version = "1", features = ["full"] } # Async runtime
+sqlx = { version = "0.8", features = [
     "runtime-tokio",
     "sqlite",
 ] } # SQLite for rust
-thiserror = "1.0" # Error handling
-async-trait = "0.1.74" # Async traits
+thiserror = "2" # Error handling
+async-trait = "0.1.88" # Async traits
 hex = "0.4.3" # Hex encoding
 tiny-keccak = "2.0.2" # Keccak hashing
-starknet = "0.6.0" # StarkNet pedersen
-starknet-crypto = "0.6.0" # StarkNet poseidon
-uuid = { version = "1.4.1", features = ["v4"] } # UUID
-parking_lot = "0.12.1" # Sync mutex
-num-bigint = "0.4.4" # Bigints in hashers (TODO: double check if needed)
-num-traits = "0.2.17" # Bigints in hashers (TODO: double check if needed)
-indexmap = "2.1.0"
-strum = "0.25" # better enums
-strum_macros = "0.25" # better enums
+starknet = "0.16.0" # StarkNet pedersen
+starknet-crypto = "0.7.4" # StarkNet poseidon
+uuid = { version = "1.17.0", features = ["v4"] } # UUID
+parking_lot = "0.12.4" # Sync mutex
+num-bigint = "0.4.6" # Bigints in hashers (TODO: double check if needed)
+num-traits = "0.2.19" # Bigints in hashers (TODO: double check if needed)
+indexmap = "2.10.0"
+strum = "0.27.2" # better enums
+strum_macros = "0.27.2" # better enums
 blake2 = { version = "0.10.6", default-features = false } # Blake2 hashing
 
 [dev-dependencies]
-criterion = { version = "0.4", features = [
+criterion = { version = "0.7", features = [
     "html_reports",
     "async",
 ] } # Benchmarking

@@ -146,7 +146,7 @@ async fn test_batch_insertion_and_retrieval() {
 
     let mut entries = HashMap::new();
     for i in 0..10_000 {
-        entries.insert(format!("key{}", i), format!("value{}", i));
+        entries.insert(format!("key{i}"), format!("value{i}"));
     }
 
     store.set_many(entries.clone()).await.unwrap();
@@ -155,8 +155,8 @@ async fn test_batch_insertion_and_retrieval() {
     let values = store.get_many(keys).await.unwrap();
 
     for i in 0..10_000 {
-        let key = format!("key{}", i);
-        let value = format!("value{}", i);
+        let key = format!("key{i}");
+        let value = format!("value{i}");
         assert_eq!(values.get(&key), Some(&value));
     }
 }

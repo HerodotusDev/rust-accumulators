@@ -9,13 +9,13 @@
 Add dependency on `Cargo.toml`
 
 ```rust
-accumulators = { version = "0.4", features = ["all"] }
+accumulators = { version = "0.5", features = ["all"] }
 ```
 
 # Development
 
-Test : `cargo test --all-features`
-Bench : `cargo bench --all-features`
+Test : `cargo make test`
+Bench : `cargo make bench`
 
 ## Accumulators
 

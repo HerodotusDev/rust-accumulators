@@ -62,7 +62,7 @@ where
         let mmr_id = mmr_id.unwrap_or_else(|| Uuid::new_v4().to_string());
 
         let root_hash_key = format!("{}:{:?}", mmr_id, TreeMetadataKeys::RootHash);
-        let nodes_key = format!("{}:nodes:", mmr_id);
+        let nodes_key = format!("{mmr_id}:nodes:");
 
         let root_hash = InStoreTable::new(store.clone(), root_hash_key);
         let nodes = InStoreTable::new(store.clone(), nodes_key);
@@ -133,14 +133,14 @@ where
 
         let kv_entries: Vec<SubKey> = required_nodes_by_height
             .iter()
-            .map(|(height, index)| SubKey::String(format!("{}:{}", height, index)))
+            .map(|(height, index)| SubKey::String(format!("{height}:{index}")))
             .collect();
 
         let nodes_hash_map = self.nodes.get_many(kv_entries).await?;
 
         let mut ordered_nodes = Vec::with_capacity(required_nodes_by_height.len());
         for (height, index) in required_nodes_by_height {
-            if let Some(node) = nodes_hash_map.get(&format!("{}:{}", height, index)) {
+            if let Some(node) = nodes_hash_map.get(&format!("{height}:{index}")) {
                 ordered_nodes.push(node.to_string());
             }
         }
@@ -190,7 +190,7 @@ where
         let mut current_value = new_value;
 
         kv_updates.insert(
-            SubKey::String(format!("{}:{}", current_depth, current_index)),
+            SubKey::String(format!("{current_depth}:{current_index}")),
             current_value.clone(),
         );
         for p in proof {
@@ -210,7 +210,7 @@ where
                 break;
             }
             kv_updates.insert(
-                SubKey::String(format!("{}:{}", current_depth, current_index)),
+                SubKey::String(format!("{current_depth}:{current_index}")),
                 current_value.clone(),
             );
         }
@@ -228,7 +228,7 @@ where
 
         let mut proof: IndexMap<String, bool> = indexes_to_prove
             .iter()
-            .map(|&idx| (format!("{}:{}", tree_depth, idx), false))
+            .map(|&idx| (format!("{tree_depth}:{idx}"), false))
             .collect();
 
         let mut current_level = proof.clone();
@@ -237,7 +237,7 @@ where
 
             let mut ordered_proof_keys = Vec::new();
             for (index, _) in &current_level {
-                let key = format!("{}:{}", tree_depth, index);
+                let key = format!("{tree_depth}:{index}");
                 if proof.contains_key(&key) {
                     ordered_proof_keys.push(key);
                 }
@@ -262,8 +262,8 @@ where
                     current_node_idx - 1
                 };
 
-                if !proof.contains_key(&format!("{}:{}", curr_depth, neighbour_idx)) {
-                    proof.insert(format!("{}:{}", curr_depth, neighbour_idx), true);
+                if !proof.contains_key(&format!("{curr_depth}:{neighbour_idx}")) {
+                    proof.insert(format!("{curr_depth}:{neighbour_idx}"), true);
                 }
 
                 next_level.insert(format!("{}:{}", curr_depth - 1, child_idx), false);
