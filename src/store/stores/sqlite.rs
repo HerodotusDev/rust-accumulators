@@ -84,10 +84,8 @@ impl Store for SQLiteStore {
 
         for key_chunk in keys.chunks(MAX_VARIABLE_NUMBER) {
             let placeholders = key_chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-            let query_statement = format!(
-                "SELECT key, value FROM store WHERE key IN ({})",
-                placeholders
-            );
+            let query_statement =
+                format!("SELECT key, value FROM store WHERE key IN ({placeholders})");
 
             let mut query = sqlx::query(&query_statement);
 
@@ -161,7 +159,7 @@ impl Store for SQLiteStore {
 
         for key_chunk in keys.chunks(MAX_VARIABLE_NUMBER) {
             let placeholders = key_chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-            let query_statement = format!("DELETE FROM store WHERE key IN ({})", placeholders);
+            let query_statement = format!("DELETE FROM store WHERE key IN ({placeholders})");
 
             let mut query = sqlx::query(&query_statement);
 

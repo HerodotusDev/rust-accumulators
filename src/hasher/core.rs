@@ -53,6 +53,7 @@ pub enum HashingFunction {
     Keccak256,
     Poseidon,
     Pedersen,
+    Blake,
 }
 
 impl FromStr for HashingFunction {
@@ -63,6 +64,7 @@ impl FromStr for HashingFunction {
             "keccak" => Ok(HashingFunction::Keccak256),
             "poseidon" => Ok(HashingFunction::Poseidon),
             "pedersen" => Ok(HashingFunction::Pedersen),
+            "blake" => Ok(HashingFunction::Blake),
             _ => Err(HasherError::InvalidHashingFunction),
         }
     }
@@ -74,6 +76,7 @@ impl fmt::Display for HashingFunction {
             HashingFunction::Keccak256 => write!(f, "keccak"),
             HashingFunction::Poseidon => write!(f, "poseidon"),
             HashingFunction::Pedersen => write!(f, "pedersen"),
+            HashingFunction::Blake => write!(f, "blake"),
         }
     }
 }

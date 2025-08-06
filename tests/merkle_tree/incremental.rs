@@ -148,12 +148,12 @@ mod tests {
 
         for i in 0..tree_size {
             let path = tree.get_inclusion_proof(i).await.unwrap();
-            let new_value = format!("0x{}", i);
+            let new_value = format!("0x{i}");
             let _ = tree.update(i, default_hash.clone(), new_value, path).await;
         }
 
         let mut test = vec![0, 2, 7, 14, 31, 63];
-        let mut test_values = test.iter().map(|x| format!("0x{}", x)).collect::<Vec<_>>();
+        let mut test_values = test.iter().map(|x| format!("0x{x}")).collect::<Vec<_>>();
 
         let mut multiproof = tree.get_inclusion_multi_proof(test.clone()).await.unwrap();
 
