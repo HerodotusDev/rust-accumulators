@@ -19,7 +19,6 @@ hex = "0.4.3" # Hex encoding
 tiny-keccak = "2.0.2" # Keccak hashing
 starknet = "0.16.0" # StarkNet pedersen
 starknet-crypto = "0.7.4" # StarkNet poseidon
-uuid = { version = "1.17.0", features = ["v4", "js"] } # UUID
 parking_lot = "0.12.4" # Sync mutex
 num-bigint = "0.4.6" # Bigints in hashers (TODO: double check if needed)
 num-traits = "0.2.19" # Bigints in hashers (TODO: double check if needed)
