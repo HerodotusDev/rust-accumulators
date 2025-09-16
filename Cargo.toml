@@ -25,11 +25,11 @@ num-traits = "0.2.19" # Bigints in hashers (TODO: double check if needed)
 indexmap = "2.10.0"
 strum = "0.27.2" # better enums
 strum_macros = "0.27.2" # better enums
+uuid = { version = "1.17.0", features = ["v4", "js"] } # UUID
 blake2 = { version = "0.10.6", default-features = false } # Blake2 hashing
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { version = "1", features = ["full"] }
-uuid = { version = "1.17.0", features = ["v4"] } # UUID
 sqlx = { version = "0.8", optional=true, features = [
     "runtime-tokio",
     "sqlite",
@@ -39,7 +39,6 @@ sqlx = { version = "0.8", optional=true, features = [
 # remember to use: export RUSTFLAGS='--cfg getrandom_backend="wasm_js"'
 getrandom = { version = "0.3", features = ["wasm_js"] }
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "sync", "io-util", "time"] }
-uuid = { version = "1.17.0", features = ["v4", "js"] } # UUID
 
 [dev-dependencies]
 criterion = { version = "0.7", features = [
