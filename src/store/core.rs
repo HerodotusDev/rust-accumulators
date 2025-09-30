@@ -5,10 +5,7 @@ use thiserror::Error;
 /// An error that can occur when using a store
 #[derive(Error, Debug)]
 pub enum StoreError {
-    #[error(
-        "
-   Fail to get value from store"
-    )]
+    #[error("Fail to get value from store")]
     GetError,
     #[error("Fail to set value in store")]
     SetError,
@@ -24,6 +21,8 @@ pub enum StoreError {
     SQLite(#[from] sqlx::Error),
     #[error("Parse error: {0}")]
     Parse(#[from] ParseIntError),
+    #[error("Custom error: {0:?}")]
+    Custom(Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
 /// Define common behavior for all stores
