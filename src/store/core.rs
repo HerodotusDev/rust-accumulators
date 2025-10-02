@@ -20,6 +20,7 @@ pub enum StoreError {
     SetManyError,
     #[error("Fail to delete many values from store")]
     DeleteManyError,
+    #[cfg(feature = "sqlite")]
     #[error("SQLite error: {0}")]
     SQLite(#[from] sqlx::Error),
     #[error("Parse error: {0}")]
