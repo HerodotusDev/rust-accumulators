@@ -1,7 +1,7 @@
-use starknet::core::crypto::pedersen_hash;
 use starknet_crypto::Felt;
+use starknet_crypto::pedersen_hash;
 
-use crate::hasher::{byte_size, HasherError, HashingFunction};
+use crate::hasher::{HasherError, HashingFunction, byte_size};
 
 use super::super::Hasher;
 

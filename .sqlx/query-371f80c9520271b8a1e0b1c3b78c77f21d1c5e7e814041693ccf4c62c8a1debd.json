@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM store WHERE key IN (SELECT value FROM json_each(?1))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "371f80c9520271b8a1e0b1c3b78c77f21d1c5e7e814041693ccf4c62c8a1debd"
+}

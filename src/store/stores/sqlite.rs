@@ -1,8 +1,8 @@
 use async_trait::async_trait;
-use sqlx::pool::PoolConnection;
 use sqlx::SqliteConnection;
-use sqlx::{sqlite::SqliteConnectOptions, Pool, Row, Sqlite, SqlitePool};
+use sqlx::pool::PoolConnection;
 use sqlx::{Acquire, Error};
+use sqlx::{Pool, Sqlite, SqlitePool, sqlite::SqliteConnectOptions};
 use std::collections::HashMap;
 use std::ops::DerefMut;
 
@@ -18,9 +18,9 @@ pub struct SQLiteStore {
     atomic_set_many: bool,
 }
 
-//? SQLite's default maximum number of variables per statement is 999.
-//? We use a smaller number to be safe.
-const MAX_VARIABLE_NUMBER: usize = 900;
+//? There is no SQLite variable limit to worry about anymore (single json_each bind),
+//? but we still chunk to bound statement size and memory usage.
+const MAX_BATCH_SIZE: usize = 900;
 
 impl SQLiteStore {
     /// Create a new SQLite store with externally created pool.
@@ -65,11 +65,11 @@ impl SQLiteStore {
     /// Initialize the store
     pub async fn init(&self) -> Result<(), Error> {
         let mut conn = self.acquire_connection().await?;
-        sqlx::query(
+        sqlx::query!(
             r#"CREATE TABLE IF NOT EXISTS store (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
-            );"#,
+            );"#
         )
         .execute(conn.deref_mut())
         .await?;
@@ -86,39 +86,31 @@ impl Store for SQLiteStore {
     async fn get(&self, key: &str) -> Result<Option<String>, StoreError> {
         let mut conn = self.acquire_connection().await?;
 
-        let row = sqlx::query("SELECT value FROM store WHERE key = ?")
-            .bind(key)
+        let row = sqlx::query!("SELECT value FROM store WHERE key = ?", key)
             .fetch_optional(conn.deref_mut())
             .await?;
 
-        if let Some(row) = row {
-            let value: String = row.try_get("value")?;
-            Ok(Some(value))
-        } else {
-            Ok(None)
-        }
+        Ok(row.map(|row| row.value))
     }
 
     async fn get_many(&self, keys: Vec<&str>) -> Result<HashMap<String, String>, StoreError> {
         let mut conn = self.acquire_connection().await?;
         let mut map = HashMap::new();
 
-        for key_chunk in keys.chunks(MAX_VARIABLE_NUMBER) {
-            let placeholders = key_chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-            let query_statement =
-                format!("SELECT key, value FROM store WHERE key IN ({placeholders})");
+        for key_chunk in keys.chunks(MAX_BATCH_SIZE) {
+            let keys_json =
+                serde_json::to_string(&key_chunk).map_err(|e| StoreError::Custom(Box::new(e)))?;
 
-            let mut query = sqlx::query(&query_statement);
+            let rows = sqlx::query_as!(
+                KvRow,
+                r#"SELECT key AS "key!: String", value AS "value!: String" FROM store WHERE key IN (SELECT value FROM json_each(?1))"#,
+                keys_json
+            )
+            .fetch_all(conn.deref_mut())
+            .await?;
 
-            for key in key_chunk {
-                query = query.bind(*key);
-            }
-
-            let rows = query.fetch_all(conn.deref_mut()).await?;
             for row in rows {
-                let key: String = row.get("key");
-                let value: String = row.get("value");
-                map.insert(key, value);
+                map.insert(row.key, row.value);
             }
         }
 
@@ -127,11 +119,13 @@ impl Store for SQLiteStore {
 
     async fn set(&self, key: &str, value: &str) -> Result<(), StoreError> {
         let mut conn = self.acquire_connection().await?;
-        sqlx::query("INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)")
-            .bind(key)
-            .bind(value)
-            .execute(conn.deref_mut())
-            .await?;
+        sqlx::query!(
+            "INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)",
+            key,
+            value
+        )
+        .execute(conn.deref_mut())
+        .await?;
 
         Ok(())
     }
@@ -150,8 +144,7 @@ impl Store for SQLiteStore {
 
     async fn delete(&self, key: &str) -> Result<(), StoreError> {
         let mut conn = self.acquire_connection().await?;
-        sqlx::query("DELETE FROM store WHERE key = ?")
-            .bind(key)
+        sqlx::query!("DELETE FROM store WHERE key = ?", key)
             .execute(conn.deref_mut())
             .await?;
 
@@ -161,46 +154,47 @@ impl Store for SQLiteStore {
     async fn delete_many(&self, keys: Vec<&str>) -> Result<(), StoreError> {
         let mut conn = self.acquire_connection().await?;
 
-        for key_chunk in keys.chunks(MAX_VARIABLE_NUMBER) {
-            let placeholders = key_chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-            let query_statement = format!("DELETE FROM store WHERE key IN ({placeholders})");
+        for key_chunk in keys.chunks(MAX_BATCH_SIZE) {
+            let keys_json =
+                serde_json::to_string(&key_chunk).map_err(|e| StoreError::Custom(Box::new(e)))?;
 
-            let mut query = sqlx::query(&query_statement);
-
-            for key in key_chunk {
-                query = query.bind(*key);
-            }
-
-            query.execute(conn.deref_mut()).await?;
+            sqlx::query!(
+                r#"DELETE FROM store WHERE key IN (SELECT value FROM json_each(?1))"#,
+                keys_json
+            )
+            .execute(conn.deref_mut())
+            .await?;
         }
 
         Ok(())
     }
 }
 
+struct KvRow {
+    key: String,
+    value: String,
+}
+
 async fn set_many(
     executor: &mut SqliteConnection,
     entries: HashMap<String, String>,
 ) -> Result<(), StoreError> {
-    for entry_chunk in entries
-        .iter()
-        .collect::<Vec<_>>()
-        .chunks(MAX_VARIABLE_NUMBER)
-    {
-        let mut query = String::from("INSERT OR REPLACE INTO store (key, value) VALUES ");
-        let placeholders = entry_chunk
-            .iter()
-            .map(|_| "(?, ?)")
-            .collect::<Vec<_>>()
-            .join(", ");
-        query.push_str(&placeholders);
+    for entry_chunk in entries.iter().collect::<Vec<_>>().chunks(MAX_BATCH_SIZE) {
+        let entries_json = serde_json::to_string(
+            &entry_chunk
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect::<HashMap<_, _>>(),
+        )
+        .map_err(|e| StoreError::Custom(Box::new(e)))?;
 
-        let mut sqlx_query = sqlx::query(&query);
-        for (key, value) in entry_chunk {
-            sqlx_query = sqlx_query.bind(key).bind(value);
-        }
-
-        sqlx_query.execute(&mut *executor).await?;
+        // json_each over a JSON object yields (key, value) rows
+        sqlx::query!(
+            r#"INSERT OR REPLACE INTO store (key, value) SELECT je.key, je.value FROM json_each(?1) AS je"#,
+            entries_json
+        )
+        .execute(&mut *executor)
+        .await?;
     }
     Ok(())
 }

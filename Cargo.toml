@@ -13,45 +13,56 @@ categories = ["cryptography", "data-structures", "database"]
 exclude = [".github", ".vscode"]
 
 [dependencies]
-thiserror = "2"                                           # Error handling
-async-trait = "0.1.88"                                    # Async traits
-hex = "0.4.3"                                             # Hex encoding
-tiny-keccak = "2.0.2"                                     # Keccak hashing
-starknet = "0.16.0"                                       # StarkNet pedersen
-starknet-crypto = "0.7.4"                                 # StarkNet poseidon
-parking_lot = "0.12.4"                                    # Sync mutex
-num-bigint = "0.4.6"                                      # Bigints in hashers (TODO: double check if needed)
-num-traits = "0.2.19"                                     # Bigints in hashers (TODO: double check if needed)
-indexmap = "2.10.0"
-strum = "0.27.2"                                          # better enums
-strum_macros = "0.27.2"                                   # better enums
-blake2 = { version = "0.10.6", default-features = false } # Blake2 hashing
+thiserror = "2" # Error handling
+async-trait = "0.1.92" # Async traits
+hex = "0.4.3" # Hex encoding/decoding
+tiny-keccak = { version = "2.0.2", features = ["keccak"] } # Keccak hashing
+starknet-crypto = "0.8.1" # Starknet Pedersen/Poseidon hashing + Felt
+starknet-types-core = { version = "0.2", default-features = false, features = [
+    "std",
+] } # Felt parsing errors
+parking_lot = "0.13.0" # Synchronous locks
+num-bigint = "0.5.1" # Big integers in hashers
+num-traits = "0.2.19" # Numeric traits for bigints
+indexmap = "2.14.2" # Insertion-ordered hash maps
+blake2 = { version = "0.11.0", default-features = false } # Blake2 hashing
+serde_json = { version = "1", optional = true } # JSON encoding for SQLite batch queries
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tokio = { version = "1", features = ["full"] }
-uuid = { version = "1.17.0", features = ["v4"] } # UUID
-sqlx = { version = "0.8", optional = true, features = [
-    "runtime-tokio",
+uuid = { version = "1.29.2", features = ["v4"] } # UUID generation (native)
+sqlx = { version = "0.9", optional = true, default-features = false, features = [
     "sqlite",
-] } # SQLite for rust
+    "runtime-tokio",
+    "macros",
+] } # SQLite store backend (native)
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 # remember to use: export RUSTFLAGS='--cfg getrandom_backend="wasm_js"'
-getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom = { version = "0.4.3", features = [
+    "wasm_js",
+] } # Randomness source for UUID v4 (WASM)
+uuid = { version = "1.29.2", features = ["v4", "js"] } # UUID generation (WASM)
+
+[dev-dependencies]
+accumulators = { path = ".", features = [
+    "all",
+] } # Self-dependency: all features for tests/benches
+criterion = { version = "0.8.2", features = [
+    "html_reports",
+] } # Benchmarking framework
+
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+tokio = { version = "1", features = [
+    "rt",
+    "rt-multi-thread",
+    "macros",
+] } # Async runtime for tests/benches
+
+[target.'cfg(target_family = "wasm")'.dev-dependencies]
 tokio = { version = "1", default-features = false, features = [
     "rt",
     "macros",
-    "sync",
-    "io-util",
-    "time",
-] }
-uuid = { version = "1.17.0", features = ["v4", "js"] } # UUID
-
-[dev-dependencies]
-criterion = { version = "0.7", features = [
-    "html_reports",
-    "async",
-] } # Benchmarking
+] } # Async runtime for tests (WASM)
 
 [[bench]]
 name = "mmr_benchmark"
@@ -79,7 +90,13 @@ all = [
     "incremental_merkle_tree",
 ]
 store = []
-sqlite = ["store", "dep:sqlx", "sqlx/sqlite", "sqlx/runtime-tokio"]
+sqlite = [
+    "store",
+    "dep:sqlx",
+    "sqlx/sqlite",
+    "sqlx/runtime-tokio",
+    "dep:serde_json",
+]
 memory = ["store"]
 hasher = []
 keccak = ["hasher"]

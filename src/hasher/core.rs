@@ -1,9 +1,8 @@
-use starknet::core::types::FromStrError;
+use starknet_types_core::felt::FromStrError;
 use std::{
     fmt::{self, Debug},
     str::FromStr,
 };
-use strum_macros::EnumIter;
 use thiserror::Error;
 
 /// Hasher error
@@ -48,7 +47,7 @@ pub trait Hasher: Send + Sync + Debug {
 }
 
 /// Hashing functions types supported by the hasher
-#[derive(EnumIter, Debug, PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum HashingFunction {
     Keccak256,
     Poseidon,
