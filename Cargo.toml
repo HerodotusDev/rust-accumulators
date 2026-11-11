@@ -1,8 +1,9 @@
 [package]
 name = "accumulators"
 version = "0.5.1"
-edition = "2021"
-license-file = "LICENSE"
+edition = "2024"
+rust-version = "1.94"
+license = "GPL-3.0-only"
 description = "Complete package of multiple Accumulators with Stores and hashing functions (Hashers)"
 homepage = "https://herodotus.dev/"
 repository = "https://github.com/HerodotusDev/rust-accumulators"
@@ -10,7 +11,7 @@ documentation = "https://github.com/HerodotusDev/rust-accumulators/blob/main/REA
 readme = "README.md"
 keywords = ["accumulators", "mmr", "merkle", "tree", "incremental"]
 categories = ["cryptography", "data-structures", "database"]
-exclude = [".github", ".vscode"]
+exclude = [".github", "Makefile.toml"]
 
 [dependencies]
 thiserror = "2" # Error handling
@@ -71,6 +72,14 @@ harness = false
 [[bench]]
 name = "incremental_benchmark"
 harness = false
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
 
 [features]
 default = ["store", "hasher"]
