@@ -1,35 +1,47 @@
+//! Formatting utilities for peak and proof hash lists.
+
 use thiserror::Error;
-/// Formatting
+
+/// Options controlling how a hash list is formatted.
 #[derive(Clone)]
 pub struct FormattingOptions {
+    /// The fixed output size the list is padded up to.
     pub output_size: usize,
+    /// The value used to pad the list up to `output_size`.
     pub null_value: String,
 }
 
+/// Formatting options applied to a proof's sibling hashes.
 pub type ProofFormattingOptions = FormattingOptions;
+/// Formatting options applied to a list of peak hashes.
 pub type PeaksFormattingOptions = FormattingOptions;
 
-// pub fn validate_formatting_options(options: &FormattingOptions) -> Result<(), String> {
-//     if !options.null_value.starts_with("0x") {
-//         return Err("Formatting options: nullValue must be a hex string".to_string());
-//     }
-
-//     if usize::from_str_radix(&options.null_value[2..], 16).is_err() {
-//         return Err("Formatting options: nullValue must be a hex string".to_string());
-//     }
-
-//     Ok(())
-// }
-
-/// Formatting error
+/// An error that can occur while formatting peak or proof hash lists.
 #[derive(Error, Debug)]
 pub enum FormattingError {
+    /// The peaks list is longer than the requested output size.
     #[error("Formatting: Expected peaks output size is smaller than the actual size")]
     PeaksOutputSizeError,
+    /// The proof's sibling hash list is longer than the requested output size.
     #[error("Formatting: Expected proof output size is smaller than the actual size")]
     ProofOutputSizeError,
 }
 
+/// Pads a list of peak hashes with null values up to `formatting_opts.output_size`.
+///
+/// # Arguments
+///
+/// * `peaks` - The peak hashes to format.
+/// * `formatting_opts` - The output size to pad up to and the null value to pad with.
+///
+/// # Returns
+///
+/// A `Result` containing the padded list of peak hashes or a `FormattingError`.
+///
+/// # Errors
+///
+/// Returns `FormattingError::PeaksOutputSizeError` if the peaks list is longer
+/// than the requested output size.
 pub fn format_peaks(
     mut peaks: Vec<String>,
     formatting_opts: &PeaksFormattingOptions,
@@ -47,9 +59,24 @@ pub fn format_peaks(
     Ok(peaks)
 }
 
+/// Pads a proof's sibling hashes with null values up to `formatting_opts.output_size`.
+///
+/// # Arguments
+///
+/// * `siblings_hashes` - The sibling hashes of the proof to format.
+/// * `formatting_opts` - The output size to pad up to and the null value to pad with.
+///
+/// # Returns
+///
+/// A `Result` containing the padded list of sibling hashes or a `FormattingError`.
+///
+/// # Errors
+///
+/// Returns `FormattingError::ProofOutputSizeError` if the sibling hashes list is
+/// longer than the requested output size.
 pub fn format_proof(
     siblings_hashes: Vec<String>,
-    formatting_opts: ProofFormattingOptions,
+    formatting_opts: &ProofFormattingOptions,
 ) -> Result<Vec<String>, FormattingError> {
     if siblings_hashes.len() > formatting_opts.output_size {
         return Err(FormattingError::ProofOutputSizeError);

@@ -12,6 +12,26 @@ type StoreKeysPair = (StoreArc, KeyList);
 type StoreKeysList = Vec<StoreKeysPair>;
 
 impl MMR {
+    /// Creates an MMR stacked on top of the given sub MMRs.
+    ///
+    /// Hash lookups on the stacked MMR are routed to the sub MMR whose size
+    /// range contains the requested element index.
+    ///
+    /// # Arguments
+    ///
+    /// * `store` - The storage backend for the stacked MMR itself.
+    /// * `hasher` - The hashing implementation.
+    /// * `mmr_id` - An optional ID for the MMR; a new UUID will be generated if `None`.
+    /// * `sub_mmrs_metadata` - The metadata of the sub MMRs, each paired with the size at which it is stacked.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the initialized stacked `MMR` or an `MMRError`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `MMRError` if the element or leaf counts cannot be read from
+    /// or written to the store, or if a sub MMR size is not a valid element count.
     pub async fn new_stacked(
         store: Arc<dyn Store>,
         hasher: Arc<dyn Hasher>,
@@ -26,7 +46,7 @@ impl MMR {
         //? size here should be stacks at size
         for (idx, (size, mmr_metadata)) in sub_mmrs_metadata.iter().enumerate() {
             let (_, _, _, hashes_table) =
-                MMR::get_stores(&mmr_metadata.mmr_id, mmr_metadata.store.clone());
+                MMR::get_stores(&mmr_metadata.mmr_id, &mmr_metadata.store);
 
             sub_mmrs.push(SubMMR {
                 size: *size,
@@ -61,9 +81,17 @@ impl MMR {
         Ok(mmr)
     }
 
+    /// Resolves the store and full store key for a single hash lookup, routing
+    /// to the appropriate sub MMR based on the element index.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InStoreTableError::CouldNotDecodeStoreKey` if the table's key is
+    /// not a hashes-table key, and `InStoreTableError::SubMMRsNotSet` if the
+    /// table has no sub MMRs configured.
     pub fn get_store_and_full_key(
         table: &InStoreTable,
-        sub_key: SubKey,
+        sub_key: &SubKey,
     ) -> Result<(StoreArc, String), InStoreTableError> {
         let (_, key, _) = match MMR::decode_store_key(&table.key) {
             Ok((_, key, _)) => (table.store.clone(), key, table.key.clone()),
@@ -76,10 +104,9 @@ impl MMR {
             _ => return table.default_get_store_and_full_key(sub_key),
         }
 
-        let element_index = match sub_key {
-            SubKey::Usize(element_index) => element_index,
+        let SubKey::Usize(element_index) = sub_key else {
             //? If the sub_key is not an element index, we don't need to do anything
-            _ => return table.default_get_store_and_full_key(sub_key),
+            return table.default_get_store_and_full_key(sub_key);
         };
 
         let sub_mmrs = table
@@ -96,7 +123,7 @@ impl MMR {
         let mut use_mmr = None;
 
         for sub_mmr in sub_mmrs {
-            if element_index <= sub_mmr.size {
+            if *element_index <= sub_mmr.size {
                 use_mmr = Some(sub_mmr.clone());
                 break;
             }
@@ -110,9 +137,17 @@ impl MMR {
         ))
     }
 
+    /// Resolves the stores and full store keys for multiple hash lookups,
+    /// grouping the keys by the sub MMR that holds them.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InStoreTableError::CouldNotDecodeStoreKey` if the table's key is
+    /// not a hashes-table key, and `InStoreTableError::SubMMRsNotSet` if the
+    /// table has no sub MMRs configured.
     pub fn get_stores_and_full_keys(
         table: &InStoreTable,
-        sub_keys: Vec<SubKey>,
+        sub_keys: &[SubKey],
     ) -> Result<StoreKeysList, InStoreTableError> {
         let (_, key, _) = match MMR::decode_store_key(&table.key) {
             Ok((_, key, _)) => (table.store.clone(), key, table.key.clone()),
@@ -132,19 +167,23 @@ impl MMR {
         };
 
         let mut stores_and_keys: HashMap<usize, (SubMMR, Vec<String>)> = HashMap::new();
-        for sub_key in sub_keys.iter() {
-            let element_index = match sub_key {
-                SubKey::Usize(element_index) => element_index,
+
+        //? Sort the sub MMRs by size in ascending order
+        let mut sub_mmrs = table
+            .sub_mmrs
+            .as_ref()
+            .ok_or(InStoreTableError::SubMMRsNotSet)?
+            .clone();
+        sub_mmrs.sort_by_key(|a| a.size);
+
+        for sub_key in sub_keys {
+            let SubKey::Usize(element_index) = sub_key else {
                 //? If the sub_key is not an element index, we don't need to do anything
-                _ => return table.default_get_stores_and_full_keys(sub_keys),
+                return table.default_get_stores_and_full_keys(sub_keys);
             };
 
-            //? Sort the sub MMRs by size in ascending order
-            let mut sub_mmrs = table.sub_mmrs.as_ref().unwrap().clone();
-            sub_mmrs.sort_by_key(|a| a.size);
-
             let mut use_mmr: Option<SubMMR> = None;
-            for sub_mmr in sub_mmrs.iter() {
+            for sub_mmr in &sub_mmrs {
                 if *element_index <= sub_mmr.size {
                     use_mmr = Some(sub_mmr.clone());
                     break;

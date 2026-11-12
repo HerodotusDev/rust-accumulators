@@ -47,7 +47,7 @@ mod tests {
         ];
 
         // Await the async call and store the result
-        let node_map = tree.nodes.get_many(expected_nodes.clone()).await.unwrap();
+        let node_map = tree.nodes.get_many(&expected_nodes).await.unwrap();
 
         // Now use the resulting HashMap
         let expected_path: Vec<String> = expected_nodes

@@ -21,47 +21,77 @@ use super::{FormattingError, PeaksOptions, TreeMetadataKeysError};
 /// An error that can occur when using an MMR
 #[derive(Error, Debug)]
 pub enum MMRError {
+    /// An error propagated from the underlying key-value store.
     #[error("Store error: {0}")]
     Store(#[from] StoreError),
+    /// An error propagated from the hasher implementation.
     #[error("Hasher error: {0}")]
     Hasher(#[from] HasherError),
+    /// The store already holds data for the given MMR id, and the operation
+    /// requires an empty one.
     #[error("Cannot do with non-empty MMR. Please provide an empty store or change the MMR id.")]
     NonEmptyMMR,
+    /// The element count does not describe a valid MMR size.
     #[error("Invalid element count")]
     InvalidElementCount,
+    /// The element index is zero or greater than the number of elements in the MMR.
     #[error("Invalid element index")]
     InvalidElementIndex,
+    /// The number of peaks in the proof does not match the expected peak count
+    /// for the MMR size the proof is verified against.
     #[error("Invalid peaks count")]
     InvalidPeaksCount,
+    /// An error propagated from an `InStoreTable` operation.
     #[error("InStoreTable error: {0}")]
     InStoreTable(#[from] InStoreTableError),
+    /// A store key could not be decoded into tree metadata.
     #[error("TreeMetadataKeys error: {0}")]
     TreeMetadataKeys(#[from] TreeMetadataKeysError),
+    /// An error occurred while formatting peak or proof hashes.
     #[error("Formatting error: {0}")]
     Formatting(#[from] FormattingError),
+    /// No hash is stored in the MMR under the given element index.
     #[error("No hash found for index {0}")]
     NoHashFoundForIndex(usize),
+    /// The provided peaks do not match the provided element count.
     #[error("Invalid peaks count for the given element count")]
     InvalidPeaksCountForElements,
 }
 
+/// A Merkle Mountain Range (MMR) backed by a key-value store.
+///
+/// The MMR persists its hashes and metadata in the store under keys derived
+/// from `mmr_id`, so multiple independent MMRs can share a single store.
 #[derive(Debug)]
 pub struct MMR {
+    /// The store used to persist the MMR's data.
     pub store: Arc<dyn Store>,
+    /// The hasher used to hash elements and merge peaks.
     pub hasher: Arc<dyn Hasher>,
+    /// The unique id under which the MMR's data is stored.
     pub mmr_id: String,
+    /// Counter holding the number of leaves currently in the MMR.
     pub leaves_count: InStoreCounter,
+    /// Counter holding the total number of nodes currently in the MMR.
     pub elements_count: InStoreCounter,
+    /// Table mapping element indices to their hashes.
     pub hashes: InStoreTable,
+    /// Table holding the MMR's current root hash.
     pub root_hash: InStoreTable,
+    /// Metadata of the sub MMRs this MMR is stacked on top of.
     #[cfg(feature = "stacked_mmr")]
     pub sub_mmrs: SizesToMMRs,
 }
 
+/// The identity and configuration data needed to reference an existing MMR
+/// (e.g. when configuring a stacked MMR).
 #[derive(Debug, Clone)]
 pub struct MmrMetadata {
+    /// The unique id under which the MMR's data is stored.
     pub mmr_id: String,
+    /// The store the MMR's data lives in.
     pub store: Arc<dyn Store>,
+    /// The hashing function the MMR was created with.
     pub hasher: HashingFunction,
 }
 
@@ -70,16 +100,20 @@ pub struct MmrMetadata {
 pub type SizesToMMRs = Vec<(usize, MmrMetadata)>;
 
 impl MMR {
+    /// Creates a new MMR handle backed by the given store and hasher.
+    ///
+    /// If `mmr_id` is `None`, a random UUID is used as the id. Nothing is
+    /// written to the store until the first append.
     pub fn new(store: Arc<dyn Store>, hasher: Arc<dyn Hasher>, mmr_id: Option<String>) -> Self {
         let mmr_id = mmr_id.unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        let (leaves_count, elements_count, root_hash, hashes) =
-            MMR::get_stores(&mmr_id, store.clone());
+        let (leaves_count, elements_count, root_hash, hashes_table) =
+            MMR::get_stores(&mmr_id, &store);
 
         Self {
             leaves_count,
             elements_count,
-            hashes,
+            hashes: hashes_table,
             root_hash,
             store,
             hasher,
@@ -106,6 +140,13 @@ impl MMR {
     /// # Returns
     ///
     /// A `Result` containing the initialized `MMR` or an `MMRError`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MMRError::NonEmptyMMR` if the store already holds an MMR under
+    /// the given id, `MMRError::InvalidPeaksCountForElements` if the number of
+    /// peaks does not match the element count, and an `MMRError` if the counts
+    /// or hashes cannot be written to the store or hashing fails.
     pub async fn create_from_peaks(
         store: Arc<dyn Store>,
         hasher: Arc<dyn Hasher>,
@@ -134,7 +175,9 @@ impl MMR {
         // Store the peak hashes
         for (i, peak_hash) in peaks_hashes.iter().enumerate() {
             let peak_index = expected_peak_indices[i];
-            mmr.hashes.set(peak_hash, SubKey::Usize(peak_index)).await?;
+            mmr.hashes
+                .set(peak_hash, &SubKey::Usize(peak_index))
+                .await?;
         }
 
         // Calculate and store the root hash based on the provided peaks
@@ -142,11 +185,28 @@ impl MMR {
         let bag = mmr.bag_the_peaks(Some(elements_count)).await?;
 
         let root_hash = mmr.calculate_root_hash(&bag, elements_count)?;
-        mmr.root_hash.set(&root_hash, SubKey::None).await?;
+        mmr.root_hash.set(&root_hash, &SubKey::None).await?;
 
         Ok(mmr)
     }
 
+    /// Creates a new MMR and appends the hasher's genesis element to it.
+    ///
+    /// # Arguments
+    ///
+    /// * `store` - The storage backend.
+    /// * `hasher` - The hashing implementation.
+    /// * `mmr_id` - An optional ID for the MMR; a new UUID will be generated if `None`.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the initialized `MMR` or an `MMRError`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MMRError::NonEmptyMMR` if the store already holds an MMR under
+    /// the given id, and an `MMRError` if the genesis element cannot be hashed
+    /// or appended.
     pub async fn create_with_genesis(
         store: Arc<dyn Store>,
         hasher: Arc<dyn Hasher>,
@@ -162,6 +222,9 @@ impl MMR {
         Ok(mmr)
     }
 
+    /// Returns the metadata needed to reference this MMR later (e.g. when
+    /// configuring a stacked MMR).
+    #[must_use]
     pub fn get_metadata(&self) -> MmrMetadata {
         MmrMetadata {
             mmr_id: self.mmr_id.clone(),
@@ -170,6 +233,10 @@ impl MMR {
         }
     }
 
+    /// Returns the four full store keys (leaf count, element count, root hash
+    /// and hashes table prefix) under which the MMR with the given id stores
+    /// its data.
+    #[must_use]
     pub fn get_store_keys(mmr_id: &str) -> (String, String, String, String) {
         (
             format!("{}:{}", mmr_id, TreeMetadataKeys::LeafCount),
@@ -179,12 +246,29 @@ impl MMR {
         )
     }
 
+    /// Decodes a full store key of the form `{mmr_id}:{key}:{sub_key}` into its parts.
+    ///
+    /// # Arguments
+    ///
+    /// * `store_key` - The full store key to decode.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing a tuple of the MMR id, the tree metadata key and
+    /// the sub key, or an `MMRError`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MMRError::TreeMetadataKeys` if the key does not have the expected
+    /// `{mmr_id}:{key}` form or the metadata key segment is not a known
+    /// `TreeMetadataKeys` value.
     pub fn decode_store_key(
         store_key: &str,
     ) -> Result<(String, TreeMetadataKeys, SubKey), MMRError> {
+        let invalid_key = || MMRError::TreeMetadataKeys(TreeMetadataKeysError::InvalidKey);
         let mut parts = store_key.split(':');
-        let mmr_id = parts.next().unwrap().to_string();
-        let key = TreeMetadataKeys::from_str(parts.next().unwrap())?;
+        let mmr_id = parts.next().ok_or_else(invalid_key)?.to_string();
+        let key = TreeMetadataKeys::from_str(parts.next().ok_or_else(invalid_key)?)?;
         let sub_key = match parts.next() {
             Some(sub_key) => SubKey::String(sub_key.to_string()),
             None => SubKey::None,
@@ -193,7 +277,9 @@ impl MMR {
         Ok((mmr_id, key, sub_key))
     }
 
-    pub fn encode_store_key(mmr_id: &str, key: TreeMetadataKeys, sub_key: SubKey) -> String {
+    /// Encodes an MMR id, a tree metadata key and a sub key into a full store key.
+    #[must_use]
+    pub fn encode_store_key(mmr_id: &str, key: TreeMetadataKeys, sub_key: &SubKey) -> String {
         let store_key = format!("{mmr_id}:{key}");
         match sub_key {
             SubKey::None => store_key,
@@ -201,21 +287,41 @@ impl MMR {
         }
     }
 
+    /// Creates the four store handles (leaf count, element count, root hash and
+    /// hashes table) for the MMR with the given id.
+    #[must_use]
     pub fn get_stores(
         mmr_id: &str,
-        store_rc: Arc<dyn Store>,
+        store: &Arc<dyn Store>,
     ) -> (InStoreCounter, InStoreCounter, InStoreTable, InStoreTable) {
         let (leaves_count_key, elements_count_key, root_hash_key, hashes_key) =
             MMR::get_store_keys(mmr_id);
 
         (
-            InStoreCounter::new(store_rc.clone(), leaves_count_key),
-            InStoreCounter::new(store_rc.clone(), elements_count_key),
-            InStoreTable::new(store_rc.clone(), root_hash_key),
-            InStoreTable::new(store_rc.clone(), hashes_key),
+            InStoreCounter::new(store.clone(), leaves_count_key),
+            InStoreCounter::new(store.clone(), elements_count_key),
+            InStoreTable::new(store.clone(), root_hash_key),
+            InStoreTable::new(store.clone(), hashes_key),
         )
     }
 
+    /// Appends an element to the MMR, merging peaks as needed, and persists
+    /// the new hashes, counts and root hash.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The element to append.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing an `AppendResult` describing the MMR's state after
+    /// the append, or an `MMRError`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `MMRError` if the element size is rejected by the hasher, the
+    /// store cannot be read or written, a peak hash is missing while merging,
+    /// or hashing the new root fails.
     pub async fn append(&mut self, value: String) -> Result<AppendResult, MMRError> {
         self.hasher.is_element_size_valid(&value)?;
 
@@ -230,7 +336,7 @@ impl MMR {
 
         //? Store the hash in the database
         self.hashes
-            .set(&value, SubKey::Usize(last_element_idx))
+            .set(&value, &SubKey::Usize(last_element_idx))
             .await?;
 
         peaks.push(value);
@@ -240,20 +346,18 @@ impl MMR {
         for _ in 0..no_merges {
             last_element_idx += 1;
 
-            let right_hash = match peaks.pop() {
-                Some(hash) => hash,
-                None => return Err(MMRError::NoHashFoundForIndex(last_element_idx)),
+            let Some(right_hash) = peaks.pop() else {
+                return Err(MMRError::NoHashFoundForIndex(last_element_idx));
             };
 
-            let left_hash = match peaks.pop() {
-                Some(hash) => hash,
-                None => return Err(MMRError::NoHashFoundForIndex(last_element_idx)),
+            let Some(left_hash) = peaks.pop() else {
+                return Err(MMRError::NoHashFoundForIndex(last_element_idx));
             };
 
             let parent_hash = self.hasher.hash(vec![left_hash, right_hash])?;
 
             self.hashes
-                .set(&parent_hash, SubKey::Usize(last_element_idx))
+                .set(&parent_hash, &SubKey::Usize(last_element_idx))
                 .await?;
             peaks.push(parent_hash);
         }
@@ -264,7 +368,7 @@ impl MMR {
 
         // Compute the new root hash
         let root_hash = self.calculate_root_hash(&bag, last_element_idx)?;
-        self.root_hash.set(&root_hash, SubKey::None).await?;
+        self.root_hash.set(&root_hash, &SubKey::None).await?;
 
         let leaves = self.leaves_count.increment().await?;
 
@@ -276,6 +380,22 @@ impl MMR {
         })
     }
 
+    /// Generates an inclusion proof for a single element.
+    ///
+    /// # Arguments
+    ///
+    /// * `element_index` - The index of the element to prove (1-based).
+    /// * `options` - Optional overrides: the element count to prove against and formatting options.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the `Proof` or an `MMRError`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MMRError::InvalidElementIndex` if the index is zero or greater
+    /// than the tree size, and an `MMRError` if hashes cannot be retrieved from
+    /// the store, formatting fails, or the element's hash is missing.
     pub async fn get_proof(
         &self,
         element_index: usize,
@@ -308,10 +428,9 @@ impl MMR {
         let siblings_hashes = self
             .hashes
             .get_many(
-                siblings
-                    .clone()
-                    .into_iter()
-                    .map(SubKey::Usize)
+                &siblings
+                    .iter()
+                    .map(|&idx| SubKey::Usize(idx))
                     .collect::<Vec<SubKey>>(),
             )
             .await?;
@@ -322,12 +441,12 @@ impl MMR {
             .collect();
 
         if let Some(formatting_opts) = options.formatting_opts.as_ref() {
-            siblings_hashes_vec = format_proof(siblings_hashes_vec, formatting_opts.proof.clone())?;
+            siblings_hashes_vec = format_proof(siblings_hashes_vec, &formatting_opts.proof)?;
         }
 
         let element_hash = self
             .hashes
-            .get(SubKey::Usize(element_index))
+            .get(&SubKey::Usize(element_index))
             .await?
             .ok_or(MMRError::NoHashFoundForIndex(element_index))?;
 
@@ -340,6 +459,26 @@ impl MMR {
         })
     }
 
+    /// Generates inclusion proofs for multiple elements in one pass, fetching
+    /// all sibling hashes from the store only once.
+    ///
+    /// # Arguments
+    ///
+    /// * `elements_indexes` - The indexes of the elements to prove (1-based).
+    /// * `options` - Optional overrides: the element count to prove against and formatting options.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing a vector of `Proof`s, in the same order as the
+    /// given indexes, or an `MMRError`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MMRError::InvalidElementIndex` if any index is zero or greater
+    /// than the tree size, `MMRError::NoHashFoundForIndex` if a sibling or
+    /// element hash is missing from the fetched results, and an `MMRError` if
+    /// hashes cannot be retrieved from the store, sibling computation fails, or
+    /// formatting fails.
     pub async fn get_proofs(
         &self,
         elements_indexes: Vec<usize>,
@@ -367,36 +506,46 @@ impl MMR {
         for &element_id in &elements_indexes {
             siblings_per_element.insert(element_id, find_siblings(element_id, tree_size)?);
         }
-        let sibling_hashes_to_get = array_deduplicate(
+        let sibling_hashes_to_get: Vec<SubKey> = array_deduplicate(
             siblings_per_element
                 .values()
-                .flat_map(|x| x.iter().cloned())
+                .flat_map(|x| x.iter().copied())
                 .collect(),
         )
         .into_iter()
         .map(SubKey::Usize)
         .collect();
-        let all_siblings_hashes = self.hashes.get_many(sibling_hashes_to_get).await?;
+        let all_siblings_hashes = self.hashes.get_many(&sibling_hashes_to_get).await?;
 
         let elements_ids_str: Vec<SubKey> =
             elements_indexes.iter().map(|&x| SubKey::Usize(x)).collect();
-        let element_hashes = self.hashes.get_many(elements_ids_str).await?;
+        let element_hashes = self.hashes.get_many(&elements_ids_str).await?;
 
         let mut proofs: Vec<Proof> = Vec::new();
         for &element_id in &elements_indexes {
-            let siblings = siblings_per_element.get(&element_id).unwrap();
+            let siblings = siblings_per_element
+                .get(&element_id)
+                .ok_or(MMRError::InvalidElementIndex)?;
             let mut siblings_hashes: Vec<String> = siblings
                 .iter()
-                .map(|s| all_siblings_hashes.get(&s.to_string()).unwrap().clone()) // Note the conversion here
-                .collect();
+                .map(|s| {
+                    all_siblings_hashes
+                        .get(&s.to_string())
+                        .ok_or(MMRError::NoHashFoundForIndex(*s))
+                        .cloned()
+                })
+                .collect::<Result<Vec<_>, _>>()?;
 
             if let Some(formatting_opts) = &options.formatting_opts {
-                siblings_hashes = format_proof(siblings_hashes, formatting_opts.proof.clone())?
+                siblings_hashes = format_proof(siblings_hashes, &formatting_opts.proof)?;
             }
 
             proofs.push(Proof {
                 element_index: element_id,
-                element_hash: element_hashes.get(&element_id.to_string()).unwrap().clone(),
+                element_hash: element_hashes
+                    .get(&element_id.to_string())
+                    .ok_or(MMRError::NoHashFoundForIndex(element_id))?
+                    .clone(),
                 siblings_hashes,
                 peaks_hashes: peaks_hashes.clone(),
                 elements_count: tree_size,
@@ -406,6 +555,24 @@ impl MMR {
         Ok(proofs)
     }
 
+    /// Verifies an inclusion proof against a known element value.
+    ///
+    /// # Arguments
+    ///
+    /// * `proof` - The proof to verify.
+    /// * `element_value` - The value of the proven element.
+    /// * `options` - Optional overrides: the element count to verify against and formatting options.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing `true` if the proof is valid for the given element
+    /// value, `false` otherwise, or an `MMRError`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MMRError::InvalidPeaksCount` if the proof's peak count does not
+    /// match the tree size, `MMRError::InvalidElementIndex` if the proven index
+    /// is zero or out of range, and an `MMRError` if hashing or store reads fail.
     pub async fn verify_proof(
         &self,
         mut proof: Proof,
@@ -421,7 +588,7 @@ impl MMR {
         let leaf_count = mmr_size_to_leaf_count(tree_size);
         let peaks_count = leaf_count_to_peaks_count(leaf_count);
 
-        if peaks_count as usize != proof.peaks_hashes.len() {
+        if peaks_count != proof.peaks_hashes.len() {
             return Err(MMRError::InvalidPeaksCount);
         }
 
@@ -465,7 +632,7 @@ impl MMR {
         let mut hash = element_value.clone();
         let mut leaf_index = element_index_to_leaf_index(element_index)?;
 
-        for proof_hash in proof.siblings_hashes.iter() {
+        for proof_hash in &proof.siblings_hashes {
             let is_right = leaf_index % 2 == 1;
             leaf_index /= 2;
 
@@ -483,6 +650,20 @@ impl MMR {
         Ok(peak_hashes[peak_index] == hash)
     }
 
+    /// Returns the hashes of the MMR's peaks, optionally formatted to a fixed size.
+    ///
+    /// # Arguments
+    ///
+    /// * `option` - Optional overrides: the element count to compute peaks for and peaks formatting options.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the vector of peak hashes or an `MMRError`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `MMRError` if the element count or peak hashes cannot be read
+    /// from the store, and `MMRError::Formatting` if formatting fails.
     pub async fn get_peaks(&self, option: PeaksOptions) -> Result<Vec<String>, MMRError> {
         let tree_size = match option.elements_count {
             Some(count) => count,
@@ -501,6 +682,13 @@ impl MMR {
         }
     }
 
+    /// Retrieves the hashes stored under the given peak indices, optionally
+    /// formatted to a fixed size.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `MMRError` if hashes cannot be retrieved from the store, and
+    /// `MMRError::Formatting` if formatting fails.
     pub async fn retrieve_peaks_hashes(
         &self,
         peak_idxs: Vec<usize>,
@@ -508,7 +696,12 @@ impl MMR {
     ) -> Result<Vec<String>, MMRError> {
         let hashes_result = self
             .hashes
-            .get_many(peak_idxs.clone().into_iter().map(SubKey::Usize).collect())
+            .get_many(
+                &peak_idxs
+                    .iter()
+                    .map(|&idx| SubKey::Usize(idx))
+                    .collect::<Vec<SubKey>>(),
+            )
             .await?;
         // Assuming hashes_result is a HashMap<String, String>
         let hashes: Vec<String> = peak_idxs
@@ -525,6 +718,22 @@ impl MMR {
         }
     }
 
+    /// Bags the MMR's peaks into a single hash: with zero peaks, `"0x0"` is
+    /// returned; with one peak, that peak's hash is returned; otherwise the
+    /// peaks are hashed together from the right.
+    ///
+    /// # Arguments
+    ///
+    /// * `elements_count` - Optional element count to bag the peaks for; defaults to the MMR's current count.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the bagged peak hash or an `MMRError`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `MMRError` if peak hashes cannot be retrieved from the store
+    /// or hashing fails.
     pub async fn bag_the_peaks(&self, elements_count: Option<usize>) -> Result<String, MMRError> {
         let tree_size = match elements_count {
             Some(count) => count,
@@ -537,20 +746,36 @@ impl MMR {
         match peaks_idxs.len() {
             // Use original peaks_idxs here
             0 => Ok("0x0".to_string()),
-            1 => Ok(peaks_hashes[0].clone()),
+            1 => peaks_hashes
+                .into_iter()
+                .next()
+                .ok_or(MMRError::NoHashFoundForIndex(peaks_idxs[0])),
             _ => {
                 let mut peaks_hashes: VecDeque<String> = peaks_hashes.into();
-                let last = peaks_hashes.pop_back().unwrap();
-                let second_last = peaks_hashes.pop_back().unwrap();
+                let Some(last) = peaks_hashes.pop_back() else {
+                    return Err(MMRError::InvalidPeaksCount);
+                };
+                let Some(second_last) = peaks_hashes.pop_back() else {
+                    return Err(MMRError::InvalidPeaksCount);
+                };
                 let root0 = self.hasher.hash(vec![second_last, last])?;
 
-                Ok(peaks_hashes.into_iter().rev().fold(root0, |prev, cur| {
-                    self.hasher.hash(vec![cur, prev]).unwrap()
-                }))
+                let mut root = root0;
+                for peak_hash in peaks_hashes.into_iter().rev() {
+                    root = self.hasher.hash(vec![peak_hash, root])?;
+                }
+
+                Ok(root)
             }
         }
     }
 
+    /// Calculates the MMR's root hash by hashing the element count together
+    /// with the bagged peaks hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MMRError::Hasher` if hashing fails.
     pub fn calculate_root_hash(
         &self,
         bag: &str,

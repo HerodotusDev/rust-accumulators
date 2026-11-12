@@ -18,12 +18,13 @@ fn should_compute_a_hash() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "InvalidElementSize")]
 fn should_throw() {
     let hasher = StarkPedersenHasher::default();
-    let a =
-        "0x6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d177610x6109f1949f6a7555eccf4"
-            .to_string();
+    //? An element larger than the 252-bit block size must be rejected, both
+    //? by `is_element_size_valid` and by `hash` itself.
+    let hex_chunk = "6109f1949f6a7555eccf4e15ce1f10fbd78091dfe715cc2e0c5a244d9d17761";
+    let a = format!("0x{}", hex_chunk.repeat(9));
     let b = "0x0194791558611599fe4ae0fcfa48f095659c90db18e54de86f2d2f547f7369bf".to_string();
 
     assert!(hasher.is_element_size_valid(&a).is_err());

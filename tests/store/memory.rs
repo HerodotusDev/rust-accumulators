@@ -90,8 +90,8 @@ async fn test_get_none_in_store_table() {
 
     // Create an in-store counter
     let table = InStoreTable::new(store.clone(), "table".to_string());
-    table.set("value1", SubKey::None).await.unwrap();
-    let value = table.get(SubKey::None).await.unwrap();
+    table.set("value1", &SubKey::None).await.unwrap();
+    let value = table.get(&SubKey::None).await.unwrap();
     assert_eq!(value.unwrap(), "value1".to_string());
 }
 
@@ -106,13 +106,19 @@ async fn test_get_many_none_in_store_table() {
     entries.insert(SubKey::String("key1".to_string()), "value1".to_string());
     entries.insert(SubKey::String("key2".to_string()), "value2".to_string());
     table.set_many(entries).await.unwrap();
-    let value = table.get(SubKey::String("key1".to_string())).await.unwrap();
+    let value = table
+        .get(&SubKey::String("key1".to_string()))
+        .await
+        .unwrap();
     assert_eq!(value.unwrap(), "value1".to_string());
-    let value = table.get(SubKey::String("key2".to_string())).await.unwrap();
+    let value = table
+        .get(&SubKey::String("key2".to_string()))
+        .await
+        .unwrap();
     assert_eq!(value.unwrap(), "value2".to_string());
 
     let values = table
-        .get_many(vec![
+        .get_many(&[
             SubKey::String("key1".to_string()),
             SubKey::String("key2".to_string()),
         ])
@@ -130,11 +136,11 @@ async fn test_get_some_in_store_table() {
     // Create an in-store counter
     let table = InStoreTable::new(store.clone(), "table".to_string());
     table
-        .set("value1", SubKey::String("suffix1".to_string()))
+        .set("value1", &SubKey::String("suffix1".to_string()))
         .await
         .unwrap();
     let value = table
-        .get(SubKey::String("suffix1".to_string()))
+        .get(&SubKey::String("suffix1".to_string()))
         .await
         .unwrap();
     assert_eq!(value.unwrap(), "value1".to_string());
@@ -152,7 +158,7 @@ async fn test_batch_insertion_and_retrieval() {
 
     store.set_many(entries.clone()).await.unwrap();
 
-    let keys: Vec<_> = entries.keys().map(|k| k.as_str()).collect();
+    let keys: Vec<_> = entries.keys().map(String::as_str).collect();
     let values = store.get_many(keys).await.unwrap();
 
     for i in 0..10_000 {

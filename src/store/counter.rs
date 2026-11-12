@@ -21,6 +21,10 @@ impl InStoreCounter {
     }
 
     /// Get the count of the key
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] if the value cannot be retrieved or parsed.
     pub async fn get(&self) -> Result<usize, StoreError> {
         self.store
             .get(&self.key)
@@ -32,12 +36,20 @@ impl InStoreCounter {
     }
 
     /// Set the count of the key
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] if the value cannot be written to the store.
     pub async fn set(&self, count: usize) -> Result<(), StoreError> {
         self.store.set(&self.key, &count.to_string()).await?;
         Ok(())
     }
 
     /// Increment the count of the key
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] if reading or writing the count fails.
     pub async fn increment(&self) -> Result<usize, StoreError> {
         let current_count = self.get().await?;
         let new_count = current_count + 1;

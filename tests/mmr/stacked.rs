@@ -1,8 +1,36 @@
 use std::sync::Arc;
 
 use accumulators::{
-    hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::sqlite::SQLiteStore,
+    hasher::stark_poseidon::StarkPoseidonHasher,
+    mmr::{AppendResult, MMR},
+    store::sqlite::SQLiteStore,
 };
+
+/// Builds a reference (non-stacked) MMR with the leaves "1".."8" appended in
+/// order, and returns it together with the append result for the "6" leaf.
+async fn build_reference_mmr(
+    store: Arc<SQLiteStore>,
+    hasher: Arc<StarkPoseidonHasher>,
+) -> (MMR, AppendResult) {
+    let mut ref_mmr = MMR::new(store, hasher, None);
+    for value in ["1", "2", "3", "4", "5"] {
+        ref_mmr
+            .append(value.to_string())
+            .await
+            .expect("Failed to append");
+    }
+    let ref_eg_for_proving = ref_mmr
+        .append("6".to_string())
+        .await
+        .expect("Failed to append");
+    for value in ["7", "8"] {
+        ref_mmr
+            .append(value.to_string())
+            .await
+            .expect("Failed to append");
+    }
+    (ref_mmr, ref_eg_for_proving)
+}
 
 #[tokio::test]
 async fn should_stack_two_mmrs() {
@@ -152,39 +180,7 @@ async fn should_stack_4_mmrs() {
         .calculate_root_hash(&mmr_4_bag, mmr_4.elements_count.get().await.unwrap())
         .expect("Failed to calculate root hash");
 
-    let mut ref_mmr = MMR::new(store.clone(), hasher.clone(), None);
-    ref_mmr
-        .append("1".to_string())
-        .await
-        .expect("Failed to append");
-    ref_mmr
-        .append("2".to_string())
-        .await
-        .expect("Failed to append");
-    ref_mmr
-        .append("3".to_string())
-        .await
-        .expect("Failed to append");
-    ref_mmr
-        .append("4".to_string())
-        .await
-        .expect("Failed to append");
-    ref_mmr
-        .append("5".to_string())
-        .await
-        .expect("Failed to append");
-    let ref_eg_for_proving = ref_mmr
-        .append("6".to_string())
-        .await
-        .expect("Failed to append");
-    ref_mmr
-        .append("7".to_string())
-        .await
-        .expect("Failed to append");
-    ref_mmr
-        .append("8".to_string())
-        .await
-        .expect("Failed to append");
+    let (ref_mmr, ref_eg_for_proving) = build_reference_mmr(store.clone(), hasher.clone()).await;
     let ref_bag = ref_mmr.bag_the_peaks(None).await.unwrap();
     let ref_root = ref_mmr
         .calculate_root_hash(&ref_bag, ref_mmr.elements_count.get().await.unwrap())

@@ -97,7 +97,7 @@ async fn should_compute_parent_tree_for_pedersen_hasher() {
             .verify_proof(proof, LEAVES[LEAVES.len() - 1].to_string(), None)
             .await
             .unwrap()
-    )
+    );
 }
 
 #[tokio::test]
@@ -151,7 +151,7 @@ async fn should_compute_parent_tree_for_poseidon_hasher() {
             .verify_proof(proof, LEAVES[LEAVES.len() - 1].to_string(), None)
             .await
             .unwrap()
-    )
+    );
 }
 
 #[tokio::test]
@@ -205,7 +205,7 @@ async fn should_compute_parent_tree_for_keccak_hasher() {
             .verify_proof(proof, LEAVES[LEAVES.len() - 1].to_string(), None)
             .await
             .unwrap()
-    )
+    );
 }
 
 //================================================================================================
@@ -350,7 +350,7 @@ async fn should_generate_multiple_proofs_for_pedersen_hasher() {
                 .verify_proof(proof.clone(), LEAVES[idx].to_string(), None)
                 .await
                 .unwrap()
-        )
+        );
     }
 }
 
@@ -374,7 +374,7 @@ async fn should_generate_multiple_proofs_for_keccak_hasher() {
                 .verify_proof(proof.clone(), LEAVES[idx].to_string(), None)
                 .await
                 .unwrap()
-        )
+        );
     }
 }
 
@@ -398,7 +398,7 @@ async fn should_generate_multiple_proofs_for_poseidon_hasher() {
                 .verify_proof(proof.clone(), LEAVES[idx].to_string(), None)
                 .await
                 .unwrap()
-        )
+        );
     }
 }
 
@@ -457,17 +457,10 @@ async fn test_get_peaks() {
     );
 }
 
-#[tokio::test]
-async fn should_append_to_poseidon_mmr() {
-    let store = InMemoryStore::default();
-    let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
-
-    let store = Arc::new(store);
-
-    let mut mmr = MMR::new(store.clone(), hasher.clone(), None);
-
-    // Act
-    // let mut mmr = CoreMMR::create_with_genesis(store, hasher.clone(), None).unwrap();
+/// Appends the golden leaf sequence ("1", "2", "4", "5", "8") to a fresh
+/// poseidon MMR, asserting every intermediate `AppendResult` and bagged-peaks
+/// value against known-good hashes.
+async fn append_golden_leaves_to_poseidon_mmr(mmr: &mut MMR) {
     let append_result1 = mmr.append("1".to_string()).await.unwrap();
 
     assert_eq!(
@@ -548,18 +541,39 @@ async fn should_append_to_poseidon_mmr() {
         mmr.bag_the_peaks(None).await.unwrap(),
         "0x49da356656c3153d59f9be39143daebfc12e05b6a93ab4ccfa866a890ad78f"
     );
+}
 
-    let proof1 = mmr.get_proof(1, None).await.unwrap();
+#[tokio::test]
+async fn should_append_to_poseidon_mmr() {
+    let store = Arc::new(InMemoryStore::default());
+    let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
+    let mut mmr = MMR::new(store, hasher, None);
+
+    append_golden_leaves_to_poseidon_mmr(&mut mmr).await;
 
     assert_eq!(
-        proof1,
+        mmr.bag_the_peaks(None).await.unwrap(),
+        "0x49da356656c3153d59f9be39143daebfc12e05b6a93ab4ccfa866a890ad78f"
+    );
+}
+
+/// Gets the proof for an element, asserts its exact shape and verifies it
+/// against the golden 5-leaf poseidon MMR state.
+async fn get_and_verify_poseidon_proof(
+    mmr: &mut MMR,
+    element_index: usize,
+    element_hash: &str,
+    sibling_hash: &str,
+    deep_sibling_hash: &str,
+) {
+    let proof = mmr.get_proof(element_index, None).await.unwrap();
+
+    assert_eq!(
+        proof,
         Proof {
-            element_index: 1,
-            element_hash: "1".to_string(),
-            siblings_hashes: vec![
-                "2".to_string(),
-                "0x384f427301be8e1113e6dd91088cb46e25a8f6426a997b2f842a39596bf45f4".to_string()
-            ],
+            element_index,
+            element_hash: element_hash.to_string(),
+            siblings_hashes: vec![sibling_hash.to_string(), deep_sibling_hash.to_string()],
             peaks_hashes: vec![
                 "0x43c59debacab61e73dec9edd73da27738a8be14c1e123bb38f9634220323c4f".to_string(),
                 "8".to_string()
@@ -568,78 +582,51 @@ async fn should_append_to_poseidon_mmr() {
         }
     );
 
-    mmr.verify_proof(proof1, "1".to_string(), None)
+    mmr.verify_proof(proof, element_hash.to_string(), None)
         .await
         .unwrap();
+}
 
-    let proof2 = mmr.get_proof(2, None).await.unwrap();
+#[tokio::test]
+async fn should_generate_and_verify_proofs_for_poseidon_mmr() {
+    let store = Arc::new(InMemoryStore::default());
+    let hasher = Arc::new(StarkPoseidonHasher::new(Some(false)));
+    let mut mmr = MMR::new(store, hasher, None);
 
-    assert_eq!(
-        proof2,
-        Proof {
-            element_index: 2,
-            element_hash: "2".to_string(),
-            siblings_hashes: vec![
-                "1".to_string(),
-                "0x384f427301be8e1113e6dd91088cb46e25a8f6426a997b2f842a39596bf45f4".to_string()
-            ],
-            peaks_hashes: vec![
-                "0x43c59debacab61e73dec9edd73da27738a8be14c1e123bb38f9634220323c4f".to_string(),
-                "8".to_string()
-            ],
-            elements_count: 8
-        }
-    );
+    append_golden_leaves_to_poseidon_mmr(&mut mmr).await;
 
-    mmr.verify_proof(proof2, "2".to_string(), None)
-        .await
-        .unwrap();
-
-    let proof4 = mmr.get_proof(4, None).await.unwrap();
-
-    assert_eq!(
-        proof4,
-        Proof {
-            element_index: 4,
-            element_hash: "4".to_string(),
-            siblings_hashes: vec![
-                "5".to_string(),
-                "0x5d44a3decb2b2e0cc71071f7b802f45dd792d064f0fc7316c46514f70f9891a".to_string()
-            ],
-            peaks_hashes: vec![
-                "0x43c59debacab61e73dec9edd73da27738a8be14c1e123bb38f9634220323c4f".to_string(),
-                "8".to_string()
-            ],
-            elements_count: 8
-        }
-    );
-
-    mmr.verify_proof(proof4, "4".to_string(), None)
-        .await
-        .unwrap();
-
-    let proof5 = mmr.get_proof(5, None).await.unwrap();
-
-    assert_eq!(
-        proof5,
-        Proof {
-            element_index: 5,
-            element_hash: "5".to_string(),
-            siblings_hashes: vec![
-                "4".to_string(),
-                "0x5d44a3decb2b2e0cc71071f7b802f45dd792d064f0fc7316c46514f70f9891a".to_string()
-            ],
-            peaks_hashes: vec![
-                "0x43c59debacab61e73dec9edd73da27738a8be14c1e123bb38f9634220323c4f".to_string(),
-                "8".to_string()
-            ],
-            elements_count: 8
-        }
-    );
-
-    mmr.verify_proof(proof5, "5".to_string(), None)
-        .await
-        .unwrap();
+    get_and_verify_poseidon_proof(
+        &mut mmr,
+        1,
+        "1",
+        "2",
+        "0x384f427301be8e1113e6dd91088cb46e25a8f6426a997b2f842a39596bf45f4",
+    )
+    .await;
+    get_and_verify_poseidon_proof(
+        &mut mmr,
+        2,
+        "2",
+        "1",
+        "0x384f427301be8e1113e6dd91088cb46e25a8f6426a997b2f842a39596bf45f4",
+    )
+    .await;
+    get_and_verify_poseidon_proof(
+        &mut mmr,
+        4,
+        "4",
+        "5",
+        "0x5d44a3decb2b2e0cc71071f7b802f45dd792d064f0fc7316c46514f70f9891a",
+    )
+    .await;
+    get_and_verify_poseidon_proof(
+        &mut mmr,
+        5,
+        "5",
+        "4",
+        "0x5d44a3decb2b2e0cc71071f7b802f45dd792d064f0fc7316c46514f70f9891a",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -704,7 +691,12 @@ async fn test_create_with_genesis_for_keccak() {
         .unwrap();
 
     assert_eq!(
-        core_mmr.root_hash.get(SubKey::None).await.unwrap().unwrap(),
+        core_mmr
+            .root_hash
+            .get(&SubKey::None)
+            .await
+            .unwrap()
+            .unwrap(),
         hasher
             .hash(vec!["1".to_string(), hasher.get_genesis().unwrap()])
             .unwrap()
@@ -724,7 +716,12 @@ async fn test_create_with_genesis_for_poseidon() {
         .unwrap();
 
     assert_eq!(
-        core_mmr.root_hash.get(SubKey::None).await.unwrap().unwrap(),
+        core_mmr
+            .root_hash
+            .get(&SubKey::None)
+            .await
+            .unwrap()
+            .unwrap(),
         hasher
             .hash(vec!["1".to_string(), hasher.get_genesis().unwrap()])
             .unwrap()
@@ -835,10 +832,7 @@ async fn timestamp_remappers_test() {
 // Tests for create_from_peaks
 //================================================================================================
 
-async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
-    hasher: Arc<H>,
-    mmr_id_prefix: &str,
-) {
+async fn test_create_from_peaks_scenario(hasher: Arc<dyn Hasher>, mmr_id_prefix: &str) {
     // --- 1. Setup: Create a standard MMR and populate it ---
     let store1 = Arc::new(InMemoryStore::default());
     let mmr_id_orig = format!("{mmr_id_prefix}_orig");
@@ -861,25 +855,82 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
     let original_bag = original_mmr.bag_the_peaks(None).await.unwrap();
     let original_root = original_mmr
         .root_hash
-        .get(SubKey::None)
+        .get(&SubKey::None)
         .await
         .unwrap()
         .unwrap(); // Assuming it's set
 
-    // --- 2. Create MMR from Peaks ---
-    let store2 = Arc::new(InMemoryStore::default()); // Use a separate store or MMR ID
-    let mmr_id_peaks = format!("{mmr_id_prefix}_peaks");
-    let mut from_peaks_mmr = MMR::create_from_peaks(
-        store2.clone(),
+    // --- 2 & 3. Create MMR from Peaks and compare the initial state ---
+    let mut from_peaks_mmr = create_from_peaks_and_assert_initial_state(
         hasher.clone(),
-        Some(mmr_id_peaks.clone()),
-        original_peaks.clone(),
+        mmr_id_prefix,
+        original_elements_count,
+        original_leaves_count,
+        &original_peaks,
+        &original_bag,
+        &original_root,
+    )
+    .await;
+
+    // --- 4. Append Comparison ---
+    let (new_appends_orig, new_appends_peaks) =
+        append_to_both_and_assert_final_state(&mut original_mmr, &mut from_peaks_mmr).await;
+
+    // --- 5. Proof Comparison (New Values) ---
+    assert_proofs_for_new_elements(
+        &mut original_mmr,
+        &mut from_peaks_mmr,
+        &new_appends_orig,
+        &new_appends_peaks,
+    )
+    .await;
+
+    // --- 6. Proof Comparison (Old Values) ---
+    assert_old_element_proof_behavior(
+        &mut original_mmr,
+        &mut from_peaks_mmr,
+        original_appends[0].element_index,
+        LEAVES[0],
+    )
+    .await;
+
+    // --- 7. Additional Tests ---
+    assert_create_from_peaks_error_cases(
+        hasher.clone(),
+        store1,
+        mmr_id_prefix,
+        &original_peaks,
+        original_elements_count,
+    )
+    .await;
+    assert_create_from_peaks_zero_elements(hasher.clone(), mmr_id_prefix).await;
+    assert_create_from_peaks_one_element(hasher, mmr_id_prefix).await;
+}
+
+/// Creates an MMR from the original peaks and asserts its initial state
+/// (elements count, leaves count, peaks, bag and root hash) matches the
+/// original MMR's state.
+async fn create_from_peaks_and_assert_initial_state(
+    hasher: Arc<dyn Hasher>,
+    mmr_id_prefix: &str,
+    original_elements_count: usize,
+    original_leaves_count: usize,
+    original_peaks: &[String],
+    original_bag: &str,
+    original_root: &str,
+) -> MMR {
+    let store = Arc::new(InMemoryStore::default()); // Use a separate store or MMR ID
+    let mmr_id_peaks = format!("{mmr_id_prefix}_peaks");
+    let from_peaks_mmr = MMR::create_from_peaks(
+        store,
+        hasher,
+        Some(mmr_id_peaks),
+        original_peaks.to_vec(),
         original_elements_count,
     )
     .await
     .unwrap();
 
-    // --- 3. Initial Comparison ---
     assert_eq!(
         from_peaks_mmr.elements_count.get().await.unwrap(),
         original_elements_count,
@@ -909,7 +960,7 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
     assert_eq!(
         from_peaks_mmr
             .root_hash
-            .get(SubKey::None)
+            .get(&SubKey::None)
             .await
             .unwrap()
             .unwrap(),
@@ -917,7 +968,16 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
         "Initial root hash mismatch"
     );
 
-    // --- 4. Append Comparison ---
+    from_peaks_mmr
+}
+
+/// Appends new elements to both MMRs and asserts their final states
+/// (elements count, leaves count, peaks, bag, root hash and append results)
+/// match.
+async fn append_to_both_and_assert_final_state(
+    original_mmr: &mut MMR,
+    from_peaks_mmr: &mut MMR,
+) -> (Vec<AppendResult>, Vec<AppendResult>) {
     let new_elements = ["6", "7", "8"];
     let mut new_appends_orig = Vec::new();
     let mut new_appends_peaks = Vec::new();
@@ -940,7 +1000,7 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
     let final_bag_orig = original_mmr.bag_the_peaks(None).await.unwrap();
     let final_root_orig = original_mmr
         .root_hash
-        .get(SubKey::None)
+        .get(&SubKey::None)
         .await
         .unwrap()
         .unwrap();
@@ -974,7 +1034,7 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
     assert_eq!(
         from_peaks_mmr
             .root_hash
-            .get(SubKey::None)
+            .get(&SubKey::None)
             .await
             .unwrap()
             .unwrap(),
@@ -986,7 +1046,18 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
         "AppendResults mismatch"
     );
 
-    // --- 5. Proof Comparison (New Values) ---
+    (new_appends_orig, new_appends_peaks)
+}
+
+/// Proofs for the newly appended elements must match between the two MMRs and
+/// cross-verify in both directions.
+async fn assert_proofs_for_new_elements(
+    original_mmr: &mut MMR,
+    from_peaks_mmr: &mut MMR,
+    new_appends_orig: &[AppendResult],
+    new_appends_peaks: &[AppendResult],
+) {
+    let new_elements = ["6", "7", "8"];
     for i in 0..new_elements.len() {
         let element_value = new_elements[i].to_string();
         let element_index_orig = new_appends_orig[i].element_index;
@@ -1041,11 +1112,19 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
             "FromPeaks MMR failed verifying Original new proof for {element_value}"
         );
     }
+}
 
-    // --- 6. Proof Comparison (Old Values) ---
-    let old_element_index = original_appends[0].element_index; // e.g., index for "1"
-    let old_element_value = LEAVES[0].to_string();
-
+/// A proof from the original MMR for an element appended before the
+/// `create_from_peaks` snapshot must still verify, while a proof generated by
+/// the from-peaks MMR for such an element must NOT verify: intermediate hashes
+/// below the initial peaks are missing. If `get_proof` itself errors, that is
+/// acceptable too.
+async fn assert_old_element_proof_behavior(
+    original_mmr: &mut MMR,
+    from_peaks_mmr: &mut MMR,
+    old_element_index: usize,
+    old_element_value: &str,
+) {
     // Proof from original MMR should work
     let proof_orig_old = original_mmr
         .get_proof(old_element_index, None)
@@ -1053,38 +1132,41 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
         .unwrap();
     assert!(
         original_mmr
-            .verify_proof(proof_orig_old, old_element_value.clone(), None)
+            .verify_proof(proof_orig_old, old_element_value.to_string(), None)
             .await
             .unwrap(),
         "Original MMR failed verifying old proof"
     );
 
-    // Getting proof from `from_peaks_mmr` for an old element might succeed but likely yields an invalid proof
-    // because intermediate hashes below the initial peaks are missing. Verification should fail.
     let proof_peaks_old_res = from_peaks_mmr.get_proof(old_element_index, None).await;
 
-    // We expect verification to fail because the proof generated without intermediate nodes will be incorrect/incomplete.
-    // If get_proof itself errors (e.g., NoHashFoundForIndex), that's also acceptable, but current logic might not error.
     if let Ok(proof_peaks_old) = proof_peaks_old_res {
         assert!(
             !from_peaks_mmr
-                .verify_proof(proof_peaks_old, old_element_value, None)
+                .verify_proof(proof_peaks_old, old_element_value.to_string(), None)
                 .await
                 .unwrap_or(false), // Expect verify to fail
             "FromPeaks MMR incorrectly verified proof for an element below initial peaks"
         );
     }
-    // If get_proof failed, the test implicitly passes this part. Consider adding specific error checking if needed.
+}
 
-    // --- 7. Additional Tests ---
-
+/// `create_from_peaks` must fail with `InvalidPeaksCountForElements` for a
+/// wrong peaks count and with `NonEmptyMMR` when reusing an existing MMR ID.
+async fn assert_create_from_peaks_error_cases(
+    hasher: Arc<dyn Hasher>,
+    original_store: Arc<InMemoryStore>,
+    mmr_id_prefix: &str,
+    original_peaks: &[String],
+    original_elements_count: usize,
+) {
     // Test: Create from peaks with invalid peaks count
-    let store3 = Arc::new(InMemoryStore::default());
+    let store = Arc::new(InMemoryStore::default());
     let mmr_id_err1 = format!("{mmr_id_prefix}_err1");
-    let mut wrong_peaks = original_peaks.clone();
+    let mut wrong_peaks = original_peaks.to_vec();
     wrong_peaks.pop(); // Make the count incorrect
     let err_res = MMR::create_from_peaks(
-        store3,
+        store,
         hasher.clone(),
         Some(mmr_id_err1),
         wrong_peaks,
@@ -1101,10 +1183,10 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
 
     // Test: Create from peaks on a non-empty MMR (using same ID as original)
     let err_res_non_empty = MMR::create_from_peaks(
-        store1.clone(), // Use the store where original_mmr exists
-        hasher.clone(),
-        Some(mmr_id_orig.clone()), // Use the same MMR ID
-        original_peaks.clone(),
+        original_store, // Use the store where original_mmr exists
+        hasher,
+        Some(format!("{mmr_id_prefix}_orig")), // Use the same MMR ID
+        original_peaks.to_vec(),
         original_elements_count,
     )
     .await;
@@ -1115,11 +1197,14 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
         ),
         "Expected NonEmptyMMR error"
     );
+}
 
-    // Test: Create from peaks with 0 elements
-    let store4 = Arc::new(InMemoryStore::default());
+/// `create_from_peaks` with 0 elements yields an empty MMR that behaves
+/// consistently and can be appended to.
+async fn assert_create_from_peaks_zero_elements(hasher: Arc<dyn Hasher>, mmr_id_prefix: &str) {
+    let store = Arc::new(InMemoryStore::default());
     let mmr_id_zero = format!("{mmr_id_prefix}_zero");
-    let mut zero_mmr = MMR::create_from_peaks(store4, hasher.clone(), Some(mmr_id_zero), vec![], 0)
+    let mut zero_mmr = MMR::create_from_peaks(store, hasher, Some(mmr_id_zero), vec![], 0)
         .await
         .unwrap();
     assert_eq!(zero_mmr.elements_count.get().await.unwrap(), 0);
@@ -1136,21 +1221,29 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
         0
     );
     let zero_bag = zero_mmr.bag_the_peaks(None).await.unwrap();
-    let zero_root = zero_mmr.root_hash.get(SubKey::None).await.unwrap().unwrap();
+    let zero_root = zero_mmr
+        .root_hash
+        .get(&SubKey::None)
+        .await
+        .unwrap()
+        .unwrap();
     let expected_zero_root = zero_mmr.calculate_root_hash(&zero_bag, 0).unwrap();
     assert_eq!(zero_root, expected_zero_root);
     // Append to zero MMR and check
     let append_res_zero = zero_mmr.append("1000".to_string()).await.unwrap();
     assert_eq!(append_res_zero.elements_count, 1);
     assert_eq!(append_res_zero.leaves_count, 1);
+}
 
-    // Test: Create from peaks with 1 element
-    let store5 = Arc::new(InMemoryStore::default());
+/// `create_from_peaks` with 1 element yields a one-leaf MMR that bags to the
+/// peak itself and can be appended to.
+async fn assert_create_from_peaks_one_element(hasher: Arc<dyn Hasher>, mmr_id_prefix: &str) {
+    let store = Arc::new(InMemoryStore::default());
     let mmr_id_one = format!("{mmr_id_prefix}_one");
     let single_element_hash = "0x1001".to_string(); // Use a simple string for test
     let mut one_mmr = MMR::create_from_peaks(
-        store5,
-        hasher.clone(),
+        store,
+        hasher,
         Some(mmr_id_one),
         vec![single_element_hash.clone()],
         1, // elements_count = 1
@@ -1171,7 +1264,7 @@ async fn test_create_from_peaks_scenario<H: Hasher + Send + Sync + 'static>(
     );
     let one_bag = one_mmr.bag_the_peaks(None).await.unwrap();
     assert_eq!(one_bag, single_element_hash); // Bagging 1 peak is the peak itself
-    let one_root = one_mmr.root_hash.get(SubKey::None).await.unwrap().unwrap();
+    let one_root = one_mmr.root_hash.get(&SubKey::None).await.unwrap().unwrap();
     let expected_one_root = one_mmr.calculate_root_hash(&one_bag, 1).unwrap();
     assert_eq!(one_root, expected_one_root);
     // Append and check

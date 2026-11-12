@@ -4,7 +4,6 @@ use sqlx::pool::PoolConnection;
 use sqlx::{Acquire, Error};
 use sqlx::{Pool, Sqlite, SqlitePool, sqlite::SqliteConnectOptions};
 use std::collections::HashMap;
-use std::ops::DerefMut;
 
 use crate::store::StoreError;
 
@@ -13,6 +12,7 @@ use super::super::Store;
 /// A store that is stored in SQLite
 #[derive(Debug)]
 pub struct SQLiteStore {
+    /// An optional identifier for the store, useful for debugging
     pub id: Option<String>,
     pool: Pool<Sqlite>,
     atomic_set_many: bool,
@@ -24,6 +24,7 @@ const MAX_BATCH_SIZE: usize = 900;
 
 impl SQLiteStore {
     /// Create a new SQLite store with externally created pool.
+    #[must_use]
     pub fn with_pool(pool: Pool<Sqlite>, id: Option<String>) -> Self {
         SQLiteStore {
             id,
@@ -32,6 +33,14 @@ impl SQLiteStore {
         }
     }
 
+    /// Create a new SQLite store backed by the database at `path`.
+    ///
+    /// The store is initialized (the `store` table is created) before being returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `sqlx::Error` if connecting to the database or initializing
+    /// the store fails.
     pub async fn new(
         path: &str,
         create_file_if_not_exists: Option<bool>,
@@ -47,7 +56,7 @@ impl SQLiteStore {
         };
 
         let store = SQLiteStore {
-            id: id.map(|v| v.to_string()),
+            id: id.map(str::to_string),
             pool,
             atomic_set_many: true,
         };
@@ -58,11 +67,20 @@ impl SQLiteStore {
     /// Acquire a connection from the pool.
     /// NOTE: if there's no available connection this function will fail after acquire timeout.
     /// Configure it via sqlite options.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `sqlx::Error` if no connection could be acquired before the
+    /// acquire timeout.
     pub async fn acquire_connection(&self) -> Result<PoolConnection<Sqlite>, Error> {
         self.pool.acquire().await
     }
 
     /// Initialize the store
+    ///
+    /// # Errors
+    ///
+    /// Returns a `sqlx::Error` if the `store` table cannot be created.
     pub async fn init(&self) -> Result<(), Error> {
         let mut conn = self.acquire_connection().await?;
         sqlx::query!(
@@ -71,7 +89,7 @@ impl SQLiteStore {
                 value TEXT NOT NULL
             );"#
         )
-        .execute(conn.deref_mut())
+        .execute(&mut *conn)
         .await?;
         Ok(())
     }
@@ -87,7 +105,7 @@ impl Store for SQLiteStore {
         let mut conn = self.acquire_connection().await?;
 
         let row = sqlx::query!("SELECT value FROM store WHERE key = ?", key)
-            .fetch_optional(conn.deref_mut())
+            .fetch_optional(&mut *conn)
             .await?;
 
         Ok(row.map(|row| row.value))
@@ -106,7 +124,7 @@ impl Store for SQLiteStore {
                 r#"SELECT key AS "key!: String", value AS "value!: String" FROM store WHERE key IN (SELECT value FROM json_each(?1))"#,
                 keys_json
             )
-            .fetch_all(conn.deref_mut())
+            .fetch_all(&mut *conn)
             .await?;
 
             for row in rows {
@@ -124,7 +142,7 @@ impl Store for SQLiteStore {
             key,
             value
         )
-        .execute(conn.deref_mut())
+        .execute(&mut *conn)
         .await?;
 
         Ok(())
@@ -132,20 +150,19 @@ impl Store for SQLiteStore {
 
     async fn set_many(&self, entries: HashMap<String, String>) -> Result<(), StoreError> {
         let mut conn = self.acquire_connection().await?;
-        match self.atomic_set_many {
-            true => {
-                let mut tx = conn.begin().await?;
-                set_many(tx.deref_mut(), entries).await?;
-                tx.commit().await.map_err(StoreError::SQLite)
-            }
-            false => set_many(conn.deref_mut(), entries).await,
+        if self.atomic_set_many {
+            let mut tx = conn.begin().await?;
+            set_many(&mut tx, entries).await?;
+            tx.commit().await.map_err(StoreError::SQLite)
+        } else {
+            set_many(&mut conn, entries).await
         }
     }
 
     async fn delete(&self, key: &str) -> Result<(), StoreError> {
         let mut conn = self.acquire_connection().await?;
         sqlx::query!("DELETE FROM store WHERE key = ?", key)
-            .execute(conn.deref_mut())
+            .execute(&mut *conn)
             .await?;
 
         Ok(())
@@ -162,7 +179,7 @@ impl Store for SQLiteStore {
                 r#"DELETE FROM store WHERE key IN (SELECT value FROM json_each(?1))"#,
                 keys_json
             )
-            .execute(conn.deref_mut())
+            .execute(&mut *conn)
             .await?;
         }
 

@@ -7,7 +7,9 @@ use crate::store::{Store, StoreError};
 /// A store that is stored in memory
 #[derive(Debug)]
 pub struct InMemoryStore {
+    /// An optional identifier for the store, useful for debugging
     pub id: Option<String>,
+    /// The underlying key-value map
     pub store: RwLock<HashMap<String, String>>,
 }
 
@@ -70,13 +72,16 @@ impl Store for InMemoryStore {
 }
 
 impl InMemoryStore {
+    /// Create a new in-memory store with an optional identifier.
+    #[must_use]
     pub fn new(id: Option<&str>) -> Self {
         Self {
-            id: id.map(|v| v.to_string()),
+            id: id.map(str::to_string),
             ..Default::default()
         }
     }
 
+    /// Remove all entries from the store.
     pub fn clear(&self) {
         let mut store = self.store.write();
         store.clear();

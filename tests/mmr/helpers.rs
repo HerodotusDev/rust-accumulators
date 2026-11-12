@@ -23,7 +23,7 @@ fn test_find_peaks() {
         (11, vec![7, 10, 11]),
         (15, vec![15]),
     ];
-    for (input, output) in correct.iter() {
+    for (input, output) in &correct {
         assert_eq!(find_peaks(*input), *output);
     }
 }
@@ -124,7 +124,7 @@ fn test_find_siblings() {
         ("15:12", vec![11, 10, 7]),
         ("49:33", vec![32, 37, 45]),
     ];
-    for (test, expected) in tests.iter() {
+    for (test, expected) in &tests {
         let parts: Vec<_> = test.split(':').collect();
         let mmr_size: usize = parts[0].parse().unwrap();
         let element_index: usize = parts[1].parse().unwrap();
@@ -134,7 +134,30 @@ fn test_find_siblings() {
 
 #[test]
 fn test_get_peak_info() {
-    let peak_indices: Vec<Option<Vec<usize>>> = vec![
+    let peak_indices = expected_peak_indices();
+    let peak_heights = expected_peak_heights();
+
+    for elements_count in 1..=peak_indices.len() {
+        let output1 = &peak_indices[elements_count - 1];
+        let output2 = &peak_heights[elements_count - 1];
+
+        if let (Some(output1_vec), Some(output2_vec)) = (output1, output2)
+            && !output1_vec.is_empty()
+            && !output2_vec.is_empty()
+        {
+            for element_index in 1..=output1_vec.len() {
+                let expected = (
+                    output1_vec[element_index - 1],
+                    output2_vec[element_index - 1],
+                );
+                assert_eq!(get_peak_info(elements_count, element_index), expected);
+            }
+        }
+    }
+}
+
+fn expected_peak_indices() -> Vec<Option<Vec<usize>>> {
+    vec![
         Some(vec![0]), // peaks: [1]
         None,
         Some(vec![0, 0, 0]),    // peaks: [3]
@@ -178,9 +201,11 @@ fn test_get_peak_info() {
         Some(vec![
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ]), // peaks: [31]
-    ];
+    ]
+}
 
-    let peak_heights: Vec<Option<Vec<usize>>> = vec![
+fn expected_peak_heights() -> Vec<Option<Vec<usize>>> {
+    vec![
         Some(vec![0]), // peaks: [1]
         None,
         Some(vec![1, 1, 1]),    // peaks: [3]
@@ -224,22 +249,5 @@ fn test_get_peak_info() {
         Some(vec![
             4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
         ]), // peaks: [29]
-    ];
-
-    for elements_count in 1..=peak_indices.len() {
-        let output1 = &peak_indices[elements_count - 1];
-        let output2 = &peak_heights[elements_count - 1];
-
-        if let (Some(output1_vec), Some(output2_vec)) = (output1, output2) {
-            if !output1_vec.is_empty() && !output2_vec.is_empty() {
-                for element_index in 1..=output1_vec.len() {
-                    let expected = (
-                        output1_vec[element_index - 1],
-                        output2_vec[element_index - 1],
-                    );
-                    assert_eq!(get_peak_info(elements_count, element_index), expected);
-                }
-            }
-        }
-    }
+    ]
 }
