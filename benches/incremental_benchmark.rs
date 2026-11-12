@@ -1,3 +1,5 @@
+//! Benchmarks for `IncrementalMerkleTree` initialization using the SQLite store.
+
 use std::sync::Arc;
 
 use accumulators::{

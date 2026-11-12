@@ -1,3 +1,5 @@
+//! Keccak256 hasher.
+
 use std::str::FromStr;
 
 use crate::hasher::{HasherError, HashingFunction, byte_size};
@@ -25,6 +27,10 @@ impl Hasher for KeccakHasher {
     /// hexadecimal: vec!["0x1", "0x2", "0x3", "0xa"]
     /// decimal: vec!["1", "2", "3", "10"]
     /// NOTE: data have no limit in length of elements
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HasherError`] if an element cannot be parsed or decoded.
     fn hash(&self, data: Vec<String>) -> Result<String, HasherError> {
         let mut output = [0u8; 32];
         let mut keccak = Keccak::v256();
@@ -38,17 +44,17 @@ impl Hasher for KeccakHasher {
         } else {
             let mut result: Vec<u8> = Vec::new();
 
-            for e in data.iter() {
+            for e in &data {
                 let bigint = if e.starts_with("0x") || e.starts_with("0X") {
                     // Parse hexadecimal
-                    BigInt::from_str_radix(&e[2..], 16).unwrap()
+                    BigInt::from_str_radix(&e[2..], 16)?
                 } else {
                     // Parse decimal
-                    BigInt::from_str(e).unwrap()
+                    BigInt::from_str(e)?
                 };
 
                 let hex = format!("{:0>64}", bigint.to_str_radix(16));
-                let bytes = hex::decode(hex).unwrap();
+                let bytes = hex::decode(hex)?;
                 result.extend(bytes);
             }
 
@@ -72,6 +78,10 @@ impl Hasher for KeccakHasher {
     }
 
     /// Hashes a single data which is a string (must be hex encoded)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HasherError`] if the element cannot be decoded.
     fn hash_single(&self, data: &str) -> Result<String, HasherError> {
         self.hash(vec![data.to_string()])
     }
@@ -89,6 +99,8 @@ impl Hasher for KeccakHasher {
 }
 
 impl KeccakHasher {
+    /// Creates a new [`KeccakHasher`] with the default block size of 256 bits.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             block_size_bits: 256,

@@ -1,3 +1,5 @@
+//! Benchmarks for MMR append throughput using the SQLite store.
+
 use std::sync::Arc;
 
 use accumulators::{

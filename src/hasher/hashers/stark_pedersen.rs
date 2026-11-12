@@ -1,3 +1,5 @@
+//! Starknet Pedersen hasher.
+
 use starknet_crypto::Felt;
 use starknet_crypto::pedersen_hash;
 
@@ -23,9 +25,11 @@ impl Hasher for StarkPedersenHasher {
         }
 
         let mut elements = data.into_iter();
-        let mut hash = elements.next().unwrap();
+        let Some(mut hash) = elements.next() else {
+            return Err(HasherError::InvalidElementsLength);
+        };
         for element in elements {
-            hash = self.internal_hash(vec![hash, element])?;
+            hash = self.internal_hash(&[hash, element])?;
         }
 
         Ok(hash)
@@ -44,7 +48,7 @@ impl Hasher for StarkPedersenHasher {
     }
 
     fn hash_single(&self, data: &str) -> Result<String, HasherError> {
-        self.hash(vec![data.to_string(), "".to_string()])
+        self.hash(vec![data.to_string(), String::new()])
     }
 
     fn get_genesis(&self) -> Result<String, HasherError> {
@@ -58,15 +62,19 @@ impl Hasher for StarkPedersenHasher {
 }
 
 impl StarkPedersenHasher {
-    /// Hashes a data which is a vector of hex strings
+    /// Hashes a pair of hex-encoded elements with the Pedersen hash.
     ///
-    /// NOTE: data should be of size 2
-    fn internal_hash(&self, data: Vec<String>) -> Result<String, HasherError> {
+    /// # Errors
+    ///
+    /// Returns [`HasherError`] if `data` does not contain exactly 2 elements,
+    /// if an element is too large, or if an element cannot be converted to a
+    /// field element.
+    fn internal_hash(&self, data: &[String]) -> Result<String, HasherError> {
         if data.len() != 2 {
             return Err(HasherError::InvalidElementsLength);
         }
 
-        for element in &data {
+        for element in data {
             self.is_element_size_valid(element)?;
         }
 
@@ -77,6 +85,9 @@ impl StarkPedersenHasher {
         Ok(padded_hex_str)
     }
 
+    /// Creates a new [`StarkPedersenHasher`] with the default block size of
+    /// 252 bits.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             block_size_bits: 252,

@@ -1,3 +1,5 @@
+//! Cairo variant of the Blake2s hasher.
+
 use std::str::FromStr;
 
 use blake2::{Blake2s256, Digest};
@@ -20,46 +22,55 @@ impl Hasher for StarkBlakeHasher {
 
     /// Hashes a data which is a vector of strings
     ///
+    /// Elements are hex-encoded (with a `0x` prefix) or decimal strings;
+    /// each element must be a multiple of 4 bytes once decoded.
+    ///
     /// NOTE: data have no limit in length of elements
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HasherError`] if an element cannot be decoded or parsed, or
+    /// if its size is not a multiple of 4 bytes.
     fn hash(&self, data: Vec<String>) -> Result<String, HasherError> {
         let mut hasher = Blake2s256::new();
 
         for element in data {
-            let mut bytes = match element.strip_prefix("0x") {
-                Some(no_prefix) => {
-                    let bytes =
-                        hex::decode(no_prefix).map_err(|_| HasherError::InvalidElementsLength)?;
-                    if bytes.len() % 4 != 0 {
-                        return Err(HasherError::InvalidElementSize {
-                            element_size: bytes.len(),
-                            block_size_bits: self.get_block_size_bits(),
-                        });
-                    }
-                    bytes
+            let mut bytes = if let Some(no_prefix) = element.strip_prefix("0x") {
+                let bytes =
+                    hex::decode(no_prefix).map_err(|_| HasherError::InvalidElementsLength)?;
+                if bytes.len() % 4 != 0 {
+                    return Err(HasherError::InvalidElementSize {
+                        element_size: bytes.len(),
+                        block_size_bits: self.get_block_size_bits(),
+                    });
                 }
-                None => {
-                    // Parse decimal
-                    let bigint = BigInt::from_str(&element).unwrap();
-                    let hex = format!(
-                        "{:0>width$}",
-                        bigint.to_str_radix(16),
-                        width = self.get_block_size_bits() / 4
-                    );
-                    hex::decode(hex).unwrap()
-                }
+                bytes
+            } else {
+                // Parse decimal
+                let bigint = BigInt::from_str(&element)?;
+                let hex = format!(
+                    "{:0>width$}",
+                    bigint.to_str_radix(16),
+                    width = self.get_block_size_bits() / 4
+                );
+                hex::decode(hex)?
             };
             // Iterate over 4-byte words and reverse byte order within each word
-            bytes.chunks_exact_mut(4).for_each(|chunk| chunk.reverse());
+            for chunk in bytes.as_chunks_mut::<4>().0 {
+                chunk.reverse();
+            }
             hasher.update(&bytes);
         }
 
         let mut output = hasher.finalize().to_vec();
         // Iterate over 4-byte words and reverse byte order within each word
-        output.chunks_exact_mut(4).for_each(|chunk| chunk.reverse());
+        for chunk in output.as_chunks_mut::<4>().0 {
+            chunk.reverse();
+        }
 
         if self.truncate {
             // Zero first 4 bits of the hash so that we have only 252 significant bits
-            output[0] &= 0x0f
+            output[0] &= 0x0f;
         }
 
         let hash = format!("0x{}", hex::encode(output));
@@ -95,6 +106,11 @@ impl Hasher for StarkBlakeHasher {
 }
 
 impl StarkBlakeHasher {
+    /// Creates a new [`StarkBlakeHasher`].
+    ///
+    /// If `truncate` is `true`, the first 4 bits of the hash are zeroed so
+    /// that only 252 significant bits remain.
+    #[must_use]
     pub fn new(truncate: bool) -> Self {
         Self { truncate }
     }

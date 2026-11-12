@@ -1,3 +1,5 @@
+//! Starknet Poseidon hasher.
+
 use crate::hasher::{HasherError, HashingFunction, byte_size};
 
 use super::super::Hasher;
@@ -20,6 +22,11 @@ impl Hasher for StarkPoseidonHasher {
     /// Hashes a data which is a vector of strings
     ///
     /// NOTE: data should be more than 1 element
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HasherError`] if an element is too large or if the data is
+    /// empty.
     fn hash(&self, data: Vec<String>) -> Result<String, HasherError> {
         for element in &data {
             self.is_element_size_valid(element)?;
@@ -71,6 +78,12 @@ impl Hasher for StarkPoseidonHasher {
 }
 
 impl StarkPoseidonHasher {
+    /// Creates a new [`StarkPoseidonHasher`] with the default block size of
+    /// 252 bits.
+    ///
+    /// If `should_pad` is `Some(true)`, the hash is left-padded with zeros to
+    /// 63 characters before the `0x` prefix is added.
+    #[must_use]
     pub fn new(should_pad: Option<bool>) -> Self {
         Self {
             block_size_bits: 252,
