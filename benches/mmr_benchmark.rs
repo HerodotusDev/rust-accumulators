@@ -3,7 +3,7 @@ use std::sync::Arc;
 use accumulators::{
     hasher::stark_poseidon::StarkPoseidonHasher, mmr::MMR, store::sqlite::SQLiteStore,
 };
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use tokio::runtime::Runtime;
 
 async fn prepare_mmr(count: usize) -> MMR {

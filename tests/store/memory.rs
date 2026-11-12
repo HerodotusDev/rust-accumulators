@@ -1,6 +1,7 @@
 use accumulators::store::{
+    InStoreCounter, Store,
     memory::InMemoryStore,
-    InStoreCounter, Store, {InStoreTable, SubKey},
+    {InStoreTable, SubKey},
 };
 use std::{collections::HashMap, sync::Arc};
 

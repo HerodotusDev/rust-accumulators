@@ -1,6 +1,7 @@
 use accumulators::store::{
+    InStoreCounter, Store,
     sqlite::SQLiteStore,
-    InStoreCounter, Store, {InStoreTable, SubKey},
+    {InStoreTable, SubKey},
 };
 use std::{collections::HashMap, sync::Arc};
 

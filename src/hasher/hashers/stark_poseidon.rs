@@ -1,7 +1,7 @@
-use crate::hasher::{byte_size, HasherError, HashingFunction};
+use crate::hasher::{HasherError, HashingFunction, byte_size};
 
 use super::super::Hasher;
-use starknet_crypto::{poseidon_hash, poseidon_hash_many, poseidon_hash_single, Felt};
+use starknet_crypto::{Felt, poseidon_hash, poseidon_hash_many, poseidon_hash_single};
 
 /// Hasher for Stark Poseidon
 #[derive(Debug, Clone)]

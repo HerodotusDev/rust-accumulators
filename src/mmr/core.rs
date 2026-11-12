@@ -8,11 +8,11 @@ use crate::hasher::{Hasher, HasherError, HashingFunction};
 use crate::store::{InStoreCounter, InStoreTable, InStoreTableError, Store, StoreError, SubKey};
 
 use crate::mmr::{
-    formatting::{format_peaks, format_proof, PeaksFormattingOptions},
+    formatting::{PeaksFormattingOptions, format_peaks, format_proof},
     helpers::{
-        array_deduplicate, element_index_to_leaf_index, find_peaks, find_siblings, get_peak_info,
+        AppendResult, Proof, ProofOptions, TreeMetadataKeys, array_deduplicate,
+        element_index_to_leaf_index, find_peaks, find_siblings, get_peak_info,
         leaf_count_to_append_no_merges, leaf_count_to_peaks_count, mmr_size_to_leaf_count,
-        AppendResult, Proof, ProofOptions, TreeMetadataKeys,
     },
 };
 
@@ -491,8 +491,8 @@ impl MMR {
 
         let peaks_idxs = find_peaks(tree_size);
         let peaks = self.retrieve_peaks_hashes(peaks_idxs, None).await?;
-        if (option.formatting_opts).is_some() {
-            match format_peaks(peaks, &option.formatting_opts.unwrap()) {
+        if let Some(formatting_opts) = &option.formatting_opts {
+            match format_peaks(peaks, formatting_opts) {
                 Ok(peaks) => Ok(peaks),
                 Err(e) => Err(MMRError::Formatting(e)),
             }

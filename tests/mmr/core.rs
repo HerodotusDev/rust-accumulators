@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use accumulators::{
     hasher::{
-        keccak::KeccakHasher, stark_pedersen::StarkPedersenHasher,
-        stark_poseidon::StarkPoseidonHasher, Hasher,
+        Hasher, keccak::KeccakHasher, stark_pedersen::StarkPedersenHasher,
+        stark_poseidon::StarkPoseidonHasher,
     },
-    mmr::{AppendResult, PeaksOptions, Proof, ProofOptions, MMR},
-    store::{memory::InMemoryStore, sqlite::SQLiteStore, SubKey},
+    mmr::{AppendResult, MMR, PeaksOptions, Proof, ProofOptions},
+    store::{SubKey, memory::InMemoryStore, sqlite::SQLiteStore},
 };
 
 const LEAVES: [&str; 5] = ["1", "2", "3", "4", "5"];
@@ -92,10 +92,12 @@ async fn should_compute_parent_tree_for_pedersen_hasher() {
         .get_proof(last_leaf_element_index, None)
         .await
         .unwrap();
-    assert!(pedersen_mmr
-        .verify_proof(proof, LEAVES[LEAVES.len() - 1].to_string(), None)
-        .await
-        .unwrap())
+    assert!(
+        pedersen_mmr
+            .verify_proof(proof, LEAVES[LEAVES.len() - 1].to_string(), None)
+            .await
+            .unwrap()
+    )
 }
 
 #[tokio::test]
@@ -144,10 +146,12 @@ async fn should_compute_parent_tree_for_poseidon_hasher() {
         .get_proof(last_leaf_element_index, None)
         .await
         .unwrap();
-    assert!(poseidon_mmr
-        .verify_proof(proof, LEAVES[LEAVES.len() - 1].to_string(), None)
-        .await
-        .unwrap())
+    assert!(
+        poseidon_mmr
+            .verify_proof(proof, LEAVES[LEAVES.len() - 1].to_string(), None)
+            .await
+            .unwrap()
+    )
 }
 
 #[tokio::test]
@@ -196,10 +200,12 @@ async fn should_compute_parent_tree_for_keccak_hasher() {
         .get_proof(last_leaf_element_index, None)
         .await
         .unwrap();
-    assert!(keccak_mmr
-        .verify_proof(proof, LEAVES[LEAVES.len() - 1].to_string(), None)
-        .await
-        .unwrap())
+    assert!(
+        keccak_mmr
+            .verify_proof(proof, LEAVES[LEAVES.len() - 1].to_string(), None)
+            .await
+            .unwrap()
+    )
 }
 
 //================================================================================================
@@ -228,17 +234,19 @@ async fn should_generate_and_verify_non_expiring_proof_for_pedersen_hasher() {
     }
 
     for (idx, proof) in proofs.iter().enumerate() {
-        assert!(pedersen_mmr
-            .verify_proof(
-                proof.clone(),
-                LEAVES[idx].to_string(),
-                Some(ProofOptions {
-                    elements_count: Some(proof.elements_count),
-                    formatting_opts: None,
-                })
-            )
-            .await
-            .unwrap());
+        assert!(
+            pedersen_mmr
+                .verify_proof(
+                    proof.clone(),
+                    LEAVES[idx].to_string(),
+                    Some(ProofOptions {
+                        elements_count: Some(proof.elements_count),
+                        formatting_opts: None,
+                    })
+                )
+                .await
+                .unwrap()
+        );
     }
 }
 
@@ -264,17 +272,19 @@ async fn should_generate_and_verify_non_expiring_proof_for_keccak_hasher() {
     }
 
     for (idx, proof) in proofs.iter().enumerate() {
-        assert!(keccak_mmr
-            .verify_proof(
-                proof.clone(),
-                LEAVES[idx].to_string(),
-                Some(ProofOptions {
-                    elements_count: Some(proof.elements_count),
-                    formatting_opts: None,
-                })
-            )
-            .await
-            .unwrap());
+        assert!(
+            keccak_mmr
+                .verify_proof(
+                    proof.clone(),
+                    LEAVES[idx].to_string(),
+                    Some(ProofOptions {
+                        elements_count: Some(proof.elements_count),
+                        formatting_opts: None,
+                    })
+                )
+                .await
+                .unwrap()
+        );
     }
 }
 
@@ -300,17 +310,19 @@ async fn should_generate_and_verify_non_expiring_proof_for_poseidon_hasher() {
     }
 
     for (idx, proof) in proofs.iter().enumerate() {
-        assert!(poseidon_mmr
-            .verify_proof(
-                proof.clone(),
-                LEAVES[idx].to_string(),
-                Some(ProofOptions {
-                    elements_count: Some(proof.elements_count),
-                    formatting_opts: None,
-                })
-            )
-            .await
-            .unwrap());
+        assert!(
+            poseidon_mmr
+                .verify_proof(
+                    proof.clone(),
+                    LEAVES[idx].to_string(),
+                    Some(ProofOptions {
+                        elements_count: Some(proof.elements_count),
+                        formatting_opts: None,
+                    })
+                )
+                .await
+                .unwrap()
+        );
     }
 }
 
@@ -333,10 +345,12 @@ async fn should_generate_multiple_proofs_for_pedersen_hasher() {
         .expect("Failed to get proofs");
 
     for (idx, proof) in proofs.iter().enumerate() {
-        assert!(pedersen_mmr
-            .verify_proof(proof.clone(), LEAVES[idx].to_string(), None)
-            .await
-            .unwrap())
+        assert!(
+            pedersen_mmr
+                .verify_proof(proof.clone(), LEAVES[idx].to_string(), None)
+                .await
+                .unwrap()
+        )
     }
 }
 
@@ -355,10 +369,12 @@ async fn should_generate_multiple_proofs_for_keccak_hasher() {
         .expect("Failed to get proofs");
 
     for (idx, proof) in proofs.iter().enumerate() {
-        assert!(keccak_mmr
-            .verify_proof(proof.clone(), LEAVES[idx].to_string(), None)
-            .await
-            .unwrap())
+        assert!(
+            keccak_mmr
+                .verify_proof(proof.clone(), LEAVES[idx].to_string(), None)
+                .await
+                .unwrap()
+        )
     }
 }
 
@@ -377,10 +393,12 @@ async fn should_generate_multiple_proofs_for_poseidon_hasher() {
         .expect("Failed to get proofs");
 
     for (idx, proof) in proofs.iter().enumerate() {
-        assert!(poseidon_mmr
-            .verify_proof(proof.clone(), LEAVES[idx].to_string(), None)
-            .await
-            .unwrap())
+        assert!(
+            poseidon_mmr
+                .verify_proof(proof.clone(), LEAVES[idx].to_string(), None)
+                .await
+                .unwrap()
+        )
     }
 }
 
@@ -662,10 +680,11 @@ async fn test_append_for_mmr() {
         .await
         .expect("Failed to get proof");
 
-    assert!(mmr
-        .verify_proof(proof, example_value, None)
-        .await
-        .expect("Failed to verify proof"));
+    assert!(
+        mmr.verify_proof(proof, example_value, None)
+            .await
+            .expect("Failed to verify proof")
+    );
 }
 
 //================================================================================================

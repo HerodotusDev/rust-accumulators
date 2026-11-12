@@ -1,4 +1,4 @@
-use accumulators::hasher::{keccak::KeccakHasher, Hasher};
+use accumulators::hasher::{Hasher, keccak::KeccakHasher};
 
 #[cfg(test)]
 mod test {

@@ -4,8 +4,8 @@ use std::hash::Hash;
 use std::str::FromStr;
 use thiserror::Error;
 
-use super::formatting::{PeaksFormattingOptions, ProofFormattingOptions};
 use super::MMRError;
+use super::formatting::{PeaksFormattingOptions, ProofFormattingOptions};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Proof {

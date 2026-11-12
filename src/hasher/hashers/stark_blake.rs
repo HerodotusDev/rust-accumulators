@@ -4,7 +4,7 @@ use blake2::{Blake2s256, Digest};
 use num_bigint::BigInt;
 
 use super::super::Hasher;
-use crate::hasher::{byte_size, HasherError, HashingFunction};
+use crate::hasher::{HasherError, HashingFunction, byte_size};
 
 /// Hasher for Cairo variant of Blake2s
 #[derive(Debug, Clone)]

@@ -365,13 +365,15 @@ where
     fn render_empty_tree(&self) -> Result<Vec<Vec<Node>>, IncrementalMerkleTreeError> {
         let mut current_height_nodes_count = self.size;
         let mut current_depth = self.get_tree_depth();
-        let mut tree: Vec<Vec<Node>> = vec![(0..self.size)
-            .map(|index| Node {
-                hash: self.null_value.to_string(),
-                index,
-                depth: current_depth,
-            })
-            .collect()];
+        let mut tree: Vec<Vec<Node>> = vec![
+            (0..self.size)
+                .map(|index| Node {
+                    hash: self.null_value.to_string(),
+                    index,
+                    depth: current_depth,
+                })
+                .collect(),
+        ];
         while current_height_nodes_count > 1 {
             current_depth -= 1;
             let current_height_nodes = tree.last().unwrap();

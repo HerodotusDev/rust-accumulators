@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     hasher::Hasher,
-    mmr::{elements_count_to_leaf_count, MMRError, SizesToMMRs, TreeMetadataKeys, MMR},
+    mmr::{MMR, MMRError, SizesToMMRs, TreeMetadataKeys, elements_count_to_leaf_count},
     store::{InStoreTable, InStoreTableError, Store, SubKey, SubMMR},
 };
 
@@ -141,7 +141,7 @@ impl MMR {
 
             //? Sort the sub MMRs by size in ascending order
             let mut sub_mmrs = table.sub_mmrs.as_ref().unwrap().clone();
-            sub_mmrs.sort_by(|a, b| a.size.cmp(&b.size));
+            sub_mmrs.sort_by_key(|a| a.size);
 
             let mut use_mmr: Option<SubMMR> = None;
             for sub_mmr in sub_mmrs.iter() {

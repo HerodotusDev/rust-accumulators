@@ -204,10 +204,12 @@ async fn should_stack_4_mmrs() {
 
     assert_eq!(ref_proof, mmr_4_proof);
 
-    assert!(mmr_4
-        .verify_proof(mmr_4_proof, eg_for_proving_value, None)
-        .await
-        .unwrap());
+    assert!(
+        mmr_4
+            .verify_proof(mmr_4_proof, eg_for_proving_value, None)
+            .await
+            .unwrap()
+    );
 }
 
 #[tokio::test]
@@ -243,8 +245,10 @@ async fn example() {
         .await
         .expect("Failed to get proof");
 
-    assert!(stacked_mmr
-        .verify_proof(proof, example_value, None)
-        .await
-        .unwrap());
+    assert!(
+        stacked_mmr
+            .verify_proof(proof, example_value, None)
+            .await
+            .unwrap()
+    );
 }

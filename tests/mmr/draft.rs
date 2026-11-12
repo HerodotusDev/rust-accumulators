@@ -122,10 +122,11 @@ async fn should_apply() {
         .get_proof(eg_append.element_index, None)
         .await
         .expect("Failed to get proof");
-    assert!(mmr
-        .verify_proof(proof, eg_value, None)
-        .await
-        .expect("Failed to verify proof"));
+    assert!(
+        mmr.verify_proof(proof, eg_value, None)
+            .await
+            .expect("Failed to verify proof")
+    );
 }
 
 #[tokio::test]

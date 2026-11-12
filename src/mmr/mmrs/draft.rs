@@ -1,11 +1,11 @@
 use crate::{
-    mmr::{MMRError, MMR},
+    mmr::{MMR, MMRError},
     store::memory::InMemoryStore,
 };
 use std::{collections::HashMap, sync::Arc};
 
 impl MMR {
-    pub async fn start_draft(&mut self) -> Result<DraftMMR, MMRError> {
+    pub async fn start_draft(&mut self) -> Result<DraftMMR<'_>, MMRError> {
         let store = InMemoryStore::default();
         let store = Arc::new(store);
         let hasher = self.hasher.clone();

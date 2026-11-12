@@ -5,7 +5,7 @@ mod tests {
     use accumulators::{
         hasher::stark_poseidon::StarkPoseidonHasher,
         merkle_tree::incremental::IncrementalMerkleTree,
-        store::{sqlite::SQLiteStore, SubKey},
+        store::{SubKey, sqlite::SQLiteStore},
     };
 
     #[tokio::test]
