@@ -1,0 +1,51 @@
+# cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# Check the full dependency graph, including optional features (sqlite etc.)
+all-features = true
+
+[licenses]
+version = 2
+allow = [
+    # Our own license
+    "GPL-3.0-only",
+    # Permissive licenses used by dependencies
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "Zlib",
+    "LGPL-2.1-or-later",
+]
+confidence-threshold = 0.93
+
+[advisories]
+version = 2
+yanked = "warn"
+ignore = [
+    # crypto-bigint 0.5.5 via starknet-crypto 0.8.1 (constant-time ops may leak via branches).
+    # The fix is crypto-bigint >=0.7, which starknet-crypto's ^0.5 requirement does not allow.
+    # Remove once starknet-crypto updates its crypto-bigint dependency.
+    "RUSTSEC-2026-0387",
+    # libsqlite3-sys 0.37 bundles SQLite <3.54 (stale page-cache read with a crafted -wal file).
+    # The fix (libsqlite3-sys >=0.39) is unreachable: sqlx-sqlite 0.9.0 caps it at <0.38.0.
+    # Only affects processes opening attacker-writable db + wal files; remove once sqlx bumps.
+    "RUSTSEC-2026-0459",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
