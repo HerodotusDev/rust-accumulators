@@ -1,4 +1,4 @@
-name: Cargo Build & Test
+name: CI
 
 on:
   push:
@@ -6,18 +6,35 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  DATABASE_URL: "sqlite::memory:"
+  # sqlx macros compile offline from the committed .sqlx cache
+  SQLX_OFFLINE: "true"
 
 jobs:
-  test_mmr:
+  ci:
+    name: fmt + sqlx + deny + test + clippy + doc
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        toolchain:
-          - stable
     steps:
-      - uses: actions/checkout@v3
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.toolchain }}
-      - run: cargo test --all-features
+          components: rustfmt, clippy
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-make,cargo-deny,cargo-nextest
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Fails if SQL changed without regenerating .sqlx/
+      - run: cargo make sqlx-check
+
+      - run: cargo make fmt
+
+      - run: cargo make deny
+
+      - run: cargo make test
+
+      - run: cargo make clippy
+
+      - run: cargo make doc

@@ -1,7 +1,84 @@
-[tasks.test]
+[config]
+default_to_workspace = false
+
+# Scratch DB used only to validate queries at sqlx macro expansion time.
+# Lives in target/ so it stays out of version control.
+[tasks.sqlx-compile-db]
+private = true
+script_runner = "@shell"
+script = """
+rm -f target/sqlx-compile-time.db
+sqlite3 target/sqlx-compile-time.db "CREATE TABLE IF NOT EXISTS store (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+"""
+
+# Regenerate the .sqlx offline query cache. Run after changing any SQL
+# in src/store/stores/sqlite.rs, and commit the updated .sqlx/ files.
+[tasks.sqlx-prepare]
+description = "Regenerate the .sqlx offline query cache"
+dependencies = ["sqlx-compile-db"]
+env = { "DATABASE_URL" = "sqlite://target/sqlx-compile-time.db" }
 command = "cargo"
-args = ["nextest", "run", "--all-features"]
+args = ["sqlx", "prepare", "--", "--features", "sqlite"]
+
+# CI: fails if SQL changed without regenerating .sqlx/
+[tasks.sqlx-check]
+description = "Verify the .sqlx offline query cache is up to date"
+dependencies = ["sqlx-compile-db"]
+env = { "DATABASE_URL" = "sqlite://target/sqlx-compile-time.db" }
+command = "cargo"
+args = ["sqlx", "prepare", "--check", "--", "--features", "sqlite"]
+
+[tasks.test]
+description = "Run the full test suite"
+command = "cargo"
+args = ["nextest", "run"]
+
+[tasks.fmt]
+description = "Check formatting"
+command = "cargo"
+args = ["fmt", "--all", "--", "--check"]
+
+[tasks.fmt-fix]
+description = "Apply formatting"
+command = "cargo"
+args = ["fmt", "--all"]
 
 [tasks.bench]
+description = "Run the criterion benchmarks"
 command = "cargo"
-args = ["bench", "--all-features"]
+args = ["bench"]
+
+[tasks.package]
+description = "Dry-run the crates.io package (verifies exclude and that .sqlx/ ships)"
+command = "cargo"
+args = ["package", "--allow-dirty", "--no-verify"]
+
+[tasks.semver-checks]
+description = "Detect accidental breaking API changes vs the published version"
+install_crate = "cargo-semver-checks"
+command = "cargo"
+args = ["semver-checks", "check-release"]
+
+[tasks.default]
+description = "Default: run the test suite"
+alias = "test"
+
+[tasks.clippy]
+description = "Lint with clippy (all features)"
+command = "cargo"
+args = ["clippy", "--features", "all", "--all-targets"]
+
+[tasks.deny]
+description = "Check licenses, advisories, bans and sources"
+command = "cargo"
+args = ["deny", "check"]
+
+[tasks.doc]
+description = "Build docs for all features"
+command = "cargo"
+args = ["doc", "--features", "all", "--no-deps"]
+
+# Everything CI should run
+[tasks.ci]
+description = "Run the full CI pipeline locally"
+dependencies = ["fmt", "sqlx-check", "deny", "test", "clippy", "doc"]
