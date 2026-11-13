@@ -9,7 +9,7 @@
 Add dependency on `Cargo.toml`
 
 ```rust
-accumulators = { version = "0.5", features = ["all"] }
+accumulators = { version = "0.6", features = ["all"] }
 ```
 
 # Development
