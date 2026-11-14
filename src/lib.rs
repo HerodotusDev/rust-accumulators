@@ -16,6 +16,15 @@
 //! `incremental_merkle_tree`), hashers (`keccak`, `poseidon`, `pedersen`,
 //! `blake`) and stores (`memory`, `sqlite`). See the
 //! [README](https://github.com/HerodotusDev/rust-accumulators) for details.
+//!
+//! A draft API for the 1.0.0-rc.1 redesign lives in [`design`] — types only, no
+//! implementations yet.
+
+extern crate alloc;
+
+/// Draft API for the 1.0.0-rc.1 redesign — types only, no implementations yet.
+/// See the module docs for goals, decisions, and open questions.
+pub mod design;
 
 #[cfg(feature = "hasher")]
 pub mod hasher;
