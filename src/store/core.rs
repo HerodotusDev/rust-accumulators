@@ -24,7 +24,7 @@ pub enum StoreError {
     #[error("Fail to delete many values from store")]
     DeleteManyError,
     /// An underlying SQLite error
-    #[cfg(feature = "sqlite")]
+    #[cfg(all(feature = "sqlite", not(target_family = "wasm")))]
     #[error("SQLite error: {0}")]
     SQLite(#[from] sqlx::Error),
     /// Failed to parse a stored value
