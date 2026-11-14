@@ -1,33 +1,6 @@
 [config]
 default_to_workspace = false
 
-# Scratch DB used only to validate queries at sqlx macro expansion time.
-# Lives in target/ so it stays out of version control.
-[tasks.sqlx-compile-db]
-private = true
-script_runner = "@shell"
-script = """
-rm -f target/sqlx-compile-time.db
-sqlite3 target/sqlx-compile-time.db "CREATE TABLE IF NOT EXISTS store (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
-"""
-
-# Regenerate the .sqlx offline query cache. Run after changing any SQL
-# in src/store/stores/sqlite.rs, and commit the updated .sqlx/ files.
-[tasks.sqlx-prepare]
-description = "Regenerate the .sqlx offline query cache"
-dependencies = ["sqlx-compile-db"]
-env = { "DATABASE_URL" = "sqlite://target/sqlx-compile-time.db" }
-command = "cargo"
-args = ["sqlx", "prepare", "--", "--features", "sqlite"]
-
-# CI: fails if SQL changed without regenerating .sqlx/
-[tasks.sqlx-check]
-description = "Verify the .sqlx offline query cache is up to date"
-dependencies = ["sqlx-compile-db"]
-env = { "DATABASE_URL" = "sqlite://target/sqlx-compile-time.db" }
-command = "cargo"
-args = ["sqlx", "prepare", "--check", "--", "--features", "sqlite"]
-
 [tasks.test]
 description = "Run the full test suite"
 command = "cargo"
@@ -49,7 +22,7 @@ command = "cargo"
 args = ["bench"]
 
 [tasks.package]
-description = "Dry-run the crates.io package (verifies exclude and that .sqlx/ ships)"
+description = "Dry-run the crates.io package (verifies exclude)"
 command = "cargo"
 args = ["package", "--allow-dirty", "--no-verify"]
 
@@ -81,4 +54,4 @@ args = ["doc", "--features", "all", "--no-deps"]
 # Everything CI should run
 [tasks.ci]
 description = "Run the full CI pipeline locally"
-dependencies = ["fmt", "sqlx-check", "deny", "test", "clippy", "doc"]
+dependencies = ["fmt", "deny", "test", "clippy", "doc"]

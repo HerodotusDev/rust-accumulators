@@ -6,12 +6,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # sqlx macros compile offline from the committed .sqlx cache
-  SQLX_OFFLINE: "true"
 
 jobs:
   ci:
-    name: fmt + sqlx + deny + test + clippy + doc
+    name: fmt + deny + test + clippy + doc
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,9 +24,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # Fails if SQL changed without regenerating .sqlx/
-      - run: cargo make sqlx-check
-
       - run: cargo make fmt
 
       - run: cargo make deny
@@ -38,3 +33,33 @@ jobs:
       - run: cargo make clippy
 
       - run: cargo make doc
+
+  no-std:
+    name: no_std build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo check --no-default-features --target thumbv7em-none-eabihf
+
+  wasm:
+    name: wasm build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo check --features all --target wasm32-unknown-unknown
+        env:
+          RUSTFLAGS: --cfg getrandom_backend="wasm_js"
