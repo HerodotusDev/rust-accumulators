@@ -1,2 +1,4 @@
 target
 .DS_Store
+# Frozen v0.5 implementation kept as reference only (not compiled).
+/src/old/
