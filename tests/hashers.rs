@@ -1,15 +1,20 @@
 //! Golden-value and behavior tests for the built-in hashers and the hash
 //! primitives they produce.
 //!
-//! Keccak vectors are pinned from the v0.5 test suite (the semantics are
-//! byte-identical). The Blake2s genesis vectors are derived independently
-//! from the reference BLAKE2s digest with Cairo 4-byte word reversal.
+//! The keccak golden vectors are pinned values: changing any hash output is
+//! a breaking change for every deployed accumulator. The Blake2s genesis
+//! vectors are derived independently from the reference BLAKE2s digest with
+//! Cairo 4-byte word reversal.
 
+#![expect(
+    clippy::expect_used,
+    reason = "tests and benches fail loudly by design: expect on fixtures is the contract"
+)]
 use std::borrow::Cow;
 
 use accumulators::hashers::{
-    Blake2sHasher, Hasher, HasherError, HasherId, Keccak256Hasher, PedersenHasher, PoseidonHasher,
-    SolKeccak,
+    Blake2sStarkHasher, Hasher, HasherError, HasherId, KeccakSolHasher, PedersenStarkHasher,
+    PoseidonStarkHasher,
 };
 use accumulators::primitives::{Hash, HashValue};
 use starknet_crypto::Felt;
@@ -49,7 +54,7 @@ fn hash_from_hex(hex: &str) -> Hash {
 const STARK_MODULUS_HEX: &str = "0800000000000011000000000000000000000000000000000000000000000001";
 
 /// The golden keccak element shared by the pair/leaf vectors.
-const LEAF_VECTOR: &str = "a4b1d5793b631de611c922ea3ec938b359b3a49e687316d9a79c27be8ce84590";
+const ELEMENT_VECTOR: &str = "a4b1d5793b631de611c922ea3ec938b359b3a49e687316d9a79c27be8ce84590";
 /// First operand of the distinct-element pair vector.
 const PAIR_LEFT_VECTOR: &str = "bd946409a993b84d18be8dc09081a9cdcecedfedf3a1ff984175e5f3667af887";
 /// Second operand of the distinct-element pair vector.
@@ -66,7 +71,7 @@ mod hash_value {
 
     #[test]
     fn bytes_round_trip() {
-        let bytes = digest_bytes(LEAF_VECTOR);
+        let bytes = digest_bytes(ELEMENT_VECTOR);
         let hash = Hash::from_bytes(bytes);
         assert_eq!(
             hash.as_bytes(),
@@ -106,12 +111,12 @@ mod hash_value {
 
     #[test]
     fn display_is_plain_lowercase_hex() {
-        assert_eq!(hash_from_hex(LEAF_VECTOR).to_string(), LEAF_VECTOR);
+        assert_eq!(hash_from_hex(ELEMENT_VECTOR).to_string(), ELEMENT_VECTOR);
     }
 
     #[test]
     fn debug_is_shortened() {
-        let hash = hash_from_hex(LEAF_VECTOR);
+        let hash = hash_from_hex(ELEMENT_VECTOR);
         assert_eq!(
             format!("{hash:?}"),
             "Hash(0xa4b1d579…)",
@@ -129,7 +134,7 @@ mod hash_value {
     #[test]
     fn to_vec_is_the_canonical_encoding() {
         assert_eq!(<Hash as HashValue>::LEN, 32);
-        let hash = hash_from_hex(LEAF_VECTOR);
+        let hash = hash_from_hex(ELEMENT_VECTOR);
         assert_eq!(hash.to_vec(), hash.as_bytes().to_vec());
     }
 }
@@ -194,22 +199,22 @@ mod felt_value {
     }
 }
 
-mod keccak256 {
+mod keccak_sol {
     use super::*;
 
     #[test]
-    fn genesis_matches_the_v0_5_golden() {
+    fn genesis_matches_the_pinned_golden() {
         assert_eq!(
-            Keccak256Hasher.genesis(),
+            KeccakSolHasher.genesis(),
             hash_from_hex("ce92cc894a17c107be8788b58092c22cd0634d1489ca0ce5b4a045a1ce31b168"),
             "genesis = keccak(b\"brave new world\")"
         );
     }
 
     #[test]
-    fn pair_of_equal_elements_matches_the_v0_5_golden() {
-        let hasher = Keccak256Hasher;
-        let element = hash_from_hex(LEAF_VECTOR);
+    fn pair_of_equal_elements_matches_the_pinned_golden() {
+        let hasher = KeccakSolHasher;
+        let element = hash_from_hex(ELEMENT_VECTOR);
         assert_eq!(
             hasher.hash_pair(element, element),
             hash_from_hex("a960dc82e45665d5b1340ee84f6c3f27abaac8235a1a3b7e954001c1bc682268"),
@@ -218,9 +223,9 @@ mod keccak256 {
     }
 
     #[test]
-    fn leaf_hash_matches_the_v0_5_golden() {
-        let hasher = Keccak256Hasher;
-        let element = hex_bytes(LEAF_VECTOR);
+    fn leaf_hash_matches_the_pinned_golden() {
+        let hasher = KeccakSolHasher;
+        let element = hex_bytes(ELEMENT_VECTOR);
         assert_eq!(
             hasher
                 .hash_leaf(&element)
@@ -231,8 +236,8 @@ mod keccak256 {
     }
 
     #[test]
-    fn pair_of_distinct_elements_matches_the_v0_5_golden() {
-        let hasher = Keccak256Hasher;
+    fn pair_of_distinct_elements_matches_the_pinned_golden() {
+        let hasher = KeccakSolHasher;
         let left = hash_from_hex(PAIR_LEFT_VECTOR);
         let right = hash_from_hex(PAIR_RIGHT_VECTOR);
         assert_eq!(
@@ -243,7 +248,7 @@ mod keccak256 {
 
     #[test]
     fn node_count_enters_pairs_as_a_big_endian_integer() {
-        let hasher = Keccak256Hasher;
+        let hasher = KeccakSolHasher;
         let inner = hasher.hash_pair(
             hash_from_hex(PAIR_LEFT_VECTOR),
             hash_from_hex(PAIR_RIGHT_VECTOR),
@@ -251,14 +256,14 @@ mod keccak256 {
         assert_eq!(
             hasher.hash_pair(Hash::from_u64(10), inner),
             hash_from_hex("70c01463d822d2205868c5a46eefc55658828015b83e4553c8462d2c6711d0e0"),
-            "v0.5 hashed [\"10\", result]: the count enters as a 32-byte BE integer"
+            "the count enters as a 32-byte big-endian integer, as pinned by this golden vector"
         );
     }
 
     #[test]
     fn empty_leaves_hash_to_keccak_of_nothing() {
         assert_eq!(
-            Keccak256Hasher
+            KeccakSolHasher
                 .hash_leaf(b"")
                 .expect("empty elements are valid for keccak"),
             hash_from_hex("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"),
@@ -268,8 +273,8 @@ mod keccak256 {
 
     #[test]
     fn large_leaves_are_accepted_without_size_limits() {
-        // RLP encoding of Ethereum block 9877095 — a v0.5 golden pinning
-        // keccak's deliberately unlimited leaf ingestion.
+        // RLP encoding of Ethereum block 9877095 — a pinned golden value
+        // exercising keccak's deliberately unlimited leaf ingestion.
         let rlp = hex_bytes(
             "F90236A0B4147A5CA877AA084F4AF2FA2B22C72230EA7601CF97ECE9F11E1E0DA9A2A8BEA01D\
              CC4DE8DEC75D7AAB85B567B6CCD41AD312451B948A7413F0A142FD40D49347949029C772DDE8\
@@ -288,7 +293,7 @@ mod keccak256 {
              0000000CA04A6437B1534900F6AA5B27BF0F8B817494C4895860B513E6DB94B715AEB4A014",
         );
         assert_eq!(
-            Keccak256Hasher
+            KeccakSolHasher
                 .hash_leaf(&rlp)
                 .expect("keccak accepts arbitrarily large leaves"),
             hash_from_hex("fc9515e185a5a1b88dfb1708d397339019ce947083fc7ad64b048f885d48a9cc"),
@@ -300,8 +305,8 @@ mod keccak256 {
     fn pair_hashing_cross_checks_against_tiny_keccak() {
         use tiny_keccak::Hasher as _;
 
-        let hasher = Keccak256Hasher;
-        let first = hash_from_hex(LEAF_VECTOR);
+        let hasher = KeccakSolHasher;
+        let first = hash_from_hex(ELEMENT_VECTOR);
         let second = hash_from_hex(PAIR_LEFT_VECTOR);
 
         let mut input = [0; 64];
@@ -321,8 +326,8 @@ mod keccak256 {
 
     #[test]
     fn pair_hashing_is_order_sensitive() {
-        let hasher = Keccak256Hasher;
-        let left = hash_from_hex(LEAF_VECTOR);
+        let hasher = KeccakSolHasher;
+        let left = hash_from_hex(ELEMENT_VECTOR);
         let right = hash_from_hex(PAIR_LEFT_VECTOR);
         assert_ne!(
             hasher.hash_pair(left, right),
@@ -332,27 +337,19 @@ mod keccak256 {
     }
 
     #[test]
-    fn sol_keccak_is_an_alias_of_keccak256_hasher() {
-        fn assert_same_type<T>(_: T, _: T) {}
-        assert_same_type(Keccak256Hasher, Keccak256Hasher);
-        let alias: SolKeccak = Keccak256Hasher;
-        let _: Keccak256Hasher = alias;
-    }
-
-    #[test]
-    fn keccak_metadata_reports_id_and_empty_config() {
-        assert_eq!(Keccak256Hasher.id(), HasherId::Keccak256);
-        assert_eq!(Keccak256Hasher.id().to_string(), "keccak256");
-        assert_eq!(Keccak256Hasher.config(), Cow::Borrowed(""));
+    fn keccak_sol_metadata_reports_id_and_empty_config() {
+        assert_eq!(KeccakSolHasher.id(), HasherId::KeccakSol);
+        assert_eq!(KeccakSolHasher.id().to_string(), "keccak_sol");
+        assert_eq!(KeccakSolHasher.config(), Cow::Borrowed(""));
     }
 }
 
-mod poseidon {
+mod poseidon_stark {
     use super::*;
 
     #[test]
     fn genesis_is_the_leaf_hash_of_the_seed() {
-        let hasher = PoseidonHasher { pad: false };
+        let hasher = PoseidonStarkHasher { pad: false };
         let seed_leaf = hasher
             .hash_leaf(b"brave new world")
             .expect("the seed is a valid element");
@@ -369,14 +366,8 @@ mod poseidon {
     }
 
     #[test]
-    fn genesis_is_deterministic() {
-        let hasher = PoseidonHasher { pad: true };
-        assert_eq!(hasher.genesis(), hasher.genesis());
-    }
-
-    #[test]
     fn short_leaves_are_left_padded_to_a_field_element() {
-        let hasher = PoseidonHasher { pad: false };
+        let hasher = PoseidonStarkHasher { pad: false };
         let mut padded = [0; 32];
         padded[30..].copy_from_slice(&[0x01, 0x23]);
         assert_eq!(
@@ -392,7 +383,7 @@ mod poseidon {
 
     #[test]
     fn oversize_leaves_are_rejected() {
-        let hasher = PoseidonHasher::default();
+        let hasher = PoseidonStarkHasher::default();
         let element = [7; 33];
         match hasher.hash_leaf(&element) {
             Err(HasherError::InvalidElementSize {
@@ -410,7 +401,7 @@ mod poseidon {
 
     #[test]
     fn field_modulus_leaves_are_rejected() {
-        let hasher = PoseidonHasher::default();
+        let hasher = PoseidonStarkHasher::default();
         let modulus = hex_bytes(STARK_MODULUS_HEX);
         assert!(
             matches!(
@@ -423,7 +414,7 @@ mod poseidon {
 
     #[test]
     fn sub_modulus_full_width_leaves_are_accepted() {
-        let hasher = PoseidonHasher::default();
+        let hasher = PoseidonStarkHasher::default();
         let element = [0x01; 32];
         assert!(
             hasher.hash_leaf(&element).is_ok(),
@@ -433,7 +424,7 @@ mod poseidon {
 
     #[test]
     fn pair_hashing_is_order_sensitive() {
-        let hasher = PoseidonHasher::default();
+        let hasher = PoseidonStarkHasher::default();
         let left = <Felt as HashValue>::from_u64(0x13a);
         let right = <Felt as HashValue>::from_u64(0x9f);
         assert_ne!(
@@ -445,8 +436,8 @@ mod poseidon {
 
     #[test]
     fn pad_flag_does_not_change_hashes() {
-        let plain = PoseidonHasher { pad: false };
-        let padded = PoseidonHasher { pad: true };
+        let plain = PoseidonStarkHasher { pad: false };
+        let padded = PoseidonStarkHasher { pad: true };
         let left = <Felt as HashValue>::from_u64(0x13a);
         let right = <Felt as HashValue>::from_u64(0x9f);
         assert_eq!(
@@ -457,23 +448,23 @@ mod poseidon {
     }
 
     #[test]
-    fn poseidon_metadata_reports_id_and_pad_config() {
-        let plain = PoseidonHasher { pad: false };
-        let padded = PoseidonHasher { pad: true };
-        assert_eq!(plain.id(), HasherId::Poseidon);
-        assert_eq!(padded.id(), HasherId::Poseidon);
-        assert_eq!(plain.id().to_string(), "poseidon");
+    fn poseidon_stark_metadata_reports_id_and_pad_config() {
+        let plain = PoseidonStarkHasher { pad: false };
+        let padded = PoseidonStarkHasher { pad: true };
+        assert_eq!(plain.id(), HasherId::PoseidonStark);
+        assert_eq!(padded.id(), HasherId::PoseidonStark);
+        assert_eq!(plain.id().to_string(), "poseidon_stark");
         assert_eq!(plain.config(), Cow::Borrowed("pad=false"));
         assert_eq!(padded.config(), Cow::Borrowed("pad=true"));
     }
 }
 
-mod pedersen {
+mod pedersen_stark {
     use super::*;
 
     #[test]
     fn pair_hashing_matches_the_golden_vector() {
-        let hasher = PedersenHasher;
+        let hasher = PedersenStarkHasher;
         let left = <Felt as HashValue>::from_u64(0x13a);
         let right = <Felt as HashValue>::from_u64(0x9f);
         let expected = Felt::from_bytes_be(&digest_bytes(
@@ -488,7 +479,7 @@ mod pedersen {
 
     #[test]
     fn leaf_hashing_hashes_the_element_against_zero() {
-        let hasher = PedersenHasher;
+        let hasher = PedersenStarkHasher;
         let element = [0x01, 0x3a];
         let expected = starknet_crypto::pedersen_hash(&Felt::from(0x13a_u64), &Felt::ZERO);
         assert_eq!(
@@ -502,7 +493,7 @@ mod pedersen {
 
     #[test]
     fn genesis_is_the_leaf_hash_of_the_seed() {
-        let hasher = PedersenHasher;
+        let hasher = PedersenStarkHasher;
         let seed_leaf = hasher
             .hash_leaf(b"brave new world")
             .expect("the seed is a valid element");
@@ -512,7 +503,7 @@ mod pedersen {
 
     #[test]
     fn oversize_and_non_field_leaves_are_rejected() {
-        let hasher = PedersenHasher;
+        let hasher = PedersenStarkHasher;
         assert!(
             matches!(
                 hasher.hash_leaf(&[7; 33]),
@@ -534,18 +525,18 @@ mod pedersen {
     }
 
     #[test]
-    fn pedersen_metadata_reports_id_and_empty_config() {
-        assert_eq!(PedersenHasher.id(), HasherId::Pedersen);
-        assert_eq!(PedersenHasher.id().to_string(), "pedersen");
-        assert_eq!(PedersenHasher.config(), Cow::Borrowed(""));
+    fn pedersen_stark_metadata_reports_id_and_empty_config() {
+        assert_eq!(PedersenStarkHasher.id(), HasherId::PedersenStark);
+        assert_eq!(PedersenStarkHasher.id().to_string(), "pedersen_stark");
+        assert_eq!(PedersenStarkHasher.config(), Cow::Borrowed(""));
     }
 }
 
-mod blake2s {
+mod blake2s_stark {
     use super::*;
     use blake2::Digest;
 
-    /// The v0.5 genesis seed (52 bytes — a multiple of the 4-byte word).
+    /// The genesis seed (52 bytes — a multiple of the 4-byte word).
     const GENESIS_SEED: &[u8] = b"Chancellor on the brink of second bailout for banks.";
 
     /// Reference Cairo-flavored digest: BLAKE2s-256 with each 4-byte output
@@ -563,25 +554,43 @@ mod blake2s {
 
     #[test]
     fn genesis_matches_the_reference_digest() {
-        let hasher = Blake2sHasher { truncate: false };
+        // Genesis semantics: the seed bytes with each 4-byte INPUT word
+        // reversed (the canonical hex rendering is only a transport
+        // encoding through the string API).
+        let mut input = GENESIS_SEED.to_vec();
+        input.as_chunks_mut::<4>().0.iter_mut().for_each(|word| {
+            word.reverse();
+        });
+        let hasher = Blake2sStarkHasher { truncate: false };
         assert_eq!(
             hasher.genesis(),
-            hash_from_hex("fb47194ef3c98ee1b296e1b5ca4d8f33dbbb9aebb6e64008cb71088f14c3c191"),
-            "genesis = blake2s of the seed with word-reversed output"
+            hash_from_hex("6b89b133768b6ccc5c17ab1989cbff6b8c59ecfa54a8753e5bf8ab55c9af8c9a"),
+            "genesis = blake2s of the word-reversed seed (pinned golden value)"
         );
-        assert_eq!(hasher.genesis(), reference_digest(GENESIS_SEED, false));
+        assert_eq!(hasher.genesis(), reference_digest(&input, false));
+        // The genesis invariant shared by all four hashers.
+        assert_eq!(
+            hasher.genesis(),
+            hasher
+                .hash_leaf(GENESIS_SEED)
+                .expect("seed is word-aligned"),
+            "genesis == hash_leaf(seed)"
+        );
     }
 
     #[test]
     fn truncated_genesis_matches_the_reference_digest() {
-        let hasher = Blake2sHasher { truncate: true };
-        let genesis = hasher.genesis();
+        let mut input = GENESIS_SEED.to_vec();
+        input.as_chunks_mut::<4>().0.iter_mut().for_each(|word| {
+            word.reverse();
+        });
+        let genesis = Blake2sStarkHasher { truncate: true }.genesis();
         assert_eq!(
             genesis,
-            hash_from_hex("0b47194ef3c98ee1b296e1b5ca4d8f33dbbb9aebb6e64008cb71088f14c3c191"),
+            hash_from_hex("0b89b133768b6ccc5c17ab1989cbff6b8c59ecfa54a8753e5bf8ab55c9af8c9a"),
             "truncation masks the top nibble of the untruncated genesis"
         );
-        assert_eq!(genesis, reference_digest(GENESIS_SEED, true));
+        assert_eq!(genesis, reference_digest(&input, true));
         assert_eq!(
             genesis.as_bytes()[0] & 0xf0,
             0,
@@ -591,40 +600,40 @@ mod blake2s {
 
     #[test]
     fn empty_leaf_matches_the_golden_vector() {
-        let hasher = Blake2sHasher { truncate: false };
+        let hasher = Blake2sStarkHasher { truncate: false };
         assert_eq!(
             hasher
                 .hash_leaf(b"")
                 .expect("empty elements are word-aligned"),
             hash_from_hex("307a216994809079d02111e17c4a354248b6551f1ea5a12cfd0d251bf9eed01e"),
-            "v0.5 golden for the empty element"
+            "pinned golden value for the empty element"
         );
     }
 
     #[test]
     fn zero_word_leaf_matches_the_golden_vectors() {
-        let plain = Blake2sHasher { truncate: false };
-        let truncating = Blake2sHasher { truncate: true };
+        let plain = Blake2sStarkHasher { truncate: false };
+        let truncating = Blake2sStarkHasher { truncate: true };
         let zeros = [0; 32];
         assert_eq!(
             plain
                 .hash_leaf(&zeros)
                 .expect("32-byte elements are word-aligned"),
             hash_from_hex("a95e0b32c23b659e41db93b54e0ad1304c0b3afd67a6e1c2718d672bad33bddf"),
-            "v0.5 golden without truncation"
+            "pinned golden value without truncation"
         );
         assert_eq!(
             truncating
                 .hash_leaf(&zeros)
                 .expect("32-byte elements are word-aligned"),
             hash_from_hex("095e0b32c23b659e41db93b54e0ad1304c0b3afd67a6e1c2718d672bad33bddf"),
-            "v0.5 golden with truncation"
+            "pinned golden value with truncation"
         );
     }
 
     #[test]
     fn misaligned_leaves_are_rejected() {
-        let hasher = Blake2sHasher { truncate: false };
+        let hasher = Blake2sStarkHasher { truncate: false };
         let misaligned: [&[u8]; 4] = [b"x", b"xy", b"xyz", b"abcde"];
         for element in misaligned {
             match hasher.hash_leaf(element) {
@@ -646,8 +655,8 @@ mod blake2s {
     #[test]
     fn pair_matches_the_reference_digest() {
         for truncate in [false, true] {
-            let hasher = Blake2sHasher { truncate };
-            let left = hash_from_hex(LEAF_VECTOR);
+            let hasher = Blake2sStarkHasher { truncate };
+            let left = hash_from_hex(ELEMENT_VECTOR);
             let right = hash_from_hex(PAIR_LEFT_VECTOR);
 
             let mut input = [0; 64];
@@ -668,7 +677,7 @@ mod blake2s {
     #[test]
     fn aligned_leaves_match_the_reference_digest() {
         for truncate in [false, true] {
-            let hasher = Blake2sHasher { truncate };
+            let hasher = Blake2sStarkHasher { truncate };
             let element = [0xa5; 8];
             assert_eq!(
                 hasher
@@ -682,8 +691,8 @@ mod blake2s {
 
     #[test]
     fn truncation_zeroes_only_the_top_nibble() {
-        let plain = Blake2sHasher { truncate: false };
-        let truncating = Blake2sHasher { truncate: true };
+        let plain = Blake2sStarkHasher { truncate: false };
+        let truncating = Blake2sStarkHasher { truncate: true };
         let element = [0x5a; 16];
         let untruncated = plain
             .hash_leaf(&element)
@@ -709,12 +718,12 @@ mod blake2s {
     }
 
     #[test]
-    fn blake2s_metadata_reports_id_and_truncate_config() {
-        let plain = Blake2sHasher { truncate: false };
-        let truncating = Blake2sHasher { truncate: true };
-        assert_eq!(plain.id(), HasherId::Blake2s);
-        assert_eq!(truncating.id(), HasherId::Blake2s);
-        assert_eq!(plain.id().to_string(), "blake2s");
+    fn blake2s_stark_metadata_reports_id_and_truncate_config() {
+        let plain = Blake2sStarkHasher { truncate: false };
+        let truncating = Blake2sStarkHasher { truncate: true };
+        assert_eq!(plain.id(), HasherId::Blake2sStark);
+        assert_eq!(truncating.id(), HasherId::Blake2sStark);
+        assert_eq!(plain.id().to_string(), "blake2s_stark");
         assert_eq!(plain.config(), Cow::Borrowed("truncate=false"));
         assert_eq!(truncating.config(), Cow::Borrowed("truncate=true"));
     }

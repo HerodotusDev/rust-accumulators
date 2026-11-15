@@ -24,7 +24,7 @@ const STARK_MODULUS_BE: [u8; 32] = [
 /// is the only way untrusted bytes (store loads, user-supplied values)
 /// become felts.
 #[must_use]
-pub fn felt_from_bytes_be(bytes: &[u8; 32]) -> Option<Felt> {
+pub(crate) fn felt_from_bytes_be(bytes: &[u8; 32]) -> Option<Felt> {
     if bytes.as_slice() < STARK_MODULUS_BE.as_slice() {
         Some(Felt::from_bytes_be(bytes))
     } else {
@@ -32,8 +32,8 @@ pub fn felt_from_bytes_be(bytes: &[u8; 32]) -> Option<Felt> {
     }
 }
 
-/// Pads a raw element to 32 big-endian bytes (left zero padding) — the felt
-/// interpretation v0.5 gave hex elements.
+/// Pads a raw element to 32 big-endian bytes (left zero padding) — the
+/// standard felt interpretation of a hex element.
 ///
 /// # Errors
 ///
@@ -63,7 +63,7 @@ impl HashValue for Felt {
     const LEN: usize = 32;
 
     fn from_u64(value: u64) -> Self {
-        Felt::from(value)
+        Self::from(value)
     }
 
     fn write_bytes(&self, out: &mut [u8]) {
