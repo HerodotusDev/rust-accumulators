@@ -1,24 +1,23 @@
 //! Proof types: self-contained, standalone-verifiable, canonical multiproofs.
 //!
-//! v0.5 proofs carried peaks but `verify_proof` ignored them and re-read the
-//! store — a proof only "verified" against whatever the verifier's store
-//! happened to contain. Here a [`Proof`] is a complete commitment: element
-//! hash, sibling path, peaks, root, and the node count it was created at.
-//! [`verify_proof`] needs only the hasher — no store.
+//! A [`Proof`] is a complete commitment: element hash, sibling path, peaks,
+//! root, and the node count it was created at. [`verify_proof`] needs only
+//! the hasher — no store.
 //!
 //! [`MultiProof`] stores the sibling set **deduplicated** across the proven
 //! leaves, with per-leaf reference lists into that set. For overlapping trees
-//! (leaves sharing parents) this is strictly smaller than N separate proofs —
-//! the v0.5 `get_proofs` returned `Vec<Proof>` with duplicated siblings.
+//! (leaves sharing parents) this is strictly smaller than one proof per leaf.
 //!
 //! All types are generic over the hash output [`HashValue`], so proofs of any
 //! hasher's output type are first-class.
 
 use super::layout::{
-    LeafCount, MmrSize, NodeIndex, PathStep, Side, bag_peaks, peaks_of, root_from, sibling_path,
+    LeafCount, MmrSize, NodeIndex, PathStep, Side, bag_peaks, peak_heights, peaks_of, root_from,
+    sibling_path,
 };
 use crate::hashers::{Hasher, HasherError};
 use crate::primitives::{HashValue, LeafIndex};
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 /// An inclusion proof for one leaf: a complete, standalone commitment.
@@ -65,6 +64,33 @@ pub struct MultiProof<O: HashValue> {
     pub size: MmrSize,
 }
 
+impl<O: HashValue> Proof<O> {
+    /// The sibling hashes, bottom-up (the path segment of the proof).
+    ///
+    /// Convenience accessor for inspecting or serializing the path without
+    /// consuming the proof.
+    #[must_use]
+    pub fn siblings(&self) -> &[O] {
+        &self.siblings
+    }
+}
+
+impl<O: HashValue> IntoIterator for Proof<O> {
+    type Item = O;
+    type IntoIter = alloc::vec::IntoIter<O>;
+
+    /// Iterates over the sibling hashes, bottom-up — the path a custom
+    /// verifier would replay.
+    ///
+    /// **Everything else is discarded**: the leaf index, element hash, peaks,
+    /// root, and size are dropped with the proof — the iterator cannot
+    /// reconstruct them. Use [`Self::siblings`] to borrow the path without
+    /// losing the commitment fields.
+    fn into_iter(self) -> Self::IntoIter {
+        self.siblings.into_iter()
+    }
+}
+
 /// Builds the deduplicated sibling pool for `paths` and the flattened
 /// per-leaf reference list into it, in first-discovery order (so proofs are
 /// byte-comparable). Returns `(pool_indexes, pool_refs)`.
@@ -75,12 +101,18 @@ pub struct MultiProof<O: HashValue> {
 pub(crate) fn build_sibling_pool(paths: &[Vec<PathStep>]) -> (Vec<NodeIndex>, Vec<u32>) {
     let mut pool_indexes: Vec<NodeIndex> = Vec::new();
     let mut pool_refs: Vec<u32> = Vec::new();
+    // First-discovery position per sibling — a BTreeMap keeps the no_std
+    // profile while making dedup O(n log n) instead of a linear scan per
+    // step.
+    let mut position_of: BTreeMap<NodeIndex, u32> = BTreeMap::new();
     for path in paths {
         for step in path {
-            if let Some(position) = pool_indexes.iter().position(|n| *n == step.sibling) {
-                pool_refs.push(position as u32);
+            if let Some(&position) = position_of.get(&step.sibling) {
+                pool_refs.push(position);
             } else {
-                pool_refs.push(pool_indexes.len() as u32);
+                let position = pool_indexes.len() as u32;
+                position_of.insert(step.sibling, position);
+                pool_refs.push(position);
                 pool_indexes.push(step.sibling);
             }
         }
@@ -106,10 +138,16 @@ pub enum VerifyError {
 
 /// Ways a proof can be structurally invalid before any hashing.
 ///
-/// Exhaustive over the structural contract of [`Proof`] and [`MultiProof`]:
-/// verification re-derives every conclusion and never trusts the proof's own
+/// Exhaustive over the structural contract of [`Proof`], [`MultiProof`],
+/// and [`ConsistencyProof`]. A standalone `Ok(true)` means the proof is
+/// *self-consistent* — its path commits to the element and its peaks bag to
+/// its own root; it authenticates nothing by itself. Authentication is the
+/// root comparison: the handle-level
+/// `verify`/`verify_multi` compare against the accumulator's current root,
+/// and standalone users compare against a root they trust from elsewhere.
+/// Verification re-derives every conclusion and never trusts the proof's own
 /// claims, so a fabricated proof can at worst produce `Ok(false)` — never a
-/// panic and never a false `Ok(true)`.
+/// panic and never a false `Ok(true)` *relative to the compared roots*.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProofInconsistency {
@@ -167,6 +205,22 @@ pub enum ProofInconsistency {
         /// Number of elements supplied for verification.
         elements: usize,
     },
+    /// A consistency proof's previous size exceeds its target size.
+    #[error("consistency prev size {prev} exceeds the target size {size}")]
+    SizesMismatch {
+        /// The claimed earlier size.
+        prev: MmrSize,
+        /// The claimed later size.
+        size: MmrSize,
+    },
+    /// A consistency proof's frontier reconstruction needs a node the proof
+    /// does not carry. Unreachable for a well-formed proof (generation emits
+    /// every needed node); guards the no-panic contract on fabricated input.
+    #[error("consistency proof is missing the value of node {node}")]
+    MissingPathNode {
+        /// The node whose value could not be resolved.
+        node: NodeIndex,
+    },
 }
 
 /// Validates the shared structural contract of a self-contained commitment:
@@ -193,6 +247,17 @@ fn check_commitment<O: HashValue>(
 /// Validates a multiproof's structural contract: well-formed size, peaks
 /// matching it, leaves ascending, unique, and in range.
 fn check_multi_shape<O: HashValue>(proof: &MultiProof<O>) -> Result<(), VerifyError> {
+    // The element-hash commitments must align with the leaves exactly: a
+    // shorter list would let a truncated proof "verify" against fewer
+    // commitments than it claims leaves (zip-truncation false-Ok).
+    if proof.element_hashes.len() != proof.leaves.len() {
+        return Err(VerifyError::Inconsistent(
+            ProofInconsistency::ElementCountMismatch {
+                leaves: proof.leaves.len(),
+                elements: proof.element_hashes.len(),
+            },
+        ));
+    }
     let Some(leaf_count) = proof.size.leaf_count() else {
         return Err(VerifyError::Inconsistent(
             ProofInconsistency::PeaksMismatch { size: proof.size },
@@ -269,6 +334,13 @@ fn peak_position(leaf: LeafIndex, size: MmrSize) -> Option<(usize, u8)> {
 /// and compares to the proof's root. `Ok(false)` means the proof is validly
 /// structured but does not commit to `element`.
 ///
+/// Trust model: `Ok(true)` certifies the proof is **self-consistent**
+/// — internally coherent, but authentic only relative to a root the verifier
+/// trusts (the handle-level `verify` compares against the accumulator's
+/// current root; standalone users must compare `proof.root` against a root
+/// obtained from a source they trust). A fabricated self-consistent proof is
+/// not detected by this function alone.
+///
 /// # Errors
 ///
 /// Structural inconsistency (see [`VerifyError`]) or hasher failure.
@@ -276,6 +348,42 @@ pub fn verify_proof<H: Hasher>(
     hasher: &H,
     proof: &Proof<H::Output>,
     element: &[u8],
+) -> Result<bool, VerifyError> {
+    let leaf_hash = hasher.hash_leaf(element)?;
+    verify_proof_hashed(hasher, proof, leaf_hash)
+}
+
+/// The element-already-hashed variant of [`verify_proof`]: verifies a proof
+/// against `element_hash` instead of raw element bytes.
+///
+/// Callers that already hold `hash_leaf(element)` (e.g. re-verifying a
+/// captured proof against stored leaf commitments) skip the re-hash; the
+/// fold never re-hashes the element — everything below the leaf is derived
+/// from this value alone.
+///
+/// ```
+/// use accumulators::hashers::{Hasher, KeccakSolHasher};
+/// use accumulators::ids::AccumulatorId;
+/// use accumulators::mmr::{Mmr, verify_proof_hashed};
+/// use accumulators::primitives::LeafIndex;
+/// use accumulators::store::memory::InMemoryStore;
+///
+/// let mut mmr: Mmr<KeccakSolHasher, _> =
+///     Mmr::create(KeccakSolHasher, InMemoryStore::new(), AccumulatorId::ZERO).unwrap();
+/// mmr.append(b"element").unwrap();
+/// let proof = mmr.proof(LeafIndex::FIRST).unwrap();
+///
+/// let element_hash = KeccakSolHasher.hash_leaf(b"element").unwrap();
+/// assert!(verify_proof_hashed(&KeccakSolHasher, &proof, element_hash).unwrap());
+/// ```
+///
+/// # Errors
+///
+/// Structural inconsistency (see [`VerifyError`]) or hasher failure.
+pub fn verify_proof_hashed<H: Hasher>(
+    hasher: &H,
+    proof: &Proof<H::Output>,
+    element_hash: H::Output,
 ) -> Result<bool, VerifyError> {
     check_commitment(proof.leaf, proof.size, &proof.peaks).map_err(VerifyError::Inconsistent)?;
 
@@ -289,14 +397,13 @@ pub fn verify_proof<H: Hasher>(
         ));
     }
 
-    let leaf_hash = hasher.hash_leaf(element)?;
-    if leaf_hash != proof.element_hash {
+    if element_hash != proof.element_hash {
         return Ok(false);
     }
 
     // Fold the path; each step's side is re-derived from the layout, never
     // trusted from the proof.
-    let mut hash = leaf_hash;
+    let mut hash = element_hash;
     for (step, sibling) in path.iter().zip(&proof.siblings) {
         hash = match step.side {
             Side::Left => hasher.hash_pair(*sibling, hash),
@@ -337,11 +444,74 @@ where
     I::Item: AsRef<[u8]>,
     H: Hasher,
 {
+    // Order: element-count alignment first (before hashing — wasted work on
+    // a misaligned call), then the structural contract, the reference
+    // budget, and only then the hashed replay.
+    let elements: Vec<I::Item> = elements.into_iter().collect();
+    if elements.len() != proof.leaves.len() {
+        return Err(VerifyError::Inconsistent(
+            ProofInconsistency::ElementCountMismatch {
+                leaves: proof.leaves.len(),
+                elements: elements.len(),
+            },
+        ));
+    }
+
+    // Shape is checked before hashing so a structurally invalid proof never
+    // pays for element hashing; the hashed variant re-validates cheaply (a
+    // structural walk, no hashing) to stay self-contained.
+    check_multi_shape(proof)?;
+
     let element_hashes: Vec<H::Output> = elements
-        .into_iter()
+        .iter()
         .map(|e| hasher.hash_leaf(e.as_ref()))
         .collect::<Result<_, _>>()?;
 
+    verify_multi_proof_hashed(hasher, proof, element_hashes)
+}
+
+/// The element-hashes-already-known variant of [`verify_multi_proof`]:
+/// verifies against per-leaf element hashes instead of raw element bytes.
+///
+/// `element_hashes` must align positionally with the proof's leaves (checked
+/// structurally — [`ProofInconsistency::ElementCountMismatch`]); each is
+/// compared against the proof's own commitment, and the paths are replayed
+/// from these values without re-hashing.
+///
+/// ```
+/// use accumulators::hashers::{Hasher, KeccakSolHasher};
+/// use accumulators::ids::AccumulatorId;
+/// use accumulators::mmr::{Mmr, verify_multi_proof_hashed};
+/// use accumulators::primitives::LeafIndex;
+/// use accumulators::store::memory::InMemoryStore;
+///
+/// let mut mmr: Mmr<KeccakSolHasher, _> =
+///     Mmr::create(KeccakSolHasher, InMemoryStore::new(), AccumulatorId::ZERO).unwrap();
+/// for element in ["a", "b", "c"] {
+///     mmr.append(element.as_bytes()).unwrap();
+/// }
+/// let multiproof = mmr.multiproof([LeafIndex::new(0), LeafIndex::new(2)]).unwrap();
+///
+/// let hashes: Vec<_> = ["a", "c"]
+///     .iter()
+///     .map(|e| KeccakSolHasher.hash_leaf(e.as_bytes()).unwrap())
+///     .collect();
+/// assert!(verify_multi_proof_hashed(&KeccakSolHasher, &multiproof, hashes).unwrap());
+/// ```
+///
+/// # Errors
+///
+/// Structural inconsistency or hasher failure (see [`verify_proof`]).
+pub fn verify_multi_proof_hashed<I, H>(
+    hasher: &H,
+    proof: &MultiProof<H::Output>,
+    element_hashes: I,
+) -> Result<bool, VerifyError>
+where
+    I: IntoIterator<Item = H::Output>,
+    H: Hasher,
+{
+    let element_hashes: Vec<H::Output> = element_hashes.into_iter().collect();
     if element_hashes.len() != proof.leaves.len() {
         return Err(VerifyError::Inconsistent(
             ProofInconsistency::ElementCountMismatch {
@@ -351,19 +521,33 @@ where
         ));
     }
 
-    // Structural contract: well-formed size, peaks matching it, leaves
-    // ascending, unique, and in range.
     check_multi_shape(proof)?;
 
-    // Replay every path from the pool via the flattened refs.
+    // The reference budget is validated before the replay: exactly one ref
+    // per path step across all leaves. An early `Ok(false)` below can
+    // therefore never mask an over-long (or under-long) ref list — a
+    // malformed ref count is an `Err` even when the replayed prefix already
+    // failed to commit.
+    let expected_refs: usize = proof
+        .leaves
+        .iter()
+        .map(|leaf| sibling_path(*leaf, proof.size).len())
+        .sum();
+    if proof.sibling_refs.len() != expected_refs {
+        return Err(VerifyError::Inconsistent(
+            ProofInconsistency::PathLengthMismatch {
+                siblings: proof.sibling_refs.len(),
+                expected: expected_refs,
+            },
+        ));
+    }
+
     let mut refs = proof.sibling_refs.iter().copied();
-    let mut refs_consumed = 0_usize;
     for (leaf, (element_hash, claimed_hash)) in proof
         .leaves
         .iter()
         .zip(element_hashes.iter().zip(&proof.element_hashes))
     {
-        // The commitment must name the element being verified.
         if element_hash != claimed_hash {
             return Ok(false);
         }
@@ -379,7 +563,6 @@ where
                     },
                 ));
             };
-            refs_consumed += 1;
             let Some(sibling) = proof.sibling_pool.get(sibling_ref as usize) else {
                 return Err(VerifyError::Inconsistent(
                     ProofInconsistency::RefOutOfBounds {
@@ -403,36 +586,297 @@ where
         }
     }
 
-    // Every ref must be consumed: a longer ref list than the paths need is
-    // malformed.
-    if refs_consumed != proof.sibling_refs.len() {
-        return Err(VerifyError::Inconsistent(
-            ProofInconsistency::PathLengthMismatch {
-                siblings: proof.sibling_refs.len(),
-                expected: refs_consumed,
-            },
-        ));
-    }
+    // The ref budget was validated structurally above, so the replay always
+    // consumes exactly `sibling_refs.len()` refs — no trailing check needed.
 
     let recomputed = root_from(hasher, bag_peaks(hasher, &proof.peaks), proof.size);
     Ok(recomputed == proof.root)
 }
 
+/// A consistency proof: the MMR at [`Self::prev_size`] is a prefix of the
+/// MMR at [`Self::size`].
+///
+/// The construction is the Reyzin–Yakoubov accumulator-consistency shape,
+/// flattened to what the crate's proofs carry: the earlier
+/// MMR's peaks (to recompute the earlier root) plus one deduplicated,
+/// canonical `path` of the frontier nodes the earlier peaks merge with on
+/// the way to the later peaks. Shared siblings appear once; the later
+/// peaks themselves are recomputed, not carried.
+///
+/// Verification ([`verify_consistency_proof`]) needs only the hasher and
+/// the two roots — no store, no elements. Every node position is re-derived
+/// from the layout, never trusted from the proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsistencyProof<O: HashValue> {
+    /// Node count of the earlier MMR.
+    pub prev_size: MmrSize,
+    /// Node count of the later MMR.
+    pub size: MmrSize,
+    /// Peaks of the earlier MMR (left to right) — re-bagged (with
+    /// `prev_size`) to recompute the earlier root.
+    pub prev_peaks: Vec<O>,
+    /// Bridge hashes: the frontier nodes the earlier peaks merge with,
+    /// in canonical walk order. For an empty earlier MMR there is nothing
+    /// to walk from — this carries the later MMR's peaks directly.
+    pub path: Vec<O>,
+}
+
+/// Verifies a consistency proof: that an MMR of `proof.prev_size` nodes
+/// with root `prev_root` is a prefix of an MMR of `proof.size` nodes with
+/// root `root`.
+///
+/// Both roots are the verifier's trusted anchors — obtained from whichever
+/// source the two accumulator states were authenticated by — exactly like
+/// the root a standalone [`verify_proof`] caller compares against. The
+/// verifier re-derives everything else: it re-bags the earlier peaks into
+/// `prev_root`, replays the canonical merge walk to bind every path entry
+/// to its node, rebuilds the later frontier from the earlier peaks and the
+/// path, and re-bags it into `root`. A fabricated proof can at worst yield
+/// `Ok(false)` — never a panic and never a false `Ok(true)` relative to
+/// the compared roots.
+///
+/// Under collision resistance, `Ok(true)` means the leaf hashes committed
+/// by `prev_root` are a prefix of those committed by `root` — the MMR
+/// counterpart of a log's append-only guarantee (Reyzin–Yakoubov).
+///
+/// ```
+/// use accumulators::hashers::{Hasher, KeccakSolHasher};
+/// use accumulators::ids::AccumulatorId;
+/// use accumulators::mmr::{LeafCount, Mmr, size_of, verify_consistency_proof};
+/// use accumulators::store::memory::InMemoryStore;
+///
+/// let mut mmr: Mmr<KeccakSolHasher, _> =
+///     Mmr::create(KeccakSolHasher, InMemoryStore::new(), AccumulatorId::ZERO).unwrap();
+/// for element in ["a", "b", "c", "d", "e"] {
+///     mmr.append(element.as_bytes()).unwrap();
+/// }
+/// let prev_size = size_of(LeafCount::new(3));
+/// let proof = mmr.consistency_proof(prev_size).unwrap();
+///
+/// // The verifier holds only the two roots, the proof, and the hasher.
+/// let mut seed: Mmr<KeccakSolHasher, InMemoryStore> =
+///     Mmr::create(KeccakSolHasher, InMemoryStore::new(), AccumulatorId::from_bytes([9; 16]))
+///         .unwrap();
+/// for element in ["a", "b", "c"] {
+///     seed.append(element.as_bytes()).unwrap();
+/// }
+/// assert!(verify_consistency_proof(&KeccakSolHasher, &proof, seed.root(), mmr.root()).unwrap());
+/// ```
+///
+/// # Errors
+///
+/// Structural inconsistency (see [`VerifyError`]) — a malformed size, a
+/// size order violation, a peak-count mismatch, or a path length that does
+/// not match the canonical walk for the two sizes.
+pub fn verify_consistency_proof<H: Hasher>(
+    hasher: &H,
+    proof: &ConsistencyProof<H::Output>,
+    prev_root: H::Output,
+    root: H::Output,
+) -> Result<bool, VerifyError> {
+    // Structural contract first: well-formed sizes, in order, with the
+    // earlier peak count matching the earlier size. A structurally invalid
+    // proof never reaches the hashing below.
+    let inconsistent = |error| VerifyError::Inconsistent(error);
+    let Some(prev_leaves) = proof.prev_size.leaf_count() else {
+        return Err(inconsistent(ProofInconsistency::PeaksMismatch {
+            size: proof.prev_size,
+        }));
+    };
+    if proof.size.leaf_count().is_none() {
+        return Err(inconsistent(ProofInconsistency::PeaksMismatch {
+            size: proof.size,
+        }));
+    }
+    if proof.prev_size > proof.size {
+        return Err(inconsistent(ProofInconsistency::SizesMismatch {
+            prev: proof.prev_size,
+            size: proof.size,
+        }));
+    }
+    if proof.prev_peaks.len() != prev_leaves.get().count_ones() as usize {
+        return Err(inconsistent(ProofInconsistency::PeaksMismatch {
+            size: proof.prev_size,
+        }));
+    }
+
+    // The canonical walk binds every path entry to its node position — a
+    // fabricated path cannot choose which nodes it names, only supply
+    // values for the positions the layout dictates.
+    let bridge_nodes = consistency_bridge_nodes(proof.prev_size, proof.size);
+    if proof.path.len() != bridge_nodes.len() {
+        return Err(inconsistent(ProofInconsistency::PathLengthMismatch {
+            siblings: proof.path.len(),
+            expected: bridge_nodes.len(),
+        }));
+    }
+
+    // The earlier frontier must bag to the earlier root.
+    let recomputed_prev = root_from(
+        hasher,
+        bag_peaks(hasher, &proof.prev_peaks),
+        proof.prev_size,
+    );
+    if recomputed_prev != prev_root {
+        return Ok(false);
+    }
+
+    // Known values, bound to their canonical node positions: the earlier
+    // peaks, then the path entries.
+    let mut known: BTreeMap<NodeIndex, H::Output> = BTreeMap::new();
+    for (node, value) in peaks_of(proof.prev_size).into_iter().zip(&proof.prev_peaks) {
+        known.insert(node, *value);
+    }
+    for (node, value) in bridge_nodes.into_iter().zip(&proof.path) {
+        known.insert(node, *value);
+    }
+
+    // Rebuild the later frontier from the earlier peaks and the path.
+    let mut frontier = Vec::with_capacity(peaks_of(proof.size).len());
+    for peak in peaks_of(proof.size) {
+        frontier.push(resolve_frontier_node(hasher, peak, &known)?);
+    }
+
+    // The rebuilt frontier must bag to the later root.
+    let recomputed = root_from(hasher, bag_peaks(hasher, &frontier), proof.size);
+    Ok(recomputed == root)
+}
+
+/// The canonical bridge walk: the node indexes whose values a consistency
+/// proof from `prev_size` to `size` must carry, in generation order.
+///
+/// Two node families, in order:
+///
+/// 1. For each earlier peak that is no longer a peak of the later MMR, walk
+///    up to its later peak; at each step the sibling is either another
+///    earlier peak (already known to the verifier) or a bridge node the
+///    proof must carry.
+/// 2. The later MMR's "right peaks" — peaks whose leaf range starts at or
+///    after the prefix boundary. They contain no earlier leaves, so no walk
+///    reaches them; they are the IETF COSE MMR profile's `right-peaks`,
+///    carried whole. (A chain sibling is never a later peak — its parent
+///    exists — so the two families are disjoint.)
+///
+/// For an empty earlier MMR the first family is empty and the second is
+/// the later MMR's entire peak list.
+///
+/// Both sizes must be well-formed MMR sizes (validated by every caller);
+/// the walk is then pure layout and terminates — each step moves to the
+/// parent, and every non-peak node of a well-formed MMR has its containing
+/// peak as an ancestor.
+pub(crate) fn consistency_bridge_nodes(prev_size: MmrSize, size: MmrSize) -> Vec<NodeIndex> {
+    #[expect(
+        clippy::expect_used,
+        reason = "every caller validates well-formed MMR sizes before walking"
+    )]
+    let prev_leaves = prev_size
+        .leaf_count()
+        .expect("validated by every caller: a well-formed MMR size");
+    let mut path = Vec::new();
+    let new_peaks = peaks_of(size);
+    let prev_peaks = peaks_of(prev_size);
+    for peak in &prev_peaks {
+        if new_peaks.contains(peak) {
+            continue; // Survived: still a peak of the later MMR.
+        }
+        let mut node = *peak;
+        while !new_peaks.contains(&node) {
+            #[expect(
+                clippy::expect_used,
+                reason = "a non-peak node of a well-formed MMR has its parent within it; the walk is pure layout over validated sizes"
+            )]
+            let parent = node
+                .parent()
+                .expect("a non-peak node of a well-formed MMR has a parent within it");
+            let sibling = merge_sibling(node, parent);
+            if !prev_peaks.contains(&sibling) {
+                path.push(sibling);
+            }
+            node = parent;
+        }
+    }
+    // The right peaks: later peaks entirely past the prefix boundary.
+    let mut covered = 0_u64;
+    for (peak, height) in new_peaks.into_iter().zip(peak_heights(size)) {
+        if covered >= prev_leaves.get() {
+            path.push(peak);
+        }
+        covered += 1_u64 << u32::from(height.get());
+    }
+    path
+}
+
+/// The sibling of `node` under `parent`: the parent's other child. Children
+/// of `parent` are `parent − 2^height(parent)` (left) and `parent − 1`
+/// (right).
+fn merge_sibling(node: NodeIndex, parent: NodeIndex) -> NodeIndex {
+    if parent.get() == node.get() + 1 {
+        // `node` is the right child; the sibling is the left one.
+        #[expect(
+            clippy::expect_used,
+            reason = "the left child of a real MMR parent is a positive node index"
+        )]
+        NodeIndex::try_new(parent.get() - (1_u64 << u32::from(parent.height().get())))
+            .expect("the left child of a real MMR parent is a valid node")
+    } else {
+        // `node` is the left child; the sibling is the right one.
+        #[expect(
+            clippy::expect_used,
+            reason = "parent − 1 is a positive node index: the parent is a real merge node"
+        )]
+        NodeIndex::try_new(parent.get() - 1).expect("parent − 1 is a valid node")
+    }
+}
+
+/// Resolves a later-frontier node's hash from the proof's known values,
+/// expanding internal nodes recursively. Every expanded node is a node of
+/// the later MMR (children of MMR nodes are MMR nodes), so expansion
+/// terminates at the leaves; a leaf absent from `known` means the proof is
+/// missing a node — unreachable for a well-formed proof (generation emits
+/// every needed node), but never a panic on fabricated input.
+fn resolve_frontier_node<H: Hasher>(
+    hasher: &H,
+    node: NodeIndex,
+    known: &BTreeMap<NodeIndex, H::Output>,
+) -> Result<H::Output, VerifyError> {
+    if let Some(value) = known.get(&node) {
+        return Ok(*value);
+    }
+    let height = u32::from(node.height().get());
+    if height == 0 {
+        return Err(VerifyError::Inconsistent(
+            ProofInconsistency::MissingPathNode { node },
+        ));
+    }
+    #[expect(
+        clippy::expect_used,
+        reason = "the left child of a real MMR node is a positive node index"
+    )]
+    let left = NodeIndex::try_new(node.get() - (1_u64 << height))
+        .expect("the left child of a real MMR node is a valid node");
+    #[expect(
+        clippy::expect_used,
+        reason = "node − 1 is a positive node index: internal nodes are ≥ 3"
+    )]
+    let right = NodeIndex::try_new(node.get() - 1).expect("node − 1 is a valid node");
+    let left_hash = resolve_frontier_node(hasher, left, known)?;
+    let right_hash = resolve_frontier_node(hasher, right, known)?;
+    Ok(hasher.hash_pair(left_hash, right_hash))
+}
+
 /// Wire encodings for foreign verifiers (Solidity, cairo, …) — and the
 /// extension point for user-defined ones.
 ///
-/// The core proof is binary; encoding is an explicit, separate step,
-/// replacing the v0.5 `FormattingOptions` that was woven through every proof
-/// call. The built-in [`FixedWidth`](encoding::FixedWidth) implements v0.5's extracted semantics —
-/// pad-to-length lists with a null placeholder, per-list output sizes,
-/// error when a list exceeds its output size (`FormattingError` became
-/// [`EncodingError::ListTooLong`](encoding::EncodingError::ListTooLong)) — and its presets capture what v0.5's
-/// options were preparing for: Solidity fixed-size word arrays and cairo
-/// felt widths. Anything else (ABI structs, calldata, JSON, felt252 arrays)
-/// is one user [`ProofEncoding`](encoding::ProofEncoding) implementation away — the trait is the
-/// extension point, the presets are just its first implementor.
+/// The core proof is binary; encoding is an explicit, separate step. The
+/// built-in [`FixedWidth`](encoding::FixedWidth) renders pad-to-length
+/// lists with a null
+/// placeholder, per-list output sizes, an error when a list exceeds its
+/// output size ([`EncodingError::ListTooLong`](encoding::EncodingError::ListTooLong)) — with presets for
+/// Solidity fixed-size word arrays and cairo felt widths. Anything else
+/// (ABI structs, calldata, JSON, felt252 arrays) is one user
+/// [`ProofEncoding`](encoding::ProofEncoding) implementation away.
 pub mod encoding {
-    use crate::primitives::{Hash, HashValue};
+    use crate::primitives::HashValue;
     use alloc::string::String;
     use alloc::vec::Vec;
 
@@ -440,8 +884,40 @@ pub mod encoding {
     ///
     /// Implement this for your own encoder — on-chain calldata, a JSON
     /// payload, a felt252 array, whatever the verifier consumes. Fallible
-    /// because fixed-size targets can reject overlong input (v0.5 behavior,
-    /// preserved in [`EncodingError`]).
+    /// because fixed-size targets can reject overlong input
+    /// ([`EncodingError`]).
+    ///
+    /// ```
+    /// use accumulators::mmr::{MultiProof, Proof, ProofEncoding};
+    /// use accumulators::primitives::HashValue;
+    ///
+    /// /// One-line-per-proof text rendering — a log format, not a wire
+    /// /// format, but the trait contract is the same.
+    /// struct TextEncoding;
+    ///
+    /// impl ProofEncoding for TextEncoding {
+    ///     type EncodedProof = String;
+    ///     type EncodedMultiProof = String;
+    ///     type Error = core::convert::Infallible;
+    ///
+    ///     fn encode<O: HashValue>(&self, proof: &Proof<O>) -> Result<String, Self::Error> {
+    ///         Ok(format!(
+    ///             "leaf {} of {} nodes, {} siblings, root {}",
+    ///             proof.leaf,
+    ///             proof.size,
+    ///             proof.siblings().len(),
+    ///             proof.root.to_vec().iter().map(|b| format!("{b:02x}")).collect::<String>(),
+    ///         ))
+    ///     }
+    ///
+    ///     fn encode_multi<O: HashValue>(
+    ///         &self,
+    ///         proof: &MultiProof<O>,
+    ///     ) -> Result<String, Self::Error> {
+    ///         Ok(format!("{} leaves, {} pooled siblings", proof.leaves.len(), proof.sibling_pool.len()))
+    ///     }
+    /// }
+    /// ```
     pub trait ProofEncoding {
         /// Wire representation of a single-leaf proof.
         type EncodedProof;
@@ -474,14 +950,7 @@ pub mod encoding {
 
     /// Renders the canonical bytes of a hash value as lowercase hex.
     fn hex_of<O: HashValue>(value: &O) -> String {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let bytes = value.to_vec();
-        let mut out = String::with_capacity(bytes.len() * 2);
-        for byte in bytes {
-            out.push(HEX[(byte >> 4) as usize] as char);
-            out.push(HEX[(byte & 0x0f) as usize] as char);
-        }
-        out
+        crate::primitives::hex::encode(&value.to_vec())
     }
 
     /// Pads a hash string with leading zeros to `width` (minimal when
@@ -534,19 +1003,33 @@ pub mod encoding {
         }
     }
 
-    /// The built-in fixed-width encoding — v0.5's `FormattingOptions`
-    /// semantics, extracted and made explicit.
+    /// How hash values render on the wire.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub enum HexStyle {
+        /// `0x`-prefixed, full-width canonical hex — the Solidity `bytes32`
+        /// convention.
+        #[default]
+        Word,
+        /// Bare (unprefixed) minimal hex with leading zeros stripped — the
+        /// cairo felt convention (a zero value renders as `"0"`).
+        Felt,
+    }
+
+    /// The built-in fixed-width encoding.
     ///
-    /// Hashes render as lowercase hex of the canonical [`HashValue`] bytes,
-    /// zero-padded to [`Self::hash_width`] (minimal width when `None`). The
-    /// node count renders zero-padded to [`Self::size_width`]. When a list
-    /// output size is set, the list is null-padded — with the **zero hash**
-    /// (all-zero canonical bytes: `bytes32(0)`, felt `0`), replacing v0.5's
-    /// arbitrary `null_value` string — or errors when longer, exactly like
-    /// v0.5's `format_peaks` / `format_proof`.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    /// Hashes render per [`Self::style`] (word: `0x`-prefixed full canonical
+    /// hex, zero-padded to [`Self::hash_width`] when set; felt: bare minimal
+    /// hex, zero-padded to [`Self::hash_width`] when set). The node count
+    /// renders zero-padded to [`Self::size_width`]. When a list output size
+    /// is set, the list is null-padded — the **zero hash** rendered through
+    /// the same style (`bytes32(0x000…0)` / felt `0`) — or errors when
+    /// longer. The placeholder's width always tracks the hasher output's own
+    /// [`HashValue::LEN`], never a hardcoded 32.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct FixedWidth {
-        /// Zero-pad hash strings to this width (`None` = minimal hex).
+        /// Zero-pad hash strings to this width (`None` = the style's natural
+        /// width: full canonical hex for [`HexStyle::Word`], minimal for
+        /// [`HexStyle::Felt`]).
         pub hash_width: Option<usize>,
         /// Zero-pad the node-count / index strings to this width (`None` =
         /// minimal decimal).
@@ -555,11 +1038,16 @@ pub mod encoding {
         pub peaks_size: Option<usize>,
         /// Null-pad the sibling list to this length (`None` = as-is).
         pub siblings_size: Option<usize>,
+        /// How hash values render (prefix + zero handling).
+        pub style: HexStyle,
     }
 
     impl FixedWidth {
-        /// Solidity-verifier preset: fixed-width 32-byte words, peaks and
-        /// siblings null-padded to the verifier's expected array sizes.
+        /// Solidity-verifier preset: `0x`-prefixed, zero-padded 64-hex
+        /// `bytes32` words. Per-list output sizes are
+        /// deliberately unset — the preset cannot know the verifier's
+        /// expected array sizes; set [`Self::peaks_size`] /
+        /// [`Self::siblings_size`] for the concrete verifier contract.
         #[must_use]
         pub const fn solidity() -> Self {
             Self {
@@ -567,29 +1055,54 @@ pub mod encoding {
                 size_width: None,
                 peaks_size: None,
                 siblings_size: None,
+                style: HexStyle::Word,
             }
         }
 
-        /// Cairo-verifier preset: felt-compatible widths matching the v0.5
-        /// stark-hasher output formatting.
+        /// Cairo-verifier preset: bare (unprefixed) minimal felt hex, the
+        /// starknet felt rendering. Per-list output sizes are deliberately
+        /// unset — the preset cannot know the verifier's expected array
+        /// sizes; set [`Self::peaks_size`] / [`Self::siblings_size`] for the
+        /// concrete verifier contract.
         #[must_use]
         pub const fn cairo() -> Self {
             Self {
-                hash_width: Some(64),
+                hash_width: None,
                 size_width: None,
                 peaks_size: None,
                 siblings_size: None,
+                style: HexStyle::Felt,
             }
         }
 
-        /// Renders one hash per the configured widths.
+        /// Renders one hash per the configured style and widths.
         fn render<O: HashValue>(&self, value: &O) -> String {
-            pad_hash(&hex_of(value), self.hash_width)
+            let hex = hex_of(value);
+            match self.style {
+                HexStyle::Word => {
+                    let mut out = String::with_capacity(2 + hex.len());
+                    out.push_str("0x");
+                    out.push_str(&pad_hash(&hex, self.hash_width));
+                    out
+                }
+                HexStyle::Felt => {
+                    let stripped = hex.trim_start_matches('0');
+                    let felt = if stripped.is_empty() { "0" } else { stripped };
+                    pad_hash(felt, self.hash_width)
+                }
+            }
         }
 
-        /// The zero-hash placeholder at the configured width.
-        fn null(&self) -> String {
-            pad_hash(&hex_of(&Hash::ZERO), self.hash_width)
+        /// The zero-hash placeholder at the value type's own width, rendered
+        /// through the configured style (`O::LEN`-aware, not hardcoded 32).
+        fn null<O: HashValue>(&self) -> String {
+            match self.style {
+                HexStyle::Word => {
+                    let zeros = "0".repeat(2 * O::LEN);
+                    alloc::format!("0x{}", pad_hash(&zeros, self.hash_width))
+                }
+                HexStyle::Felt => pad_hash("0", self.hash_width),
+            }
         }
     }
 
@@ -606,13 +1119,13 @@ pub mod encoding {
                 &proof.siblings,
                 self.siblings_size,
                 |v| self.render(v),
-                self.null(),
+                self.null::<O>(),
             )?;
             let peaks = pad_list(
                 &proof.peaks,
                 self.peaks_size,
                 |v| self.render(v),
-                self.null(),
+                self.null::<O>(),
             )?;
 
             Ok(EncodedProof {
@@ -620,8 +1133,8 @@ pub mod encoding {
                 peaks,
                 size: pad_size(proof.size.get(), self.size_width),
                 leaf: pad_size(proof.leaf.get(), self.size_width),
-                element_hash: pad_hash(&hex_of(&proof.element_hash), self.hash_width),
-                root: pad_hash(&hex_of(&proof.root), self.hash_width),
+                element_hash: self.render(&proof.element_hash),
+                root: self.render(&proof.root),
             })
         }
 
@@ -629,13 +1142,17 @@ pub mod encoding {
             &self,
             proof: &super::MultiProof<O>,
         ) -> Result<Self::EncodedMultiProof, Self::Error> {
-            let sibling_pool =
-                pad_list(&proof.sibling_pool, None, |v| self.render(v), self.null())?;
+            let sibling_pool = pad_list(
+                &proof.sibling_pool,
+                None,
+                |v| self.render(v),
+                self.null::<O>(),
+            )?;
             let peaks = pad_list(
                 &proof.peaks,
                 self.peaks_size,
                 |v| self.render(v),
-                self.null(),
+                self.null::<O>(),
             )?;
 
             Ok(EncodedMultiProof {
@@ -651,15 +1168,14 @@ pub mod encoding {
                 element_hashes: proof
                     .element_hashes
                     .iter()
-                    .map(|v| pad_hash(&hex_of(v), self.hash_width))
+                    .map(|v| self.render(v))
                     .collect(),
-                root: pad_hash(&hex_of(&proof.root), self.hash_width),
+                root: self.render(&proof.root),
             })
         }
     }
 
-    /// Fixed-width encoding failures — v0.5's `FormattingError`, made
-    /// informative.
+    /// Fixed-width encoding failures.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
     #[non_exhaustive]
     pub enum EncodingError {
