@@ -2,16 +2,15 @@
 //!
 //! Groups:
 //! - `IncrementalMerkleTree initialize` - create the empty tree and persist
-//!   metadata. Constant cost since the redesign (v0.5 materialized every
-//!   node, `O(size)`); sizes are tree depths. The v0.5 sqlite variant is
-//!   dropped: the redesigned tree is sync-only and the SQLite store is
-//!   async-only.
+//!   metadata; constant cost (no node materialization). Sizes are tree depths.
+//!   The SQLite store is absent here: the tree is sync-only and the SQLite
+//!   store is async-only.
 //! - `IncrementalMerkleTree set_leaf` - repeated gated leaf writes against a
 //!   live tree (update gate + path rewrite + one atomic batch), batched 10
 //!   per iteration.
 //! - `IncrementalMerkleTree get_inclusion_proof` - sibling retrieval for a
-//!   leaf, batched 10 per iteration, against a fully occupied tree (v0.5
-//!   semantics: every leaf has a materialized sibling path).
+//!   leaf, batched 10 per iteration, against a fully occupied tree (every
+//!   sibling hash is a store read, not a zero-ladder lookup).
 //! - `IncrementalMerkleTree verify_proof` - proof verification (pure path
 //!   hashing, no store access).
 //! - `IncrementalMerkleTree multiproof` - minimal sibling set for k scattered
@@ -19,19 +18,23 @@
 //! - `IncrementalMerkleTree verify_multi` - multiproof verification.
 //!
 //! Proof-family benches beyond `TREE_DEPTH` run against ~10k scattered
-//! occupied leaves (a full materialization at depth 20 would be 1M writes);
-//! the multiproof payoff is unaffected since dedup works on the index set.
+//! occupied leaves (full occupancy at depth 20 would be 1M writes); the
+//! multiproof payoff is unaffected since dedup works on the index set.
 //!
 //! Run: `cargo bench --features all --bench incremental_benchmark -- --save-baseline <name>`
 //! Compare later: `cargo bench --features all --bench incremental_benchmark -- --baseline <name>`
 //! Results live in `target/criterion` (gitignored).
 
+#![expect(
+    clippy::expect_used,
+    reason = "tests and benches fail loudly by design: expect on fixtures is the contract"
+)]
 use std::hint::black_box;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use accumulators::{
-    hashers::{Hasher, Keccak256Hasher},
+    hashers::{Hasher, KeccakSolHasher},
     ids::AccumulatorId,
     merkle::IncrementalMerkleTree,
     primitives::{Hash, LeafIndex},
@@ -46,8 +49,7 @@ use criterion::{
 const UPDATE_BATCH: usize = 10;
 /// Proofs per iteration in the proof-generation benchmarks.
 const PROOF_BATCH: usize = 10;
-/// Depth of the single-leg tree: capacity `2^14 = 16_384`, the v0.5 suite's
-/// `TREE_SIZE`.
+/// Depth of the single-leg tree: capacity `2^14 = 16_384` leaves.
 const TREE_DEPTH: u8 = 14;
 /// Tree capacity at [`TREE_DEPTH`], in leaves.
 const TREE_SIZE: usize = 16_384;
@@ -69,9 +71,9 @@ fn element(index: usize) -> [u8; 32] {
 }
 
 /// An empty keccak tree of `depth` levels with the all-zero null leaf.
-fn build_tree(depth: u8) -> IncrementalMerkleTree<Keccak256Hasher, InMemoryStore> {
+fn build_tree(depth: u8) -> IncrementalMerkleTree<KeccakSolHasher, InMemoryStore> {
     IncrementalMerkleTree::create(
-        Keccak256Hasher,
+        KeccakSolHasher,
         InMemoryStore::new(),
         AccumulatorId::ZERO,
         depth,
@@ -85,9 +87,9 @@ fn build_tree(depth: u8) -> IncrementalMerkleTree<Keccak256Hasher, InMemoryStore
 /// — see [`IncrementalMerkleTree::set_leaf`]).
 ///
 /// Proof benches run against an occupied tree so sibling reads hit the store
-/// (v0.5 semantics) instead of collapsing to ladder lookups.
+/// instead of collapsing to zero-ladder lookups.
 fn occupy_scattered(
-    tree: &mut IncrementalMerkleTree<Keccak256Hasher, InMemoryStore>,
+    tree: &mut IncrementalMerkleTree<KeccakSolHasher, InMemoryStore>,
     count: usize,
 ) -> Hash {
     let capacity = usize::try_from(tree.capacity()).expect("capacity fits usize");
@@ -117,8 +119,8 @@ fn bench(c: &mut Criterion) {
     let mut tree = build_tree(TREE_DEPTH);
     let leaf = LeafIndex::new(5);
     // Occupy the target leaf once; the benchmark then rewrites it in place,
-    // gated on the current value (the v0.5 `update` semantics).
-    let mut current = Keccak256Hasher
+    // gated on the current value.
+    let mut current = KeccakSolHasher
         .hash_leaf(&element(0))
         .expect("valid element");
     tree.set_leaf(leaf, &element(0), None)
@@ -135,7 +137,7 @@ fn bench(c: &mut Criterion) {
                 let i = counter.fetch_add(1, Ordering::Relaxed);
                 tree.set_leaf(leaf, &element(i), Some(current))
                     .expect("gated write succeeds");
-                current = Keccak256Hasher
+                current = KeccakSolHasher
                     .hash_leaf(&element(i))
                     .expect("valid element");
             }
@@ -144,8 +146,8 @@ fn bench(c: &mut Criterion) {
     group.finish();
 
     let mut tree = build_tree(TREE_DEPTH);
-    // Fully occupy: every leaf has a materialized sibling path, mirroring the
-    // v0.5 initialized tree.
+    // Fully occupy: every leaf gets a materialized sibling path, so the
+    // proof legs measure store reads, not zero-ladder lookups.
     let root = occupy_scattered(&mut tree, TREE_SIZE);
     bench_proof_legs(c, &tree, root);
 
@@ -171,7 +173,7 @@ fn bench(c: &mut Criterion) {
 /// `get_inclusion_proof` (batched 10/iter) and `verify_proof` (pure hashing).
 fn bench_proof_legs(
     c: &mut Criterion,
-    tree: &IncrementalMerkleTree<Keccak256Hasher, InMemoryStore>,
+    tree: &IncrementalMerkleTree<KeccakSolHasher, InMemoryStore>,
     root: Hash,
 ) {
     let mut group = c.benchmark_group("IncrementalMerkleTree get_inclusion_proof");
@@ -229,7 +231,7 @@ fn bench_proof_legs(
 /// One (depth, k) leg of the multiproof or verify-multi group.
 fn bench_multiproof_leg(
     group: &mut BenchmarkGroup<'_, WallTime>,
-    tree: &IncrementalMerkleTree<Keccak256Hasher, InMemoryStore>,
+    tree: &IncrementalMerkleTree<KeccakSolHasher, InMemoryStore>,
     depth: u8,
     k: usize,
     verify: bool,
@@ -256,7 +258,7 @@ fn bench_multiproof_leg(
             |b| {
                 b.iter(|| {
                     let valid = tree
-                        .verify_multi(&multi, &elements)
+                        .verify_multi(&multi, &elements, tree.root())
                         .expect("verify succeeds");
                     black_box(valid)
                 });

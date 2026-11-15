@@ -19,7 +19,9 @@ args = ["fmt", "--all"]
 [tasks.bench]
 description = "Run the criterion benchmarks"
 command = "cargo"
-args = ["bench"]
+# --features all: the store_* bench binaries are gated on required-features,
+# which plain `cargo bench` silently skips.
+args = ["bench", "--features", "all"]
 
 [tasks.package]
 description = "Dry-run the crates.io package (verifies exclude)"
@@ -31,15 +33,18 @@ description = "Detect accidental breaking API changes vs the published version"
 install_crate = "cargo-semver-checks"
 command = "cargo"
 args = ["semver-checks", "check-release"]
+# Not in [tasks.ci]: intentionally breaking vs the published 0.5.1 until
+# 1.0.0-rc.1 is on crates.io. The workflow's dedicated semver job runs it
+# (non-blocking until then); afterwards add it to this ci chain.
 
 [tasks.default]
 description = "Default: run the test suite"
 alias = "test"
 
 [tasks.clippy]
-description = "Lint with clippy (all features)"
+description = "Lint with clippy (all features), zero warnings enforced"
 command = "cargo"
-args = ["clippy", "--features", "all", "--all-targets"]
+args = ["clippy", "--features", "all", "--all-targets", "--", "--deny", "warnings"]
 
 [tasks.deny]
 description = "Check licenses, advisories, bans and sources"
@@ -47,11 +52,41 @@ command = "cargo"
 args = ["deny", "check"]
 
 [tasks.doc]
-description = "Build docs for all features"
+description = "Build docs for all features, zero warnings enforced"
 command = "cargo"
 args = ["doc", "--features", "all", "--no-deps"]
+env = { "RUSTDOCFLAGS" = "-D warnings" }
+
+[tasks.typos]
+description = "Spell-check the repository"
+install_crate = "typos-cli"
+command = "typos"
+
+[tasks.each-feature]
+description = "Check every feature in isolation"
+install_crate = "cargo-hack"
+command = "cargo"
+args = ["hack", "check", "--each-feature", "--no-dev-deps"]
+
+[tasks.msrv]
+description = "Check the crate at its declared MSRV (Cargo.toml rust-version)"
+install_crate = "cargo-hack"
+command = "cargo"
+args = ["hack", "check", "--rust-version", "--all-targets"]
+
+[tasks.mutants]
+description = "Mutation-test the library (config in .cargo/mutants.toml)"
+install_crate = "cargo-mutants"
+command = "cargo"
+args = ["mutants"]
+
+[tasks.cov]
+description = "Test-coverage summary over all features"
+install_crate = "cargo-llvm-cov"
+command = "cargo"
+args = ["llvm-cov", "nextest", "--features", "all", "--summary-only"]
 
 # Everything CI should run
 [tasks.ci]
 description = "Run the full CI pipeline locally"
-dependencies = ["fmt", "deny", "test", "clippy", "doc"]
+dependencies = ["fmt", "typos", "deny", "test", "clippy", "doc"]
