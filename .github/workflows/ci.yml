@@ -7,24 +7,34 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Read-only token scope; no workflow writes back to the repo.
+permissions:
+  contents: read
+
 jobs:
   ci:
-    name: fmt + deny + test + clippy + doc
+    name: fmt + typos + deny + test + clippy + doc
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           components: rustfmt, clippy
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
-          tool: cargo-make,cargo-deny,cargo-nextest
+          tool: cargo-make,cargo-deny,cargo-nextest,typos-cli
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.8.1
+
+      # The test/clippy/doc chains build --features all, which compiles
+      # librocksdb-sys — its bindgen step needs libclang.
+      - run: sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - run: cargo make fmt
+
+      - run: cargo make typos
 
       - run: cargo make deny
 
@@ -34,32 +44,109 @@ jobs:
 
       - run: cargo make doc
 
-  no-std:
-    name: no_std build
+  each-feature:
+    name: every feature builds in isolation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-hack
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # librocksdb-sys (feature `rocksdb`) runs bindgen, which needs libclang.
+      - run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      # Per-feature checks gate each PR. The deeper combinatorial sweep
+      # (cargo hack --powerset --depth 2, ~300 unions) runs weekly in
+      # maintenance.yml.
+      - run: cargo hack check --each-feature --no-dev-deps
+
+  msrv:
+    name: builds on the declared MSRV (1.94)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Installs the MSRV toolchain; cargo-hack switches to it for the
+      # check (rust-toolchain.toml pins the dev toolchain, not this floor).
+      - uses: dtolnay/rust-toolchain@1.94
+
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-hack
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # librocksdb-sys (feature `rocksdb`) runs bindgen, which needs libclang.
+      - run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - run: cargo hack check --rust-version --all-targets
+        env:
+          RUSTUP_TOOLCHAIN: "1.94"
+
+  no-std:
+    name: no_std builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           targets: thumbv7em-none-eabihf
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
+      # Bare core: the floor of what an embedded consumer can pull in.
       - run: cargo check --no-default-features --target thumbv7em-none-eabihf
+
+      # Fully-featured no_std: the hashers + both accumulator families
+      # still compile without std (the store backends, which need std, are
+      # not enabled here).
+      - run: cargo check --no-default-features --features mmr,merkle_tree,keccak_sol,poseidon_stark,pedersen_stark,blake2s_stark --target thumbv7em-none-eabihf
 
   wasm:
     name: wasm build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - run: cargo check --features all --target wasm32-unknown-unknown
         env:
           RUSTFLAGS: --cfg getrandom_backend="wasm_js"
+
+  semver:
+    name: semver-checks vs published baseline
+    runs-on: ubuntu-latest
+    # Intentionally breaking vs the published 0.5.1 until 1.0.0-rc.1 is on
+    # crates.io. Once published, REMOVE `continue-on-error` — this job then
+    # becomes the strict no-accidental-breaking gate for every PR.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-semver-checks
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # librocksdb-sys (feature `rocksdb`) runs bindgen, which needs libclang.
+      - run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      # The public API is feature-conditional; check both surfaces.
+      - run: cargo semver-checks check-release
+
+      - run: cargo semver-checks check-release --features all

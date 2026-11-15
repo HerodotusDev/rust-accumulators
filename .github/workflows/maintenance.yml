@@ -1,0 +1,102 @@
+# Weekly maintenance: the deep/heavy sweeps that would bloat per-PR CI.
+# Trigger manually or let the cron run it; all jobs are informational.
+
+name: maintenance
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Sundays 03:00 UTC.
+    - cron: "0 3 * * 0"
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Read-only token scope; no workflow writes back to the repo.
+permissions:
+  contents: read
+
+jobs:
+  powerset:
+    name: cargo-hack powerset (depth 2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-hack
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # librocksdb-sys (feature `rocksdb`) runs bindgen, which needs libclang.
+      - run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      # Depth 2 over 24 features = ~300 unions; too slow for
+      # per-PR, catches feature-interaction breakage weekly. Per-PR only
+      # checks --each-feature (ci.yml).
+      - run: cargo hack check --powerset --depth 2 --no-dev-deps
+
+  mutants:
+    name: cargo-mutants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-nextest,cargo-mutants
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # The mutants config builds --features all; librocksdb-sys runs
+      # bindgen, which needs libclang.
+      - run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      # Scope configured in .cargo/mutants.toml (--features all).
+      # Weekly cadence: a full mutation run costs hours.
+      - run: cargo mutants --in-place --jobs 2
+        timeout-minutes: 300
+
+  coverage:
+    name: cargo-llvm-cov summary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-nextest,cargo-llvm-cov
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # The coverage run builds --features all; librocksdb-sys runs bindgen,
+      # which needs libclang.
+      - run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - run: cargo llvm-cov nextest --features all --summary-only
+
+  typos:
+    name: typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: typos-cli
+
+      - run: typos
+
+  # cargo-fuzz smoke: intentionally absent — no fuzz/ targets exist yet.
+  # Add a nightly smoke job (cargo fuzz build + short fuzz run per target)
+  # once the first target lands; a stub job here would fail without
+  # targets.
