@@ -1,0 +1,8 @@
+# Deterministic builds: CI and local dev share this pin. Bump it together
+# with Cargo.toml `rust-version` when the MSRV floor moves.
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]
+# Cross-targets the CI jobs check; installed once locally, keeps the
+# no_std/wasm jobs working even after `stable` drifts past the pin.
+targets = ["wasm32-unknown-unknown", "thumbv7em-none-eabihf"]

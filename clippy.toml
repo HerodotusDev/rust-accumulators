@@ -1,0 +1,3 @@
+# Clippy configuration: lint suggestions and message back-compat windows
+# are keyed to the crate MSRV (Cargo.toml `rust-version`).
+msrv = "1.94"

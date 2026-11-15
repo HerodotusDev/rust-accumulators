@@ -1,0 +1,5 @@
+# typos: defaults are fine for this crate.
+[default.extend-words]
+# Add domain terms typos flags as false positives here.
+# "COSE" = IETF CBOR Object Signing and Encryption (the MMR receipts profile).
+COSE = "COSE"

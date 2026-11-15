@@ -7,8 +7,9 @@ all-features = true
 [licenses]
 version = 2
 allow = [
-    # Our own license
-    "GPL-3.0-only",
+    # Our own license is the dual expression "MIT OR Apache-2.0"
+    # (LICENSE-MIT + LICENSE-APACHE) — it resolves through the two entries
+    # below; cargo-deny accepts an expression when any clause is allowed.
     # Permissive licenses used by dependencies
     "MIT",
     "Apache-2.0",
@@ -23,8 +24,18 @@ allow = [
     "Unlicense",
     "Zlib",
     "LGPL-2.1-or-later",
+    # Via fjall (xxhash-rust, varint-rs) — both permissive.
+    "0BSD",
+    "BSL-1.0",
 ]
 confidence-threshold = 0.93
+
+[[licenses.clarify]]
+# fuchsia-cprng ships no license field; its source header states BSD-style
+# licensing (see its LICENSE in-repo). Pinned explicitly so the gate passes.
+name = "fuchsia-cprng"
+expression = "BSD-3-Clause"
+license-files = []
 
 [advisories]
 version = 2
@@ -38,6 +49,19 @@ ignore = [
     # The fix (libsqlite3-sys >=0.39) is unreachable: sqlx-sqlite 0.9.0 caps it at <0.38.0.
     # Only affects processes opening attacker-writable db + wal files; remove once sqlx bumps.
     "RUSTSEC-2026-0459",
+    # sled 1.0.0-alpha.124 pulls the whole advisory chain below; every entry
+    # enters ONLY through that optional backend feature. All are
+    # advisory-level (unmaintained / niche TOCTOU / opt-in uninit API), not
+    # reachable exploits in our usage. Revisit when sled ships a stable
+    # release that drops the affected transitive deps.
+    # tempdir (via sled) — unmaintained, superseded by tempfile.
+    "RUSTSEC-2018-0017",
+    # file (via sled) — TOCTOU race; we never open attacker-controlled paths.
+    "RUSTSEC-2023-0018",
+    # bincode 1.x (via sled) — unmaintained; sled pins ^1.0.
+    "RUSTSEC-2025-0141",
+    # zstd-safe (via sled) — uninitialized-memory footgun in an opt-in API.
+    "RUSTSEC-2026-0403",
 ]
 
 [bans]

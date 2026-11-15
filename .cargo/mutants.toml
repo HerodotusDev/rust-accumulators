@@ -1,0 +1,2 @@
+# cargo-mutants weekly run config (see .github/workflows/maintenance.yml).
+additional_cargo_args = ["--features", "all"]

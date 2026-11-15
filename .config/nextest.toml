@@ -1,0 +1,6 @@
+# No retries: these tests are deterministic; a flaky test is a bug to fix,
+# not mask.
+[profile.ci]
+retries = 0
+failure-output = "final"
+status-level = "retry"
