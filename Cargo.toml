@@ -3,15 +3,25 @@ name = "accumulators"
 version = "1.0.0-rc.1"
 edition = "2024"
 rust-version = "1.94"
-license = "GPL-3.0-only"
-description = "Complete package of multiple Accumulators with Stores and hashing functions (Hashers)"
+license = "MIT OR Apache-2.0"
+description = "Cryptographic accumulators — type-stated Merkle Mountain Ranges (plain, stacked, draft, peaks-only) and an incremental Merkle tree, with self-contained proofs and multiproofs over pluggable hashers and stores"
 homepage = "https://herodotus.dev/"
 repository = "https://github.com/HerodotusDev/rust-accumulators"
-documentation = "https://github.com/HerodotusDev/rust-accumulators/blob/main/README.md"
 readme = "README.md"
 keywords = ["accumulators", "mmr", "merkle", "tree", "incremental"]
 categories = ["cryptography", "data-structures", "database"]
-exclude = [".github", "Makefile.toml", "src/old"]
+exclude = [
+    ".github",
+    ".cargo",
+    ".config",
+    "Makefile.toml",
+    "deny.toml",
+    "clippy.toml",
+    "rust-toolchain.toml",
+    ".typos.toml",
+    "CHANGELOG.md",
+    "banner.png",
+]
 
 [dependencies]
 thiserror = { version = "2", default-features = false } # Error handling (no_std-compatible)
@@ -23,13 +33,25 @@ blake2 = { version = "0.11.0", default-features = false, optional = true } # Bla
 parking_lot = { version = "0.13.0", optional = true } # Synchronous locks (memory store)
 uuid = { version = "1.29.2", default-features = false, optional = true } # UUID generation for AccumulatorId
 ulid = { version = "3", default-features = false, optional = true } # ULID generation for AccumulatorId
+serde = { version = "1", default-features = false, features = [
+    "alloc",
+], optional = true } # Serde impls (hex-string hashes, proofs, nullifier records)
+heapless = { version = "0.9", default-features = false, optional = true } # Fixed-capacity inline map for the no_std store backend
+critical-section = { version = "1.2", default-features = false, optional = true } # Global critical section behind the heapless store (impl provided by the target)
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+# Runtime queries only (QueryBuilder + transactions) — the compile-time
+# `macros` feature would pull sqlx-macros for nothing.
 sqlx = { version = "0.9", optional = true, default-features = false, features = [
     "sqlite",
     "runtime-tokio",
-    "macros",
 ] } # SQLite store backend (native)
+sled = { version = "1.0.0-alpha.124", optional = true, default-features = false } # Sled store backend (native)
+fjall = { version = "3.1", optional = true, default-features = false, features = [
+    "lz4",
+] } # Fjall store backend (native; lz4 data-block compression)
+redb = { version = "4.6", optional = true, default-features = false } # Redb store backend (native)
+rocksdb = { version = "0.25", optional = true } # RocksDB store backend (native)
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 # remember to use: export RUSTFLAGS='--cfg getrandom_backend="wasm_js"'
@@ -41,12 +63,18 @@ uuid = { version = "1.29.2", default-features = false, optional = true, features
 ] } # UUID generation (WASM)
 
 [dev-dependencies]
+serde_json = "1" # JSON round-trips for the `serde` feature tests/doctests
+critical-section = { version = "1.2", features = [
+    "std",
+] } # std impl of the global critical section, for host tests/benches of the heapless store
 accumulators = { path = ".", features = [
     "all",
 ] } # Self-dependency: all features for tests/benches
 criterion = { version = "0.8.2", features = [
     "html_reports",
 ] } # Benchmarking framework
+proptest = "1" # Property-based tests (host-target only; std is fine in dev-deps)
+proptest-state-machine = "0.9" # State-machine driver for the draft op-log property
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tokio = { version = "1", features = [
@@ -69,16 +97,68 @@ harness = false
 name = "incremental_benchmark"
 harness = false
 
+[[bench]]
+name = "store_memory"
+harness = false
+required-features = ["memory"]
+
+[[bench]]
+name = "store_sqlite"
+harness = false
+required-features = ["sqlite"]
+
+[[bench]]
+name = "store_sled"
+harness = false
+required-features = ["sled"]
+
+[[bench]]
+name = "store_fjall"
+harness = false
+required-features = ["fjall"]
+
+[[bench]]
+name = "store_redb"
+harness = false
+required-features = ["redb"]
+
+[[bench]]
+name = "store_rocksdb"
+harness = false
+required-features = ["rocksdb"]
+
+[[bench]]
+name = "store_heapless"
+harness = false
+required-features = ["heapless"]
+
 [lints.rust]
 missing_docs = "warn"
 unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 } # group; members below override it
+missing_copy_implementations = "warn"
+missing_debug_implementations = "warn"
 
 [lints.clippy]
 all = "warn"
 pedantic = "warn"
+dbg_macro = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+uninlined_format_args = "warn"
+use_self = "warn"
+redundant_clone = "warn"
+clone_on_ref_ptr = "warn"
+
+[lints.rustdoc]
+all = "warn"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = ["store", "hasher"]
+default = ["mmr", "memory", "keccak_sol", "uuid_v4"]
 # Enables std-dependent conveniences (time-based id generation, and the
 # std-backed stores imply it). Weak deps: only forwards to uuid/ulid when
 # their id features are enabled.
@@ -88,11 +168,16 @@ all = [
     "store",
     "sqlite",
     "memory",
+    "sled",
+    "fjall",
+    "redb",
+    "rocksdb",
+    "heapless",
     "hasher",
-    "keccak",
-    "poseidon",
-    "pedersen",
-    "blake",
+    "keccak_sol",
+    "poseidon_stark",
+    "pedersen_stark",
+    "blake2s_stark",
     "mmr",
     "stacked_mmr",
     "draft_mmr",
@@ -101,22 +186,39 @@ all = [
     "uuid_v4",
     "uuid_v7",
     "ulid",
+    "serde",
 ]
 store = []
 memory = ["std", "store", "dep:parking_lot"]
 sqlite = ["std", "store", "dep:sqlx"]
+sled = ["std", "store", "dep:sled"]
+fjall = ["std", "store", "dep:fjall"]
+redb = ["std", "store", "dep:redb"]
+rocksdb = ["std", "store", "dep:rocksdb"]
+# The no_std store backend: unlike every other store, it does NOT imply
+# `std` — the map is allocation-free, the global lock comes from
+# `critical-section` (impl selected by the target's support crate).
+heapless = ["store", "dep:heapless", "dep:critical-section"]
+# Grouping flag: every hasher feature (`keccak_sol`, `poseidon_stark`,
+# `pedersen_stark`, `blake2s_stark`) implies it. Enabling it alone gates
+# nothing — it exists so `all`
+# and downstream code can express "the hasher axis" without listing every
+# built-in hasher.
 hasher = []
-keccak = ["hasher", "dep:tiny-keccak"]
-poseidon = ["hasher", "dep:starknet-crypto"]
-pedersen = ["hasher", "dep:starknet-crypto"]
-blake = ["hasher", "dep:blake2"]
+keccak_sol = ["hasher", "dep:tiny-keccak"]
+poseidon_stark = ["hasher", "dep:starknet-crypto"]
+pedersen_stark = ["hasher", "dep:starknet-crypto"]
+blake2s_stark = ["hasher", "dep:blake2"]
 mmr = ["hasher", "store"]
 stacked_mmr = ["mmr"]
 draft_mmr = ["stacked_mmr"]
 merkle_tree = ["hasher", "store"]
+# Convenience alias: the tree is inherently incremental — this feature gates
+# nothing beyond `merkle_tree` and exists so callers can keep using the
+# historical feature name without a breaking change.
 incremental_merkle_tree = [
     "merkle_tree",
-] # convenience alias: the tree is inherently incremental
+]
 uuid_v4 = ["dep:uuid", "uuid/v4", "dep:getrandom"]
 uuid_v7 = [
     "dep:uuid",
@@ -124,3 +226,7 @@ uuid_v7 = [
     "dep:getrandom",
 ] # `now_v7` additionally requires `std`
 ulid = ["dep:ulid"] # `generate_ulid` additionally requires `std`
+# Serde implementations for the core types (`Hash`, `AccumulatorId`,
+# `NullifierRecord`) and, under `mmr`, `Proof`/`MultiProof` — hex-string
+# hashes, plain-number indexes. `serde_json` is a dev-dependency only.
+serde = ["dep:serde"]
