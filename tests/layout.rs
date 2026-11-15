@@ -2,7 +2,11 @@
 //! against a brute-force reference built by the incremental
 //! append-then-merge procedure.
 
-use accumulators::hashers::{Hasher, Keccak256Hasher};
+#![expect(
+    clippy::expect_used,
+    reason = "tests and benches fail loudly by design: expect on fixtures is the contract"
+)]
+use accumulators::hashers::{Hasher, KeccakSolHasher};
 use accumulators::mmr::{
     Height, LeafCount, MmrSize, NodeIndex, Side, bag_peaks, merges_on_append, peak_heights,
     peaks_of, root_from, sibling_path, size_of,
@@ -446,7 +450,7 @@ mod bagging_and_roots {
 
     #[test]
     fn bagging_no_peaks_yields_the_genesis() {
-        let hasher = Keccak256Hasher;
+        let hasher = KeccakSolHasher;
         assert_eq!(
             bag_peaks(&hasher, &[]),
             hasher.genesis(),
@@ -456,7 +460,7 @@ mod bagging_and_roots {
 
     #[test]
     fn bagging_one_peak_is_the_identity() {
-        let hasher = Keccak256Hasher;
+        let hasher = KeccakSolHasher;
         let peak = Hash::from_u64(0x1234);
         assert_eq!(
             bag_peaks(&hasher, &[peak]),
@@ -467,7 +471,7 @@ mod bagging_and_roots {
 
     #[test]
     fn bagging_two_peaks_hashes_the_pair() {
-        let hasher = Keccak256Hasher;
+        let hasher = KeccakSolHasher;
         let peaks = [Hash::from_u64(1), Hash::from_u64(2)];
         assert_eq!(
             bag_peaks(&hasher, &peaks),
@@ -478,7 +482,7 @@ mod bagging_and_roots {
 
     #[test]
     fn bagging_folds_right_to_left_with_the_leftmost_outermost() {
-        let hasher = Keccak256Hasher;
+        let hasher = KeccakSolHasher;
         let peaks: Vec<Hash> = (1..=5).map(Hash::from_u64).collect();
 
         let mut expected = hasher.hash_pair(peaks[3], peaks[4]);
@@ -504,7 +508,7 @@ mod bagging_and_roots {
 
     #[test]
     fn root_from_binds_the_node_count() {
-        let hasher = Keccak256Hasher;
+        let hasher = KeccakSolHasher;
         let bag = Hash::from_u64(0xbeef);
         let size = size_of(LeafCount::new(500));
         assert_eq!(
@@ -513,4 +517,52 @@ mod bagging_and_roots {
             "root = H(node_count, bagged_peaks)"
         );
     }
+}
+
+// ---------------------------------------------------------------- extremes
+
+/// The documented panic bound of [`LeafIndex::new`]: beyond
+/// [`MAX_LEAF_COUNT`] the leaf→node mapping would overflow `u64`, so the
+/// constructor must reject it loudly rather than wrap to a wrong node.
+#[test]
+#[should_panic(expected = "leaf index beyond the layout range")]
+fn leaf_index_beyond_the_layout_bound_panics() {
+    let _ = LeafIndex::new(MAX_LEAF_COUNT + 1);
+}
+
+#[test]
+fn the_max_leaf_index_is_constructible() {
+    assert_eq!(LeafIndex::new(MAX_LEAF_COUNT).get(), MAX_LEAF_COUNT);
+}
+
+/// The u64-extreme closed forms, no brute force: `size_of` at the layout
+/// bound, the last leaf's node position, the parent overflow guard, and the
+/// malformed-size guard on `sibling_path` (a malformed size must return
+/// empty, never shift-overflow or loop).
+#[test]
+fn u64_extreme_layout_is_closed_form() {
+    // size_of(2^63 - 1) = 2L - popcount(L) = 2^64 - 2 - 63 = u64::MAX - 64.
+    let max_leaves = LeafCount::new(MAX_LEAF_COUNT);
+    assert_eq!(size_of(max_leaves).get(), u64::MAX - 64);
+
+    // The last leaf sits at node 2i + 1 - popcount(i) = u64::MAX - 63 —
+    // exactly one past the maximal MMR's last node.
+    assert_eq!(LeafIndex::new(MAX_LEAF_COUNT).node().get(), u64::MAX - 63);
+    assert_eq!(size_of(max_leaves).get() + 1, u64::MAX - 63);
+
+    // A size of u64::MAX cannot be well-formed (size + 1 overflows the
+    // mountain walk) and carries no leaf count, peaks, or paths.
+    assert!(MmrSize::try_new(u64::MAX).is_none());
+    assert!(MmrSize::new_unchecked(u64::MAX).leaf_count().is_none());
+    assert_eq!(peaks_of(MmrSize::new_unchecked(u64::MAX)), Vec::new());
+    assert_eq!(
+        sibling_path(LeafIndex::FIRST, MmrSize::new_unchecked(u64::MAX)),
+        Vec::new()
+    );
+
+    // The parent of the last possible node cannot exist: the u64 space ends.
+    assert_eq!(
+        NodeIndex::try_new(u64::MAX).expect("nonzero").parent(),
+        None
+    );
 }

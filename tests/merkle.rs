@@ -1,11 +1,11 @@
 //! Tests for the incremental Merkle tree (`accumulators::merkle`).
 //!
-//! Covers the properties the redesign promises over v0.5:
+//! Covers:
 //! - sparse create/open with persisted, validated metadata,
 //! - the `set_leaf` update gate and its `previous` semantics,
-//! - **the v0.5 non-power-of-2 regression**: proofs for *every* leaf of a
-//!   scattered depth-10 tree succeed and verify — unoccupied siblings come
-//!   from the zero ladder, never a missing store record,
+//! - proving *every* leaf of a scattered (non-power-of-2 occupancy) tree —
+//!   unoccupied siblings come from the zero ladder, never a missing store
+//!   record,
 //! - multiproof dedup and standalone verification,
 //! - persistence across reopen, and index bounds.
 //!
@@ -14,8 +14,12 @@
 //! tree's own `root()` tracking live in
 //! [`root_reflects_writes_and_reopens`].
 
+#![expect(
+    clippy::expect_used,
+    reason = "tests and benches fail loudly by design: expect on fixtures is the contract"
+)]
 use accumulators::{
-    hashers::{Blake2sHasher, Hasher, Keccak256Hasher},
+    hashers::{Blake2sStarkHasher, Hasher, KeccakSolHasher},
     ids::AccumulatorId,
     merkle::{IncrementalMerkleTree, TreeCorrupted, TreeError},
     primitives::{Hash, LeafIndex},
@@ -32,9 +36,9 @@ fn element(index: u64) -> [u8; 32] {
 
 /// An empty keccak tree of `depth` levels with the all-zero null leaf,
 /// stored under its own fresh `InMemoryStore`.
-fn tree(depth: u8) -> IncrementalMerkleTree<Keccak256Hasher, InMemoryStore> {
+fn tree(depth: u8) -> IncrementalMerkleTree<KeccakSolHasher, InMemoryStore> {
     IncrementalMerkleTree::create(
-        Keccak256Hasher,
+        KeccakSolHasher,
         InMemoryStore::new(),
         AccumulatorId::ZERO,
         depth,
@@ -48,7 +52,7 @@ fn create_open_round_trip_and_empty_root() {
     let depth = 8;
     let store = InMemoryStore::new();
     let created = IncrementalMerkleTree::create(
-        Keccak256Hasher,
+        KeccakSolHasher,
         store.clone(),
         AccumulatorId::ZERO,
         depth,
@@ -62,11 +66,11 @@ fn create_open_round_trip_and_empty_root() {
     // through `depth` pair hashes.
     let mut expected = Hash::ZERO;
     for _ in 0..depth {
-        expected = Keccak256Hasher.hash_pair(expected, expected);
+        expected = KeccakSolHasher.hash_pair(expected, expected);
     }
     assert_eq!(created.root(), expected);
 
-    let reopened = IncrementalMerkleTree::open(Keccak256Hasher, store, AccumulatorId::ZERO)
+    let reopened = IncrementalMerkleTree::open(KeccakSolHasher, store, AccumulatorId::ZERO)
         .expect("open succeeds");
     assert_eq!(reopened.capacity(), 1 << depth);
     assert_eq!(reopened.null_leaf(), Hash::ZERO);
@@ -78,7 +82,7 @@ fn create_rejects_depth_out_of_range() {
     // Valid depth is 1..=63; both bounds must be rejected as invalid depth.
     for depth in [0, 64, 255] {
         let error = IncrementalMerkleTree::create(
-            Keccak256Hasher,
+            KeccakSolHasher,
             InMemoryStore::new(),
             AccumulatorId::ZERO,
             depth,
@@ -96,7 +100,7 @@ fn create_rejects_depth_out_of_range() {
 #[test]
 fn open_without_metadata_is_corrupted() {
     let error =
-        IncrementalMerkleTree::open(Keccak256Hasher, InMemoryStore::new(), AccumulatorId::ZERO)
+        IncrementalMerkleTree::open(KeccakSolHasher, InMemoryStore::new(), AccumulatorId::ZERO)
             .err()
             .expect("opening an empty store cannot succeed");
     assert!(
@@ -116,18 +120,18 @@ fn set_leaf_on_empty_tree_and_update_gate() {
         .set_leaf(index, &element(5), None)
         .expect("first write succeeds");
     assert_eq!(first.index, index);
-    assert_eq!(first.previous, Some(Hash::ZERO));
+    assert_eq!(first.previous, Hash::ZERO);
     assert_ne!(first.root, root_before, "the write must change the root");
 
     // Re-writing requires the gate; `previous` is the hash of the stored
     // element, not the element itself.
-    let first_hash = Keccak256Hasher
+    let first_hash = KeccakSolHasher
         .hash_leaf(&element(5))
         .expect("valid element");
     let second = tree
         .set_leaf(index, &element(6), Some(first_hash))
         .expect("gated write succeeds");
-    assert_eq!(second.previous, Some(first_hash));
+    assert_eq!(second.previous, first_hash);
     assert_ne!(second.root, first.root);
 
     // A wrong gate value is rejected and leaves the tree untouched.
@@ -140,13 +144,13 @@ fn set_leaf_on_empty_tree_and_update_gate() {
     }
 
     // The correct gate value succeeds.
-    let second_hash = Keccak256Hasher
+    let second_hash = KeccakSolHasher
         .hash_leaf(&element(6))
         .expect("valid element");
     let third = tree
         .set_leaf(index, &element(7), Some(second_hash))
         .expect("correct gate value is accepted");
-    assert_eq!(third.previous, Some(second_hash));
+    assert_eq!(third.previous, second_hash);
 }
 
 /// `root()` must track writes in-session and the persisted root must be
@@ -155,7 +159,7 @@ fn set_leaf_on_empty_tree_and_update_gate() {
 fn root_reflects_writes_and_reopens() {
     let store = InMemoryStore::new();
     let mut tree = IncrementalMerkleTree::create(
-        Keccak256Hasher,
+        KeccakSolHasher,
         store.clone(),
         AccumulatorId::ZERO,
         8,
@@ -174,7 +178,7 @@ fn root_reflects_writes_and_reopens() {
     assert_eq!(tree.root(), second.root, "root() must track set_leaf");
 
     drop(tree);
-    let reopened = IncrementalMerkleTree::open(Keccak256Hasher, store, AccumulatorId::ZERO)
+    let reopened = IncrementalMerkleTree::open(KeccakSolHasher, store, AccumulatorId::ZERO)
         .expect("reopen succeeds");
     assert_eq!(
         reopened.root(),
@@ -183,11 +187,10 @@ fn root_reflects_writes_and_reopens() {
     );
 }
 
-/// The v0.5 non-power-of-2 regression: in v0.5, `get_inclusion_proof` hit
-/// missing store keys (`NotFound`) for ~18% of leaves whose sibling path ran
-/// through null-padded sub-trees. Here proofs for *every* leaf of a
-/// scattered depth-10 tree must succeed, and the occupied ones must verify
-/// against the current root.
+/// A scattered (non-power-of-2 occupancy) tree must prove *every* leaf:
+/// sibling paths crossing unoccupied sub-trees resolve through the zero
+/// ladder, never a missing store record. Occupied leaves verify against the
+/// current root.
 #[test]
 fn proofs_for_every_leaf_of_a_scattered_depth_10_tree() {
     let mut tree = tree(10);
@@ -373,7 +376,7 @@ fn multiproof_over_a_scattered_set_round_trips() {
 
     let elements: Vec<[u8; 32]> = leaves.iter().map(|&leaf| element(leaf)).collect();
     assert!(
-        tree.verify_multi(&multi, &elements)
+        tree.verify_multi(&multi, &elements, tree.root())
             .expect("verification is infallible here"),
         "the scattered multiproof must verify against the current root"
     );
@@ -383,7 +386,7 @@ fn multiproof_over_a_scattered_set_round_trips() {
     shuffled.reverse();
     assert!(
         !tree
-            .verify_multi(&multi, &shuffled)
+            .verify_multi(&multi, &shuffled, tree.root())
             .expect("verification is infallible here"),
         "shuffled elements must not verify"
     );
@@ -392,14 +395,14 @@ fn multiproof_over_a_scattered_set_round_trips() {
     wrong[0] = element(2);
     assert!(
         !tree
-            .verify_multi(&multi, &wrong)
+            .verify_multi(&multi, &wrong, tree.root())
             .expect("verification is infallible here"),
         "one wrong element must not verify"
     );
     // A wrong element count fails structurally, not with an error.
     assert!(
         !tree
-            .verify_multi(&multi, &elements[..elements.len() - 1])
+            .verify_multi(&multi, &elements[..elements.len() - 1], tree.root())
             .expect("verification is infallible here"),
         "a mismatched element count must not verify"
     );
@@ -447,7 +450,7 @@ fn index_beyond_capacity_is_rejected() {
 
 #[test]
 fn tree_persists_across_reopen() {
-    let hasher = Keccak256Hasher;
+    let hasher = KeccakSolHasher;
     let store = InMemoryStore::new();
     let mut tree =
         IncrementalMerkleTree::create(hasher, store.clone(), AccumulatorId::ZERO, 8, Hash::ZERO)
@@ -493,7 +496,7 @@ fn tree_persists_across_reopen() {
 fn open_rejects_a_different_hasher_config() {
     let store = InMemoryStore::new();
     let created = IncrementalMerkleTree::create(
-        Blake2sHasher { truncate: false },
+        Blake2sStarkHasher { truncate: false },
         store.clone(),
         AccumulatorId::ZERO,
         8,
@@ -504,10 +507,13 @@ fn open_rejects_a_different_hasher_config() {
 
     // Same hasher id, different persisted config: the truncation flag is
     // part of the metadata and must not be silently ignored.
-    let error =
-        IncrementalMerkleTree::open(Blake2sHasher { truncate: true }, store, AccumulatorId::ZERO)
-            .err()
-            .expect("config mismatch must be rejected");
+    let error = IncrementalMerkleTree::open(
+        Blake2sStarkHasher { truncate: true },
+        store,
+        AccumulatorId::ZERO,
+    )
+    .err()
+    .expect("config mismatch must be rejected");
     match error {
         TreeError::Corrupted(TreeCorrupted::HasherMismatch { stored, .. }) => {
             assert!(
@@ -523,7 +529,7 @@ fn open_rejects_a_different_hasher_config() {
 fn open_rejects_a_different_hasher_id() {
     let store = InMemoryStore::new();
     let created = IncrementalMerkleTree::create(
-        Keccak256Hasher,
+        KeccakSolHasher,
         store.clone(),
         AccumulatorId::ZERO,
         4,
@@ -533,7 +539,7 @@ fn open_rejects_a_different_hasher_id() {
     drop(created);
 
     let error = IncrementalMerkleTree::open(
-        Blake2sHasher { truncate: false },
+        Blake2sStarkHasher { truncate: false },
         store,
         AccumulatorId::ZERO,
     )
@@ -545,5 +551,333 @@ fn open_rejects_a_different_hasher_id() {
             TreeError::Corrupted(TreeCorrupted::HasherMismatch { .. })
         ),
         "expected HasherMismatch, got {error:?}"
+    );
+}
+
+/// `leaf_hash` distinguishes occupied from unoccupied (never substitutes the
+/// ladder's null value), and rejects out-of-range indexes.
+#[test]
+fn leaf_hash_distinguishes_occupied_from_unoccupied() {
+    let mut tree = tree(6);
+    tree.set_leaf(LeafIndex::new(3), &element(3), None)
+        .expect("write succeeds");
+
+    let occupied = tree
+        .leaf_hash(LeafIndex::new(3))
+        .expect("read succeeds")
+        .expect("leaf 3 is occupied");
+    assert_eq!(
+        occupied,
+        KeccakSolHasher.hash_leaf(&element(3)).expect("hash")
+    );
+
+    assert_eq!(
+        tree.leaf_hash(LeafIndex::new(4)).expect("read succeeds"),
+        None,
+        "an unoccupied leaf reads as None, never the ladder's null value"
+    );
+
+    let error = tree
+        .leaf_hash(LeafIndex::new(64))
+        .expect_err("beyond capacity is rejected");
+    assert!(
+        matches!(error, TreeError::IndexOutOfRange { .. }),
+        "expected IndexOutOfRange, got {error:?}"
+    );
+}
+
+/// A gate of `Some(null_leaf)` over an unoccupied leaf succeeds (the
+/// unoccupied leaf's current value IS the null leaf), and the write reports
+/// the null leaf as `previous`.
+#[test]
+fn set_leaf_gate_over_an_unoccupied_leaf_compares_the_null_leaf() {
+    let mut tree = tree(6);
+    let outcome = tree
+        .set_leaf(LeafIndex::new(2), &element(2), Some(Hash::ZERO))
+        .expect("the null leaf is the unoccupied value, so the gate passes");
+    assert_eq!(
+        outcome.previous,
+        Hash::ZERO,
+        "previous on an unoccupied leaf is the null leaf, not an Option"
+    );
+
+    // A stale gate over an occupied leaf still fails.
+    let error = tree
+        .set_leaf(LeafIndex::new(2), &element(9), Some(Hash::ZERO))
+        .expect_err("the leaf is now occupied by a non-null value");
+    assert!(
+        matches!(error, TreeError::UpdateMismatch { .. }),
+        "expected UpdateMismatch, got {error:?}"
+    );
+}
+
+/// An empty multiproof is rejected at the producer (typed error) — the
+/// verifier could never reproduce a root from a zero-leaf proof.
+#[test]
+fn empty_multiproofs_are_rejected() {
+    let tree = tree(6);
+    match tree.multiproof(Vec::<LeafIndex>::new()) {
+        Err(TreeError::EmptyProof) => {}
+        other => panic!("expected EmptyProof, got {other:?}"),
+    }
+}
+
+/// `verify_multi` takes the root as a parameter, so a captured multiproof
+/// verifies against a historical root — not only the tree's current one.
+#[test]
+fn verify_multi_against_a_historical_root() {
+    let mut tree = tree(6);
+    let historical = tree
+        .set_leaf(LeafIndex::new(1), &element(1), None)
+        .expect("write succeeds")
+        .root;
+    let multi = tree
+        .multiproof([LeafIndex::new(1)])
+        .expect("multiproof succeeds");
+    let elements = [element(1)];
+
+    // Against the historical root: authentic.
+    assert!(
+        tree.verify_multi(&multi, elements, historical)
+            .expect("verification is infallible here"),
+        "the captured multiproof verifies against the root it was taken at"
+    );
+    // Against the current root: not — the tree has moved on since the proof
+    // was taken, so the current root differs.
+    tree.set_leaf(LeafIndex::new(5), &element(5), None)
+        .expect("write succeeds");
+    assert!(
+        !tree
+            .verify_multi(&multi, elements, tree.root())
+            .expect("verification is infallible here"),
+        "the multiproof does not verify against the new root"
+    );
+    assert!(
+        tree.verify_multi(&multi, elements, historical)
+            .expect("verification is infallible here"),
+        "it still verifies against the historical root"
+    );
+}
+
+// ------------------------------------------------------------- corruption
+
+/// A present-but-unparsable sibling node is [`TreeCorrupted::MalformedNode`]
+/// — never a ladder substitution producing a wrong proof, and
+/// never a silent overwrite corrupting the root on the next write.
+#[test]
+fn a_poisoned_sibling_node_is_malformed_never_a_wrong_proof() {
+    let store = InMemoryStore::new();
+    let mut tree = IncrementalMerkleTree::create(
+        KeccakSolHasher,
+        store.clone(),
+        AccumulatorId::ZERO,
+        4,
+        Hash::ZERO,
+    )
+    .expect("create succeeds");
+    // Leaf 0 occupies heap 16; leaf 1's sibling path reads heap 16.
+    tree.set_leaf(LeafIndex::new(0), &element(0), None)
+        .expect("write succeeds");
+
+    let mut batch = accumulators::store::Batch::new();
+    batch.put_owned(
+        accumulators::store::keys::encode(
+            &AccumulatorId::ZERO,
+            accumulators::store::keys::Table::TreeNode,
+            16,
+        ),
+        vec![0xff; 3],
+    );
+    accumulators::store::Store::write(&store, batch).expect("in-memory writes are infallible");
+
+    match tree.proof(LeafIndex::new(1)) {
+        Err(TreeError::Corrupted(TreeCorrupted::MalformedNode)) => {}
+        other => panic!("expected MalformedNode, got {other:?}"),
+    }
+    match tree.leaf_hash(LeafIndex::new(0)) {
+        Err(TreeError::Corrupted(TreeCorrupted::MalformedNode)) => {}
+        other => panic!("expected MalformedNode, got {other:?}"),
+    }
+    // The write path fails closed too: a poisoned sibling on the edit path
+    // must refuse the write rather than fold the ladder hash over garbage.
+    match tree.set_leaf(LeafIndex::new(1), &element(1), None) {
+        Err(TreeError::Corrupted(TreeCorrupted::MalformedNode)) => {}
+        other => panic!("expected MalformedNode on the write path, got {other:?}"),
+    }
+}
+
+/// Tampered persisted metadata (a depth byte out of range) is diagnosed as
+/// [`TreeCorrupted::MalformedMetadata`] on open.
+#[test]
+fn tampered_metadata_is_malformed_metadata() {
+    let store = InMemoryStore::new();
+    IncrementalMerkleTree::create(
+        KeccakSolHasher,
+        store.clone(),
+        AccumulatorId::ZERO,
+        8,
+        Hash::ZERO,
+    )
+    .expect("create succeeds");
+
+    let mut batch = accumulators::store::Batch::new();
+    batch.put_owned(
+        accumulators::store::keys::encode(
+            &AccumulatorId::ZERO,
+            accumulators::store::keys::Table::TreeMeta,
+            0,
+        ),
+        vec![0xff, 0x00],
+    );
+    accumulators::store::Store::write(&store, batch).expect("in-memory writes are infallible");
+
+    match IncrementalMerkleTree::open(KeccakSolHasher, store, AccumulatorId::ZERO) {
+        Err(TreeError::Corrupted(TreeCorrupted::MalformedMetadata)) => {}
+        Err(other) => panic!("expected MalformedMetadata, got {other:?}"),
+        Ok(_) => panic!("expected MalformedMetadata, but the tree opened"),
+    }
+}
+
+// -------------------------------------------------------------- boundaries
+
+/// Depth 1 is the smallest valid tree: one level, one sibling per proof.
+#[test]
+fn depth_one_trees_prove_and_verify() {
+    let mut tree = tree(1);
+    assert_eq!(tree.capacity(), 2);
+    let root = tree
+        .set_leaf(LeafIndex::FIRST, &element(0), None)
+        .expect("write succeeds")
+        .root;
+    let proof = tree.proof(LeafIndex::FIRST).expect("proof succeeds");
+    assert_eq!(proof.len(), 1, "a depth-1 proof is exactly one sibling");
+    assert!(
+        tree.verify(LeafIndex::FIRST, &element(0), &proof, root)
+            .expect("verify succeeds"),
+        "the depth-1 proof verifies"
+    );
+}
+
+/// Depth 63 is the largest valid depth (the u64 heap-index bound): creation
+/// is accepted, the ladder spans 64 levels, and a proof at the very last
+/// capacity index — whose heap index is `u64::MAX` — succeeds via the ladder
+/// without overflow.
+#[test]
+fn depth_sixty_three_is_accepted_and_extreme_indexes_hold() {
+    let mut tree = tree(63);
+    assert_eq!(tree.capacity(), 1_u64 << 63);
+
+    let root = tree
+        .set_leaf(LeafIndex::FIRST, &element(0), None)
+        .expect("write succeeds")
+        .root;
+    let proof = tree.proof(LeafIndex::FIRST).expect("proof succeeds");
+    assert_eq!(proof.len(), 63);
+    assert!(
+        tree.verify(LeafIndex::FIRST, &element(0), &proof, root)
+            .expect("verify succeeds"),
+        "the depth-63 proof verifies"
+    );
+
+    // The last capacity index: leaf_heap(63, 2^63 - 1) = u64::MAX. The proof
+    // resolves entirely from the ladder — no panic, no overflow — and a
+    // foreign element does not verify at the tail index.
+    let last = LeafIndex::new((1_u64 << 63) - 1);
+    let tail_proof = tree.proof(last).expect("proof at the u64::MAX heap index");
+    assert_eq!(tail_proof.len(), 63);
+    assert!(
+        !tree
+            .verify(last, &element(1), &tail_proof, root)
+            .expect("verify succeeds"),
+        "a foreign element must not verify at the tail index"
+    );
+}
+
+// ---------------------------------------------------------------- ordering
+
+/// The multiproof ordering contract, asserted exactly: siblings
+/// are emitted bottom-up, level by level, left to right within a level. For
+/// leaves {0, 1, 2, 3, 4} of a depth-4 tree the needed sibling heaps are 21
+/// (level 0), 11 (level 1), 3 (level 3) — all unoccupied, so the expected
+/// values are exactly the ladder levels 0, 1, 3 in that order.
+#[test]
+fn multiproof_sibling_order_is_bottom_up_level_by_level_left_to_right() {
+    let depth = 4;
+    let mut tree = tree(depth);
+    for leaf in [0_u64, 1, 2, 3, 4] {
+        tree.set_leaf(LeafIndex::new(leaf), &element(leaf), None)
+            .expect("write succeeds");
+    }
+
+    // The ladder, recomputed independently of the tree's own.
+    let mut ladder = vec![Hash::ZERO];
+    for _ in 0..depth {
+        let previous = ladder[ladder.len() - 1];
+        ladder.push(KeccakSolHasher.hash_pair(previous, previous));
+    }
+
+    let multi = tree
+        .multiproof([
+            LeafIndex::new(0),
+            LeafIndex::new(1),
+            LeafIndex::new(2),
+            LeafIndex::new(3),
+            LeafIndex::new(4),
+        ])
+        .expect("multiproof succeeds");
+    assert_eq!(
+        multi.siblings,
+        vec![
+            ladder[0], // heap 21
+            ladder[1], // heap 11
+            ladder[3], // heap 3
+        ],
+        "exact bottom-up, level-by-level, left-to-right order"
+    );
+
+    // And the ordered proof verifies.
+    let elements: Vec<[u8; 32]> = [0_u64, 1, 2, 3, 4]
+        .iter()
+        .map(|&leaf| element(leaf))
+        .collect();
+    assert!(
+        tree.verify_multi(&multi, elements, tree.root())
+            .expect("verification is infallible here"),
+        "the ordered multiproof verifies"
+    );
+}
+
+/// The `expected_current` gate semantics: `None` is an unconditional
+/// write — over an *occupied* leaf it bypasses the gate, and the outcome
+/// reports the overwritten value as `previous`.
+#[test]
+fn overwriting_an_occupied_leaf_with_no_gate_bypasses_the_gate() {
+    let mut tree = tree(6);
+    tree.set_leaf(LeafIndex::new(3), &element(3), None)
+        .expect("first write succeeds");
+
+    let outcome = tree
+        .set_leaf(LeafIndex::new(3), &element(9), None)
+        .expect("None is an unconditional overwrite");
+    assert_eq!(
+        outcome.previous,
+        KeccakSolHasher.hash_leaf(&element(3)).expect("hash"),
+        "previous reports the overwritten value"
+    );
+    assert_eq!(
+        tree.leaf_hash(LeafIndex::new(3))
+            .expect("read succeeds")
+            .expect("occupied"),
+        KeccakSolHasher.hash_leaf(&element(9)).expect("hash"),
+        "the overwrite landed"
+    );
+
+    // While Some(expected) over the occupied leaf is still a compare-and-swap.
+    let error = tree
+        .set_leaf(LeafIndex::new(3), &element(4), Some(Hash::ZERO))
+        .expect_err("a stale gate over an occupied leaf is rejected");
+    assert!(
+        matches!(error, TreeError::UpdateMismatch { .. }),
+        "expected UpdateMismatch, got {error:?}"
     );
 }

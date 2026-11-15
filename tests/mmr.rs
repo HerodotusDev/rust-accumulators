@@ -6,19 +6,27 @@
 //! computation built directly on [`Hasher::hash_pair`] — never against the
 //! crate's own state core.
 
+#![expect(
+    clippy::expect_used,
+    reason = "tests and benches fail loudly by design: expect on fixtures is the contract"
+)]
 #![cfg(all(
     feature = "mmr",
     feature = "memory",
-    feature = "keccak",
-    feature = "blake"
+    feature = "keccak_sol",
+    feature = "blake2s_stark"
 ))]
 
-use accumulators::hashers::{Blake2sHasher, Hasher, Keccak256Hasher};
+#[path = "common/mod.rs"]
+mod common;
+
+use accumulators::hashers::{Blake2sStarkHasher, Hasher, KeccakSolHasher};
 use accumulators::ids::AccumulatorId;
 use accumulators::mmr::proof::verify_proof;
 use accumulators::mmr::{
     AppendOnly, Corrupted, Editable, Mmr, MmrError, NullifierError, NullifierRecord, Nullifying,
-    Plain, Proof, Provenance, UpdateOutcome,
+    Plain, PlainAppendMmr, PlainEditableMmr, PlainNullifyingMmr, Proof, Provenance, UpdateOutcome,
+    WithPeaks, WithPeaksAppendMmr, WithPeaksEditableMmr, WithPeaksNullifyingMmr,
 };
 use accumulators::mmr::{LeafCount, MmrSize, bag_peaks, peaks_of, root_from, size_of};
 use accumulators::primitives::{Hash, LeafIndex};
@@ -26,72 +34,18 @@ use accumulators::store::keys::{self, Table};
 use accumulators::store::memory::InMemoryStore;
 use accumulators::store::{Batch, Store};
 
-type TestMmr = Mmr<Keccak256Hasher, InMemoryStore>;
-type BlakeMmr = Mmr<Blake2sHasher, InMemoryStore>;
-type TestMmrEdit = Mmr<Keccak256Hasher, InMemoryStore, Plain, Editable>;
-type TestMmrNull = Mmr<Keccak256Hasher, InMemoryStore, Plain, Nullifying>;
+use common::{element, elements, id, reference_peaks, reference_root, slices};
+
+type TestMmr = Mmr<KeccakSolHasher, InMemoryStore>;
+type BlakeMmr = Mmr<Blake2sStarkHasher, InMemoryStore>;
+type TestMmrEdit = Mmr<KeccakSolHasher, InMemoryStore, Plain, Editable>;
+type TestMmrNull = Mmr<KeccakSolHasher, InMemoryStore, Plain, Nullifying>;
 type TestError = MmrError<InMemoryStore>;
 
 // ---------------------------------------------------------------- helpers
 
-fn hasher() -> Keccak256Hasher {
-    Keccak256Hasher
-}
-
-fn element(index: u64) -> Vec<u8> {
-    format!("element-{index}").into_bytes()
-}
-
-fn elements(count: u64) -> Vec<Vec<u8>> {
-    (0..count).map(element).collect()
-}
-
-fn slices(elements: &[Vec<u8>]) -> Vec<&[u8]> {
-    elements.iter().map(Vec::as_slice).collect()
-}
-
-fn id(byte: u8) -> AccumulatorId {
-    AccumulatorId::from_bytes([byte; 16])
-}
-
-/// Brute-force peaks: leaf hashes merged with `trailing_ones` pair merges per
-/// append, peaks left in discovery order. Independent of the crate's state
-/// core — only `hash_leaf`/`hash_pair` are used.
-fn reference_peaks(hasher: Keccak256Hasher, elements: &[&[u8]]) -> Vec<Hash> {
-    let mut peaks: Vec<Hash> = Vec::new();
-    for (index, element) in elements.iter().enumerate() {
-        peaks.push(
-            hasher
-                .hash_leaf(element)
-                .expect("keccak accepts elements of any size"),
-        );
-        for _ in 0..(index as u64).trailing_ones() {
-            let right = peaks.pop().expect("merge consumes a right peak");
-            let left = peaks.pop().expect("merge consumes a left peak");
-            peaks.push(hasher.hash_pair(left, right));
-        }
-    }
-    peaks
-}
-
-/// Brute-force reference root: bag the peaks right-to-left with the leftmost
-/// peak outermost, then bind `root = H(node_count, bag)`.
-fn reference_root(hasher: Keccak256Hasher, elements: &[&[u8]]) -> Hash {
-    let peaks = reference_peaks(hasher, elements);
-    let leaves = elements.len() as u64;
-    let size = 2 * leaves - u64::from(leaves.count_ones());
-    let bag = match peaks.len() {
-        0 => hasher.genesis(),
-        1 => peaks[0],
-        n => {
-            let mut acc = hasher.hash_pair(peaks[n - 2], peaks[n - 1]);
-            for peak in peaks[..n - 2].iter().rev() {
-                acc = hasher.hash_pair(*peak, acc);
-            }
-            acc
-        }
-    };
-    hasher.hash_pair(Hash::from_u64(size), bag)
+fn hasher() -> KeccakSolHasher {
+    KeccakSolHasher
 }
 
 /// Overwrites the single-subkey record of `table` with arbitrary bytes.
@@ -170,7 +124,7 @@ mod lifecycle {
         assert_eq!(reopened.size(), size_of(LeafCount::new(7)));
         assert_eq!(
             reopened.peaks(),
-            reference_peaks(h, &slices(&els)),
+            reference_peaks(&h, &slices(&els)),
             "persisted peaks must match the brute-force reference"
         );
         assert_eq!(reopened.root(), mmr.root(), "the cached root must survive");
@@ -183,7 +137,7 @@ mod lifecycle {
         }
         assert_eq!(
             reopened.root(),
-            reference_root(h, &slices(&elements(9))),
+            reference_root(&h, &slices(&elements(9))),
             "growth after reopen must track the reference"
         );
     }
@@ -224,10 +178,10 @@ mod lifecycle {
         let h = hasher();
         let store = InMemoryStore::new();
         TestMmr::create(h, store.clone(), id(1)).expect("create must succeed");
-        match BlakeMmr::open(Blake2sHasher { truncate: true }, store, id(1)) {
+        match BlakeMmr::open(Blake2sStarkHasher { truncate: true }, store, id(1)) {
             Err(MmrError::Corrupted(Corrupted::HasherMismatch { stored, .. })) => {
                 assert!(
-                    stored.contains("keccak256"),
+                    stored.contains("keccak_sol"),
                     "the stored identity must name the creating hasher, got {stored}"
                 );
             }
@@ -239,9 +193,9 @@ mod lifecycle {
     #[test]
     fn open_rejects_a_hasher_config_mismatch() {
         let store = InMemoryStore::new();
-        BlakeMmr::create(Blake2sHasher { truncate: false }, store.clone(), id(1))
+        BlakeMmr::create(Blake2sStarkHasher { truncate: false }, store.clone(), id(1))
             .expect("create must succeed");
-        match BlakeMmr::open(Blake2sHasher { truncate: true }, store, id(1)) {
+        match BlakeMmr::open(Blake2sStarkHasher { truncate: true }, store, id(1)) {
             Err(MmrError::Corrupted(Corrupted::HasherMismatch { stored, .. })) => {
                 assert!(
                     stored.contains("truncate=false"),
@@ -258,7 +212,7 @@ mod lifecycle {
         let h = hasher();
         let store = InMemoryStore::new();
         TestMmrEdit::create_editable(h, store.clone(), id(1)).expect("create must succeed");
-        match Mmr::<Keccak256Hasher, InMemoryStore, Plain, AppendOnly>::open(h, store, id(1)) {
+        match Mmr::<KeccakSolHasher, InMemoryStore, Plain, AppendOnly>::open(h, store, id(1)) {
             Err(MmrError::Corrupted(Corrupted::ModeMismatch { stored, declared })) => {
                 assert_eq!(stored, "editable", "the persisted mode must be reported");
                 assert_eq!(
@@ -380,7 +334,7 @@ mod appends {
         for i in 0..=40_u64 {
             assert_eq!(
                 mmr.root(),
-                reference_root(h, &slices(&all)),
+                reference_root(&h, &slices(&all)),
                 "root must equal the brute-force reference at {i} leaves"
             );
             assert_eq!(
@@ -409,7 +363,7 @@ mod appends {
         let first = mmr.append(b"first").expect("append must succeed");
         assert_eq!(first.leaf, LeafIndex::FIRST);
         assert_eq!(first.node.get(), 1, "the first leaf sits at node 1");
-        assert_eq!(first.root, reference_root(h, &[b"first".as_slice()]));
+        assert_eq!(first.root, reference_root(&h, &[b"first".as_slice()]));
         assert_eq!(
             first.root,
             mmr.root(),
@@ -425,7 +379,7 @@ mod appends {
         );
         assert_eq!(
             second.root,
-            reference_root(h, &[b"first".as_slice(), b"second".as_slice()])
+            reference_root(&h, &[b"first".as_slice(), b"second".as_slice()])
         );
     }
 
@@ -440,7 +394,7 @@ mod appends {
         assert_eq!(outcome.first_leaf, LeafIndex::FIRST);
         assert_eq!(outcome.appended, LeafCount::new(10));
         assert_eq!(outcome.root, batched.root());
-        assert_eq!(outcome.root, reference_root(h, &els_slices));
+        assert_eq!(outcome.root, reference_root(&h, &els_slices));
 
         let mut sequential = TestMmr::create(h, InMemoryStore::new(), id(2)).expect("create");
         for el in &els_slices {
@@ -461,7 +415,7 @@ mod appends {
         assert_eq!(outcome.appended, LeafCount::new(2));
         let mut all = els.clone();
         all.extend(more);
-        assert_eq!(batched.root(), reference_root(h, &slices(&all)));
+        assert_eq!(batched.root(), reference_root(&h, &slices(&all)));
 
         let before = batched.root();
         let outcome = batched
@@ -565,6 +519,87 @@ mod proofs {
             !mmr.verify_multi(&proof, &slices(&wrong)).expect("verify"),
             "a swapped element must not verify"
         );
+    }
+
+    #[test]
+    fn truncated_multiproof_is_structurally_rejected() {
+        use accumulators::mmr::VerifyError;
+        use accumulators::mmr::proof::{ProofInconsistency, verify_multi_proof};
+
+        let h = hasher();
+        let mut mmr = TestMmr::create(h, InMemoryStore::new(), id(1)).expect("create must succeed");
+        let els = elements(8);
+        for el in &els {
+            mmr.append(el).expect("append must succeed");
+        }
+
+        let leaves = [LeafIndex::new(0), LeafIndex::new(3), LeafIndex::new(5)];
+        let proof = mmr.multiproof(leaves).expect("multiproof");
+        let proof_els = [&els[0], &els[3], &els[5]];
+        assert!(
+            verify_multi_proof(&h, &proof, &proof_els).expect("verify"),
+            "the honest multiproof verifies"
+        );
+
+        // An attacker drops one element-hash commitment: the commitments no
+        // longer align with the leaves. A shortened ref list must never
+        // "verify" against fewer commitments — the alignment check must
+        // reject it as a structural error, never a false Ok.
+        let mut truncated = Clone::clone(&proof);
+        truncated.element_hashes.truncate(2);
+        match verify_multi_proof(&h, &truncated, &proof_els) {
+            Err(VerifyError::Inconsistent(ProofInconsistency::ElementCountMismatch {
+                leaves: 3,
+                elements: 2,
+            })) => {}
+            other => panic!("expected ElementCountMismatch, got {other:?}"),
+        }
+
+        // The full attack: shrink the commitments *and* the sibling refs.
+        let mut shrunk = Clone::clone(&proof);
+        shrunk.element_hashes.truncate(2);
+        shrunk.sibling_refs.truncate(2);
+        assert!(
+            verify_multi_proof(&h, &shrunk, &proof_els).is_err(),
+            "a truncated multiproof must be a structural error"
+        );
+
+        // Refs alone may not run short either — the reference budget is
+        // validated structurally *before* the replay (an early Ok(false)
+        // must never mask a malformed ref count), so this is a typed
+        // PathLengthMismatch, not a mid-replay RefOutOfBounds.
+        let mut short_refs = Clone::clone(&proof);
+        short_refs.sibling_refs.truncate(1);
+        match verify_multi_proof(&h, &short_refs, &proof_els) {
+            Err(VerifyError::Inconsistent(ProofInconsistency::PathLengthMismatch {
+                siblings: 1,
+                ..
+            })) => {}
+            other => panic!("expected PathLengthMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_corrupt_node_value_is_malformed_not_missing() {
+        // A present-but-unparsable node value is corruption; it must be
+        // diagnosed as such, never conflated with an absent record.
+        let h = hasher();
+        let store = InMemoryStore::new();
+        let mut mmr = TestMmr::create(h, store.clone(), id(1)).expect("create");
+        mmr.append(&element(0)).expect("append");
+        mmr.append(&element(1)).expect("append");
+
+        // Leaf 0 lives at node index 1; poison it.
+        let mut batch = Batch::new();
+        batch.put_owned(keys::encode(&id(1), Table::Nodes, 1), vec![0xff; 3]);
+        store.write(batch).expect("in-memory writes are infallible");
+
+        match mmr.proof(LeafIndex::new(0)) {
+            Err(MmrError::Corrupted(Corrupted::MalformedRecord {
+                table: Table::Nodes,
+            })) => {}
+            other => panic!("expected MalformedRecord(Nodes), got {other:?}"),
+        }
     }
 
     #[test]
@@ -672,11 +707,61 @@ mod proofs {
         bad_root.root = Hash::from_bytes(raw);
         assert!(!mmr.verify(&bad_root, &els[9]).expect("verify"));
 
-        let mut bad_peak = proof.clone();
+        let mut bad_peak = proof;
         let mut raw = *bad_peak.peaks[0].as_bytes();
         raw[1] ^= 0xff;
         bad_peak.peaks[0] = Hash::from_bytes(raw);
         assert!(!mmr.verify(&bad_peak, &els[9]).expect("verify"));
+    }
+
+    #[test]
+    fn a_truncated_single_proof_is_structurally_rejected() {
+        use accumulators::mmr::VerifyError;
+        use accumulators::mmr::proof::ProofInconsistency;
+
+        let h = hasher();
+        let mut mmr = TestMmr::create(h, InMemoryStore::new(), id(1)).expect("create must succeed");
+        let els = elements(31);
+        for el in &els {
+            mmr.append(el).expect("append must succeed");
+        }
+        let proof = mmr.proof(LeafIndex::new(9)).expect("proof");
+        let honest_siblings = proof.siblings.len();
+        assert!(honest_siblings > 1, "leaf 9's path has several steps");
+
+        // An attacker drops siblings from the path: the honest element can
+        // then no longer be folded to the committed peak. Like the
+        // multiproof case above, the shortened proof must be rejected as a
+        // typed structural error — never a false `Ok(true)`, never a panic,
+        // and never a silent `Ok(false)` that would mask the malformation.
+        let mut truncated = proof.clone();
+        truncated.siblings.truncate(honest_siblings - 1);
+        match mmr.verify(&truncated, &els[9]) {
+            Err(MmrError::Verify(VerifyError::Inconsistent(
+                ProofInconsistency::PathLengthMismatch {
+                    siblings,
+                    expected: _,
+                },
+            ))) => {
+                assert_eq!(
+                    siblings,
+                    honest_siblings - 1,
+                    "the error names the attacker's shortened path"
+                );
+            }
+            other => panic!("expected PathLengthMismatch, got {other:?}"),
+        }
+
+        // The standalone verifier (no store) enforces the same structure.
+        match verify_proof(&h, &truncated, &els[9]) {
+            Err(VerifyError::Inconsistent(ProofInconsistency::PathLengthMismatch { .. })) => {}
+            other => panic!("expected PathLengthMismatch, got {other:?}"),
+        }
+
+        // The fully-emptied path is rejected the same way.
+        let mut empty = proof;
+        empty.siblings.clear();
+        assert!(verify_proof(&h, &empty, &els[9]).is_err());
     }
 
     #[test]
@@ -732,12 +817,18 @@ mod from_peaks {
         let seed_peaks = full.peaks().to_vec();
         assert_eq!(
             seed_peaks,
-            reference_peaks(h, &slices(&els)),
+            reference_peaks(&h, &slices(&els)),
             "the built MMR's peaks must match the brute-force reference"
         );
 
-        let peaks_mmr = TestMmr::from_peaks(h, InMemoryStore::new(), id(2), seed_size, &seed_peaks)
-            .expect("from_peaks must succeed");
+        let peaks_mmr = Mmr::<KeccakSolHasher, InMemoryStore, WithPeaks>::from_peaks(
+            h,
+            InMemoryStore::new(),
+            id(2),
+            seed_size,
+            &seed_peaks,
+        )
+        .expect("from_peaks must succeed");
         assert_eq!(
             peaks_mmr.root(),
             full.root(),
@@ -770,7 +861,7 @@ mod from_peaks {
         }
         assert_eq!(
             grown.root(),
-            reference_root(h, &slices(&elements(8))),
+            reference_root(&h, &slices(&elements(8))),
             "appends on the seed must track the reference"
         );
         for leaf in [5_u64, 6, 7] {
@@ -786,7 +877,13 @@ mod from_peaks {
     fn from_peaks_rejects_inconsistent_seeds() {
         let h = hasher();
         let size_five = size_of(LeafCount::new(5));
-        match TestMmr::from_peaks(h, InMemoryStore::new(), id(1), size_five, &[Hash::ZERO]) {
+        match Mmr::<KeccakSolHasher, InMemoryStore, WithPeaks>::from_peaks(
+            h,
+            InMemoryStore::new(),
+            id(1),
+            size_five,
+            &[Hash::ZERO],
+        ) {
             Err(MmrError::InvalidPeaks { size, peaks }) => {
                 assert_eq!(size, size_five);
                 assert_eq!(peaks, 1, "five leaves need two peaks, not one");
@@ -799,7 +896,7 @@ mod from_peaks {
     #[test]
     fn from_peaks_rejects_a_malformed_size() {
         let h = hasher();
-        match TestMmr::from_peaks(
+        match Mmr::<KeccakSolHasher, InMemoryStore, WithPeaks>::from_peaks(
             h,
             InMemoryStore::new(),
             id(1),
@@ -812,6 +909,97 @@ mod from_peaks {
             }
             Err(other) => panic!("expected InvalidPeaks, got {other:?}"),
             Ok(_) => panic!("expected InvalidPeaks, but the seed was accepted"),
+        }
+    }
+
+    /// Provenance is persisted (`Table::Provenance`): a peaks-only MMR
+    /// re-opens as peaks-only with its seed floor intact, a Plain open of a
+    /// peaks-only store (and a `WithPeaks` open of a full-history store) is
+    /// rejected, and a store missing the provenance record fails closed.
+    #[test]
+    fn from_peaks_provenance_survives_reopen_and_keeps_the_floor() {
+        let h = hasher();
+        let mut full = TestMmr::create(h, InMemoryStore::new(), id(1)).expect("create");
+        for el in &elements(5) {
+            full.append(el).expect("append must succeed");
+        }
+        let seed_size = full.size();
+        let seed_peaks = full.peaks().to_vec();
+
+        let store = InMemoryStore::new();
+        drop(
+            Mmr::<KeccakSolHasher, InMemoryStore, WithPeaks>::from_peaks(
+                h,
+                store.clone(),
+                id(2),
+                seed_size,
+                &seed_peaks,
+            )
+            .expect("from_peaks must succeed"),
+        );
+
+        // WithPeaks open parity: the reconstructed handle keeps the floor.
+        let reopened =
+            Mmr::<KeccakSolHasher, InMemoryStore, WithPeaks>::open(h, store.clone(), id(2))
+                .expect("a peaks-only store re-opens as WithPeaks");
+        assert_eq!(
+            reopened.provenance(),
+            Provenance::FromPeaks {
+                size_at_creation: seed_size
+            },
+            "the seed provenance must survive the reopen"
+        );
+        expect_unprovable(
+            reopened.proof(LeafIndex::new(2)),
+            LeafIndex::new(2),
+            LeafIndex::new(5),
+        );
+        let mut grown = reopened;
+        grown.append(&element(5)).expect("append after reopen");
+        assert_eq!(
+            grown.root(),
+            reference_root(&h, &slices(&elements(6))),
+            "a reopened peaks-only MMR keeps growing identically"
+        );
+
+        // A Plain open of a peaks-only store would silently lose the floor.
+        match TestMmr::open(h, store.clone(), id(2)) {
+            Err(MmrError::Corrupted(Corrupted::MalformedRecord {
+                table: Table::Provenance,
+            })) => {}
+            Err(other) => panic!("expected MalformedRecord(Provenance), got {other:?}"),
+            Ok(_) => panic!("expected MalformedRecord(Provenance), but the MMR opened"),
+        }
+
+        // The mirror: a WithPeaks open of a full-history store.
+        let plain_store = InMemoryStore::new();
+        drop(TestMmr::create(h, plain_store.clone(), id(3)).expect("create"));
+        match Mmr::<KeccakSolHasher, InMemoryStore, WithPeaks>::open(h, plain_store, id(3)) {
+            Err(MmrError::Corrupted(Corrupted::MalformedRecord {
+                table: Table::Provenance,
+            })) => {}
+            Err(other) => panic!("expected MalformedRecord(Provenance), got {other:?}"),
+            Ok(_) => panic!("expected MalformedRecord(Provenance), but the MMR opened"),
+        }
+
+        // An absent provenance record fails closed: a missing record is
+        // corruption, never an "assume Full" default.
+        let mut batch = Batch::new();
+        batch.delete(keys::encode(&id(2), Table::Provenance, 0));
+        store.write(batch).expect("in-memory writes are infallible");
+        match TestMmr::open(h, store.clone(), id(2)) {
+            Err(MmrError::Corrupted(Corrupted::MissingRecord {
+                table: Table::Provenance,
+            })) => {}
+            Err(other) => panic!("expected MissingRecord(Provenance), got {other:?}"),
+            Ok(_) => panic!("expected MissingRecord(Provenance), but the MMR opened"),
+        }
+        match Mmr::<KeccakSolHasher, InMemoryStore, WithPeaks>::open(h, store, id(2)) {
+            Err(MmrError::Corrupted(Corrupted::MissingRecord {
+                table: Table::Provenance,
+            })) => {}
+            Err(other) => panic!("expected MissingRecord(Provenance), got {other:?}"),
+            Ok(_) => panic!("expected MissingRecord(Provenance), but the MMR opened"),
         }
     }
 }
@@ -920,6 +1108,39 @@ mod editable {
     }
 
     #[test]
+    fn an_edit_onto_a_missing_leaf_node_is_corruption_not_a_gate_mismatch() {
+        // The structure is dense: a leaf whose node record is absent is
+        // store corruption. The edit must fail as MissingRecord even with
+        // the gate skipped (no gate means unconditional — never "repair by
+        // overwriting nothing").
+        let h = hasher();
+        let store = InMemoryStore::new();
+        let mut mmr = TestMmrEdit::create_editable(h, store.clone(), id(1)).expect("create");
+        mmr.append(b"only").expect("append must succeed");
+
+        let mut batch = Batch::new();
+        batch.delete(keys::encode(
+            &id(1),
+            Table::Nodes,
+            LeafIndex::FIRST.node().get(),
+        ));
+        store.write(batch).expect("in-memory writes are infallible");
+
+        match mmr.update(LeafIndex::FIRST, b"edited", None) {
+            Err(MmrError::Corrupted(Corrupted::MissingRecord {
+                table: Table::Nodes,
+            })) => {}
+            other => panic!("expected MissingRecord(Nodes), got {other:?}"),
+        }
+        match mmr.delete(LeafIndex::FIRST, None) {
+            Err(MmrError::Corrupted(Corrupted::MissingRecord {
+                table: Table::Nodes,
+            })) => {}
+            other => panic!("expected MissingRecord(Nodes), got {other:?}"),
+        }
+    }
+
+    #[test]
     fn editable_with_peaks_refuses_edits_below_the_floor() {
         let h = hasher();
         let mut full =
@@ -927,9 +1148,14 @@ mod editable {
         for i in 0..5 {
             full.append(&element(i)).expect("append must succeed");
         }
-        let mut peaks_mmr =
-            TestMmrEdit::from_peaks(h, InMemoryStore::new(), id(2), full.size(), full.peaks())
-                .expect("from_peaks must succeed");
+        let mut peaks_mmr = Mmr::<KeccakSolHasher, InMemoryStore, WithPeaks, Editable>::from_peaks(
+            h,
+            InMemoryStore::new(),
+            id(2),
+            full.size(),
+            full.peaks(),
+        )
+        .expect("from_peaks must succeed");
 
         match peaks_mmr.update(LeafIndex::new(0), b"below", None) {
             Err(MmrError::UnprovableLeaf {
@@ -978,7 +1204,7 @@ mod nullifying {
         assert!(mmr.verify(&proof, &els[4]).expect("verify"));
         assert_eq!(
             mmr.root(),
-            reference_root(h, &slices(&els)),
+            reference_root(&h, &slices(&els)),
             "nullifiers are policy records — the data and root are untouched"
         );
 
@@ -1062,20 +1288,20 @@ mod nullifying {
     }
 
     #[test]
-    fn nullify_beyond_the_leaf_count_is_unprovable() {
+    fn nullify_beyond_the_leaf_count_is_out_of_range() {
         let h = hasher();
         let mut mmr =
             TestMmrNull::create_nullifying(h, InMemoryStore::new(), id(1)).expect("create");
         mmr.append(b"only").expect("append must succeed");
+        // Nullifier records are index-keyed — an out-of-range leaf is a
+        // range error with the leaf count, not a fabricated provability
+        // payload.
         match mmr.nullify_shallow(LeafIndex::new(9)) {
-            Err(MmrError::UnprovableLeaf {
-                leaf,
-                provable_from,
-            }) => {
+            Err(MmrError::LeafOutOfRange { leaf, leaf_count }) => {
                 assert_eq!(leaf, LeafIndex::new(9));
-                assert_eq!(provable_from, LeafIndex::FIRST);
+                assert_eq!(leaf_count, LeafCount::new(1));
             }
-            other => panic!("expected UnprovableLeaf, got {other:?}"),
+            other => panic!("expected LeafOutOfRange, got {other:?}"),
         }
     }
 
@@ -1119,4 +1345,135 @@ mod nullifying {
             other => panic!("size 0 is the deep marker, got {other:?}"),
         }
     }
+
+    #[test]
+    fn a_corrupt_nullifier_record_fails_closed() {
+        let h = hasher();
+        let store = InMemoryStore::new();
+        let mut mmr = TestMmrNull::create_nullifying(h, store.clone(), id(1)).expect("create");
+        mmr.append(&element(0)).expect("append");
+        mmr.nullify_shallow(LeafIndex::new(0)).expect("nullify");
+
+        // Corrupt the record: present, but not a parseable size.
+        let mut batch = Batch::new();
+        batch.put_owned(keys::encode(&id(1), Table::Nullifiers, 0), vec![0xff; 3]);
+        store.write(batch).expect("in-memory writes are infallible");
+
+        match mmr.nullifier_set().record(LeafIndex::new(0)) {
+            Err(NullifierError::MalformedRecord) => {}
+            other => panic!("expected MalformedRecord, got {other:?}"),
+        }
+        // The proof path fails closed too — a corrupt record must never
+        // read as "not nullified" (the leaf silently provable).
+        match mmr.proof(LeafIndex::new(0)) {
+            Err(MmrError::Nullifier(NullifierError::MalformedRecord)) => {}
+            other => panic!("expected Nullifier(MalformedRecord), got {other:?}"),
+        }
+    }
+}
+
+// ---------------------------------------------------- hasher-info bounds
+
+mod hasher_info_bounds {
+    use super::*;
+    use accumulators::hashers::{Hasher, HasherError, HasherId};
+    use std::borrow::Cow;
+
+    /// A custom hasher with controllable identity/config; hashing delegates
+    /// to Keccak so behavior is real.
+    #[derive(Clone, Copy, Debug, Default)]
+    struct BoundedHasher {
+        name: &'static str,
+        config: &'static str,
+    }
+
+    impl Hasher for BoundedHasher {
+        type Output = Hash;
+
+        fn id(&self) -> HasherId {
+            HasherId::Custom(self.name)
+        }
+
+        fn config(&self) -> Cow<'static, str> {
+            Cow::Borrowed(self.config)
+        }
+
+        fn hash_pair(&self, left: Hash, right: Hash) -> Hash {
+            KeccakSolHasher.hash_pair(left, right)
+        }
+
+        fn hash_leaf(&self, element: &[u8]) -> Result<Hash, HasherError> {
+            KeccakSolHasher.hash_leaf(element)
+        }
+
+        fn genesis(&self) -> Hash {
+            KeccakSolHasher.genesis()
+        }
+    }
+
+    type BoundedMmr = Mmr<BoundedHasher, InMemoryStore>;
+
+    #[test]
+    fn create_rejects_an_over_long_custom_hasher_name() {
+        // 256 bytes cannot fit the record's u8 name prefix; create must
+        // reject, not truncate (truncation would alias hashers on later open).
+        let name: &'static str = Box::leak("x".repeat(256).into_boxed_str());
+        let hasher = BoundedHasher { name, config: "" };
+        match BoundedMmr::create(hasher, InMemoryStore::new(), id(1)) {
+            Err(MmrError::UnrepresentableHasher) => {}
+            Err(other) => panic!("expected UnrepresentableHasher, got {other:?}"),
+            Ok(_) => panic!("expected UnrepresentableHasher, but the MMR was created"),
+        }
+    }
+
+    #[test]
+    fn create_rejects_an_over_long_hasher_config() {
+        // 65536 bytes cannot fit the record's u16 config prefix.
+        let config: &'static str = Box::leak("c".repeat(65_536).into_boxed_str());
+        let hasher = BoundedHasher { name: "ok", config };
+        match BoundedMmr::create(hasher, InMemoryStore::new(), id(1)) {
+            Err(MmrError::UnrepresentableHasher) => {}
+            Err(other) => panic!("expected UnrepresentableHasher, got {other:?}"),
+            Ok(_) => panic!("expected UnrepresentableHasher, but the MMR was created"),
+        }
+    }
+}
+
+// ------------------------------------------------------------ type aliases
+
+#[test]
+fn kind_mode_aliases_resolve_to_the_plain_generics() {
+    // The alias's `Id` default must resolve identically to the struct's own:
+    // `PlainAppendMmr<H, S>` is exactly `Mmr<H, S>`, and each alias carries
+    // the named constructors of its pinned kind × mode combination.
+    fn takes_default(
+        mmr: Mmr<KeccakSolHasher, InMemoryStore>,
+    ) -> Mmr<KeccakSolHasher, InMemoryStore> {
+        mmr
+    }
+
+    let append: PlainAppendMmr<KeccakSolHasher, InMemoryStore> =
+        Mmr::create(hasher(), InMemoryStore::new(), id(1)).expect("create");
+    let _ = takes_default(append);
+
+    let _: PlainEditableMmr<KeccakSolHasher, InMemoryStore> =
+        PlainEditableMmr::create_editable(hasher(), InMemoryStore::new(), id(2)).expect("create");
+    let _: PlainNullifyingMmr<KeccakSolHasher, InMemoryStore> =
+        PlainNullifyingMmr::create_nullifying(hasher(), InMemoryStore::new(), id(3))
+            .expect("create");
+    let _: WithPeaksAppendMmr<KeccakSolHasher, InMemoryStore> =
+        WithPeaksAppendMmr::from_peaks(hasher(), InMemoryStore::new(), id(4), MmrSize::ZERO, &[])
+            .expect("from peaks");
+    let _: WithPeaksEditableMmr<KeccakSolHasher, InMemoryStore> =
+        WithPeaksEditableMmr::from_peaks(hasher(), InMemoryStore::new(), id(5), MmrSize::ZERO, &[])
+            .expect("from peaks");
+    let _: WithPeaksNullifyingMmr<KeccakSolHasher, InMemoryStore> =
+        WithPeaksNullifyingMmr::from_peaks(
+            hasher(),
+            InMemoryStore::new(),
+            id(6),
+            MmrSize::ZERO,
+            &[],
+        )
+        .expect("from peaks");
 }
