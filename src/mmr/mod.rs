@@ -1,4 +1,4 @@
-//! The redesigned MMR: type-stated variants, cached peaks, batched I/O,
+//! The MMR: type-stated variants, cached peaks, batched I/O,
 //! self-contained proofs.
 //!
 //! Entry points:
@@ -15,6 +15,36 @@
     feature = "draft_mmr",
     doc = "- [`draft`](crate::mmr::draft) — the in-memory draft overlay (`draft_mmr` feature).\n"
 )]
+//!
+//! # Layout and terminology
+//!
+//! An MMR of 5 leaves — node indexes above, leaf (element) indexes below.
+//! Merges happen only between equal-height right-spine neighbors, so the
+//! leaf-to-node mapping has gaps (`2i + 1 − popcount(i)`):
+//!
+//! ```text
+//! height
+//!   2 │                 7  ← peak
+//!   1 │        3                  6
+//!   0 │    1       2       4       5       8  ← peak
+//!         │        │       │       │       │
+//!         L0       L1      L2      L3      L4
+//!
+//! peaks = [7, 8]          one peak per set bit of the leaf count
+//! bag   = H(peak_7, peak_8)   peaks bagged right-to-left, leftmost outermost
+//! root  = H(size, bag)        size = node count (here 8)
+//! ```
+//!
+//! - **node index** — 1-based position in the flat node space (the store-key
+//!   space). Every node, internal or leaf, has one.
+//! - **leaf index** — 0-based position of an appended element. The space all
+//!   *public* proof APIs speak ([`LeafIndex`](crate::primitives::LeafIndex)).
+//! - **peak** — root of one perfect subtree; count = `popcount(leaf count)`.
+//! - **bagging** — folding the peaks (right-to-left) with the size into the
+//!   root ([`bag_peaks`](crate::mmr::bag_peaks) / [`root_from`](crate::mmr::root_from)).
+//! - **pin size** — the node count a stacked layer is frozen at: reads
+//!   through a pin never exceed it
+//!   ([`SubView::pinned_size`](crate::mmr::SubView::pinned_size)).
 //!
 //! # The four MMR states
 //!
@@ -57,6 +87,7 @@
 //!   Shallow records live in the topmost MMR's store; deep records in the
 //!   store of the layer that holds the value.
 
+pub mod aliases;
 pub mod async_mmr;
 pub mod handle;
 pub mod kinds;
@@ -70,6 +101,13 @@ pub mod state;
 #[cfg(feature = "draft_mmr")]
 pub mod draft;
 
+pub use aliases::{
+    AsyncPlainAppendMmr, AsyncPlainEditableMmr, AsyncPlainNullifyingMmr, AsyncWithPeaksAppendMmr,
+    AsyncWithPeaksEditableMmr, AsyncWithPeaksNullifyingMmr, PlainAppendMmr, PlainEditableMmr,
+    PlainNullifyingMmr, WithPeaksAppendMmr, WithPeaksEditableMmr, WithPeaksNullifyingMmr,
+};
+#[cfg(feature = "stacked_mmr")]
+pub use aliases::{StackedAppendMmr, StackedNullifyingMmr};
 pub use async_mmr::AsyncMmr;
 #[cfg(feature = "draft_mmr")]
 pub use draft::{CommitFailure, CommitReport, CommitResult, Draft, Optimise, StackedCommitResult};
@@ -79,15 +117,18 @@ pub use handle::{
 };
 pub use kinds::{DeepNullifiable, EditableKind, Kind, Plain, Stacked, WithPeaks};
 pub use layout::{
-    Height, LeafCount, MmrSize, NodeIndex, PathStep, Side, bag_peaks, merges_on_append,
-    peak_heights, peaks_of, root_from, sibling_path, size_of,
+    Height, InvalidMmrSize, LeafCount, MmrSize, NodeIndex, NodeIndexZero, PathStep, Side,
+    bag_peaks, merges_on_append, peak_heights, peaks_of, root_from, sibling_path, size_of,
 };
 pub use mode::{AppendOnly, Editable, Mode, Nullifying, Stackable};
 pub use nullifiers::{NullifierError, NullifierRecord, NullifierSet};
 pub use proof::encoding::{
     EncodedMultiProof, EncodedProof, EncodingError, FixedWidth, ProofEncoding,
 };
-pub use proof::{MultiProof, Proof, VerifyError};
+pub use proof::{
+    ConsistencyProof, MultiProof, Proof, VerifyError, verify_consistency_proof, verify_multi_proof,
+    verify_multi_proof_hashed, verify_proof, verify_proof_hashed,
+};
 pub use stacked::SubView;
 #[cfg(feature = "stacked_mmr")]
 pub use stacked::{InvalidSubViews, StackingError};

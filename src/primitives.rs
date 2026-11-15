@@ -58,12 +58,16 @@ impl Hash {
 impl fmt::Debug for Hash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Shortened form: hashes appear in proofs and logs in bulk, full width
-        // is noise there. Use the `H` alternate form for the full hex.
-        write!(f, "Hash(0x")?;
-        for byte in &self.0[..4] {
-            write!(f, "{byte:02x}")?;
+        // is noise there. `#?` (the `H` alternate form) renders the full hex.
+        if f.alternate() {
+            fmt::LowerHex::fmt(self, f)
+        } else {
+            write!(f, "Hash(0x")?;
+            for byte in &self.0[..4] {
+                write!(f, "{byte:02x}")?;
+            }
+            write!(f, "…)")
         }
-        write!(f, "…)")
     }
 }
 
@@ -73,6 +77,79 @@ impl fmt::Display for Hash {
             write!(f, "{byte:02x}")?;
         }
         Ok(())
+    }
+}
+
+impl fmt::LowerHex for Hash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in &self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::UpperHex for Hash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in &self.0 {
+            write!(f, "{byte:02X}")?;
+        }
+        Ok(())
+    }
+}
+
+impl core::str::FromStr for Hash {
+    type Err = HashParseError;
+
+    /// Parses the 64-character hex encoding (leading `0x` tolerated).
+    ///
+    /// ```
+    /// use accumulators::primitives::Hash;
+    ///
+    /// let full = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    /// assert!(full.parse::<Hash>().is_ok());
+    /// assert!(format!("0x{full}").parse::<Hash>().is_ok());
+    /// assert!("zz".parse::<Hash>().is_err());
+    /// assert!("aabb".parse::<Hash>().is_err());
+    /// ```
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let hex = s.strip_prefix("0x").unwrap_or(s);
+        let mut out = [0; 32];
+        hex::decode_into(hex, &mut out)?;
+        Ok(Self(out))
+    }
+}
+
+/// Failed to parse a [`Hash`](struct@Hash) from text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HashParseError {
+    /// The text is not 64 characters (32 bytes hex-encoded), ignoring an
+    /// optional `0x` prefix.
+    WrongLength(usize),
+    /// A character is not a lowercase or uppercase hex digit.
+    BadHex,
+}
+
+impl fmt::Display for HashParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WrongLength(len) => {
+                write!(f, "invalid hash: expected 64 hex characters, found {len}")
+            }
+            Self::BadHex => write!(f, "invalid hash: not a hex string"),
+        }
+    }
+}
+
+impl core::error::Error for HashParseError {}
+
+impl From<hex::DecodeError> for HashParseError {
+    fn from(error: hex::DecodeError) -> Self {
+        match error {
+            hex::DecodeError::WrongLength(len) => Self::WrongLength(len),
+            hex::DecodeError::BadHex => Self::BadHex,
+        }
     }
 }
 
@@ -179,6 +256,17 @@ impl LeafIndex {
         Self(index)
     }
 
+    /// Creates a leaf index, or `None` beyond [`MAX_LEAF_COUNT`] — the
+    /// fallible counterpart of [`Self::new`].
+    #[must_use]
+    pub const fn try_new(index: u64) -> Option<Self> {
+        if index <= MAX_LEAF_COUNT {
+            Some(Self(index))
+        } else {
+            None
+        }
+    }
+
     /// The raw 0-based index.
     #[must_use]
     pub const fn get(self) -> u64 {
@@ -186,8 +274,115 @@ impl LeafIndex {
     }
 }
 
+/// A raw value exceeded the leaf-space bound ([`MAX_LEAF_COUNT`]): the
+/// MMR layout math cannot represent leaf indexes/counts above it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LeafSpaceOverflow(
+    /// The rejected raw value.
+    pub u64,
+);
+
+impl fmt::Display for LeafSpaceOverflow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "value {} exceeds the leaf-space bound {MAX_LEAF_COUNT}",
+            self.0
+        )
+    }
+}
+
+impl core::error::Error for LeafSpaceOverflow {}
+
+impl TryFrom<u64> for LeafIndex {
+    type Error = LeafSpaceOverflow;
+
+    fn try_from(index: u64) -> Result<Self, Self::Error> {
+        Self::try_new(index).ok_or(LeafSpaceOverflow(index))
+    }
+}
+
+impl From<usize> for LeafIndex {
+    /// # Panics
+    ///
+    /// Panics when the value exceeds [`MAX_LEAF_COUNT`] — impossible on
+    /// 64-bit targets.
+    fn from(index: usize) -> Self {
+        Self::new(index as u64)
+    }
+}
+
+impl From<LeafIndex> for u64 {
+    fn from(leaf: LeafIndex) -> Self {
+        leaf.0
+    }
+}
+
+impl From<LeafIndex> for usize {
+    /// # Panics
+    ///
+    /// Panics when the index exceeds `usize::MAX` — only possible on
+    /// 32-bit targets (the leaf-space bound is close to `u64::MAX`).
+    fn from(leaf: LeafIndex) -> Self {
+        #[expect(
+            clippy::expect_used,
+            reason = "documented narrow-target conversion failure, not a crate invariant"
+        )]
+        Self::try_from(leaf.0).expect("leaf index exceeds usize::MAX")
+    }
+}
+
 impl fmt::Display for LeafIndex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+/// The shared lowercase-hex codec — one implementation for every consumer
+/// (`FromStr`, the wire encodings, the `serde` impls).
+pub(crate) mod hex {
+    #[cfg(any(feature = "mmr", feature = "serde"))]
+    use alloc::string::String;
+
+    /// Lowercase hex encoding of `bytes`.
+    #[cfg(any(feature = "mmr", feature = "serde"))]
+    pub(crate) fn encode(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            out.push(HEX[usize::from(byte >> 4)] as char);
+            out.push(HEX[usize::from(byte & 0x0f)] as char);
+        }
+        out
+    }
+
+    /// Hex decoding failure: wrong character count or a non-hex character.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum DecodeError {
+        /// Not exactly `2 × out.len()` characters.
+        WrongLength(usize),
+        /// A character is not a hex digit.
+        BadHex,
+    }
+
+    /// Decodes exactly `out.len()` bytes of hex (no `0x` prefix handling —
+    /// callers own the prefix convention) into `out`.
+    pub(crate) fn decode_into(s: &str, out: &mut [u8]) -> Result<(), DecodeError> {
+        let bytes = s.as_bytes();
+        if bytes.len() != out.len() * 2 {
+            return Err(DecodeError::WrongLength(bytes.len()));
+        }
+        for (chunk, slot) in bytes.as_chunks::<2>().0.iter().zip(out) {
+            let hi = (chunk[0] as char).to_digit(16).ok_or(DecodeError::BadHex)?;
+            let lo = (chunk[1] as char).to_digit(16).ok_or(DecodeError::BadHex)?;
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "each digit is 0..=15, so (hi << 4) | lo is at most 0xFF"
+            )]
+            let byte = ((hi << 4) | lo) as u8;
+            *slot = byte;
+        }
+        Ok(())
     }
 }

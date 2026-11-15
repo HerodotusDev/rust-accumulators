@@ -8,10 +8,7 @@
 //! covers what the compiler *can* check: which operations exist at all.
 
 /// Marker trait for MMR kinds. Sealed: the crate defines all kinds.
-pub trait Kind: sealed::Sealed {
-    /// Whether every leaf since genesis is provable for this kind.
-    const FULL_HISTORY: bool;
-}
+pub trait Kind: sealed::Sealed {}
 
 /// A plain MMR: built from genesis, full history, single store.
 #[derive(Clone, Copy, Debug, Default)]
@@ -26,17 +23,11 @@ pub struct WithPeaks;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Stacked;
 
-impl Kind for Plain {
-    const FULL_HISTORY: bool = true;
-}
+impl Kind for Plain {}
 
-impl Kind for WithPeaks {
-    const FULL_HISTORY: bool = false;
-}
+impl Kind for WithPeaks {}
 
-impl Kind for Stacked {
-    const FULL_HISTORY: bool = false;
-}
+impl Kind for Stacked {}
 
 /// Kinds whose handle is a **single store layer**: [`Plain`] and
 /// [`WithPeaks`]. [`Stacked`] handles are multi-layer, so their pins carry
@@ -71,6 +62,11 @@ impl EditableKind for Plain {}
 impl EditableKind for WithPeaks {}
 
 mod sealed {
+    // Sealed trait: deliberately unnameable from outside the crate.
+    #[expect(
+        unnameable_types,
+        reason = "sealing requires the trait to be unnameable"
+    )]
     pub trait Sealed {}
     impl Sealed for super::Plain {}
     impl Sealed for super::WithPeaks {}

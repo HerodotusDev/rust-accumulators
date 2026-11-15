@@ -1,10 +1,9 @@
 //! Stacked (branched) MMRs: unlimited layering over pinned sub-MMR views.
 //!
-//! The owner's model: MMR 2 stacks on MMR 1 at size 11 (covers 0–10), MMR 3
-//! stacks on MMR 2 at size 15 (covers 0–14), and every layer keeps growing
-//! independently — the stack reads each sub-MMR *up to its pin size*, so
-//! independent growth below the pin is invisible above it. One hasher across
-//! all layers.
+//! MMR 2 stacks on MMR 1 at size 11 (covers 0–10), MMR 3 stacks on MMR 2 at
+//! size 15 (covers 0–14), and every layer keeps growing independently — the
+//! stack reads each sub-MMR *up to its pin size*, so independent growth
+//! below the pin is invisible above it. One hasher across all layers.
 //!
 //! # Layer routing
 //!
@@ -13,9 +12,9 @@
 //! Reads and writes are grouped **by store** — layers whose stores are
 //! [`same_store`](crate::store::Store::same_store) join one batched call —
 //! so a whole stack on one shared store costs exactly one I/O call per
-//! operation, and distinct stores cost one call each (sequential for now; a
-//! parallel fan-out is future work). The grouping runs per operation over a
-//! layer list that never changes after construction.
+//! operation, and distinct stores cost one call each, taken sequentially.
+//! The grouping runs per operation over a layer list that never changes
+//! after construction.
 //!
 //! # Stores across layers
 //!
@@ -31,28 +30,21 @@
     doc = "- **Persistence**: opening a stacked MMR reconstructs every layer's\n  store from persisted locators, which requires the store type to\n  implement [`Retrievable`] — see [`open_stacked`].\n"
 )]
 //!
-//! v0.5 defects this design fixes:
-//! - metadata was a loose `Vec<(usize, MmrMetadata)>` with only the last
-//!   entry validated — unsorted or overlapping sizes silently routed reads
-//!   to the wrong sub-MMR ([`SubView`] is validated at construction here),
-//! - routing was mutable public fn-pointers on the table layer — here it is
-//!   private, immutable state inside the [`Stacked`](crate::mmr::Stacked) kind,
-//! - single vs multi-key routing could diverge — one routing function.
 
+use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 
 use super::layout::{MmrSize, NodeIndex};
 #[cfg(feature = "stacked_mmr")]
-use super::mode::Stackable;
-use super::nullifiers::{NullifierRecord, read_record};
+use super::mode::{AppendOnly, Nullifying, Stackable};
 #[cfg(feature = "stacked_mmr")]
 use crate::hashers::Hasher;
 use crate::ids::TreeId;
-use crate::primitives::{HashValue, LeafIndex};
-use crate::store::{ErasedStore, Store, StoreLocator, keys, keys::Table};
+use crate::primitives::HashValue;
 #[cfg(feature = "stacked_mmr")]
-use crate::store::{Retrievable, Storage};
+use crate::store::Retrievable;
+use crate::store::{ErasedStore, Storage, Store, StoreLocator, keys, keys::Table};
 
 /// A frozen, read-only view of a sub-MMR at a pinned size.
 ///
@@ -64,6 +56,10 @@ use crate::store::{Retrievable, Storage};
 /// preserves the routing — one [`SubView`] is always a complete, self-
 /// contained read path for everything below its pin.
 #[derive(Clone)]
+#[expect(
+    missing_debug_implementations,
+    reason = "generic over non-Debug stores; a manual Debug would have to render or hide the store"
+)]
 pub struct SubView<S, Id, O = crate::primitives::Hash> {
     /// The layer chain, innermost (deepest) first; the last entry is the
     /// pinned sub-MMR's own top layer.
@@ -113,6 +109,10 @@ impl<S, Id: Copy, O: HashValue> SubView<S, Id, O> {
     /// # Panics
     ///
     /// Never in practice: every view is constructed with at least one layer.
+    #[expect(
+        clippy::expect_used,
+        reason = "every view is constructed with at least one layer (see # Panics)"
+    )]
     #[must_use]
     pub fn id(&self) -> Id {
         self.layers.last().expect("a view always has layers").id
@@ -127,11 +127,27 @@ impl<S, Id: Copy, O: HashValue> SubView<S, Id, O> {
     }
 
     /// A single-layer view (pin of a `Plain`/`WithPeaks` MMR).
+    ///
+    /// The layer's locator is derived exactly as `Mmr::pin` derives it: from
+    /// [`Store::locator`] of the given store — `None` for session-local
+    /// backends, the re-openable canonical locator for persisted ones. To
+    /// hand-pin a locator instead (rare; proxying cases), chain
+    /// [`SubView::with_locator`].
+    ///
+    /// # Trust model
+    ///
+    /// Unlike `Mmr::pin`, this constructor is forgeable: the id, store, and
+    /// pinned size are taken on trust, and the content is checked only when
+    /// the view is read or stacked (missing nodes surface as
+    /// `Corrupted::MissingRecord` / `StackingError` at stacking time, never
+    /// as silently-wrong routing — routing is derived from `pinned_size`
+    /// alone, which the caller owns).
     #[must_use]
-    pub fn single(id: Id, store: S, pinned_size: MmrSize, locator: Option<StoreLocator>) -> Self
+    pub fn single(id: Id, store: S, pinned_size: MmrSize) -> Self
     where
         S: Store,
     {
+        let locator = Store::locator(&store);
         Self {
             layers: vec![LayerView {
                 id,
@@ -143,6 +159,17 @@ impl<S, Id: Copy, O: HashValue> SubView<S, Id, O> {
             pinned_size,
             _output: core::marker::PhantomData,
         }
+    }
+
+    /// Replaces the top layer's locator with a hand-pinned one — the escape
+    /// hatch for proxying cases where the store's own locator does not name
+    /// the re-openable storage (`None` marks the layer session-local).
+    #[must_use]
+    pub fn with_locator(mut self, locator: Option<StoreLocator>) -> Self {
+        if let Some(layer) = self.layers.last_mut() {
+            layer.locator = locator;
+        }
+        self
     }
 
     /// A store-type-changing copy of this view (used by draft
@@ -169,12 +196,6 @@ impl<S, Id: Copy, O: HashValue> SubView<S, Id, O> {
         }
     }
 
-    /// The covering layer for a node at or below the pin — the owner of any
-    /// value stored there.
-    pub(crate) fn owner_of(&self, node: u64) -> Option<&LayerView<S, Id, O>> {
-        self.route(node)
-    }
-
     /// The persisted layer records of this view, innermost first.
     #[cfg(feature = "stacked_mmr")]
     pub(crate) fn persisted_layers(&self) -> impl Iterator<Item = PersistedLayer<Id>> + '_ {
@@ -189,98 +210,104 @@ impl<S, Id: Copy, O: HashValue> SubView<S, Id, O> {
     }
 }
 
-/// One routed request group: a store, the keys to read there, and the result
-/// positions they fill.
-struct RouterGroup<'a, S> {
-    store: &'a S,
-    keys: Vec<Vec<u8>>,
-    positions: Vec<usize>,
+/// One routed read group: a store, the **deduplicated** node keys to read
+/// there, and the result positions each key fills.
+pub(crate) struct RouteGroup<'a, S> {
+    /// The store to read from.
+    pub(crate) store: &'a S,
+    /// Encoded node keys (per layer id), deduplicated in request order.
+    pub(crate) keys: Vec<Vec<u8>>,
+    /// `slots[i]` holds every result position filled by `keys[i]` — one key
+    /// can serve several requests (overlapping proof paths).
+    pub(crate) slots: Vec<Vec<usize>>,
 }
 
-/// The node router shared by the stacked MMR and its sub-views, so single-
-/// and multi-key reads can never diverge: requests are grouped **per store**
-/// (same-store layers join one batched call, keys deduplicated), and results
-/// fan back positionally.
-pub(crate) struct NodeRouter<'a, S> {
-    groups: Vec<RouterGroup<'a, S>>,
-}
+/// Pure layer routing + store grouping for a batch of node reads: nodes at
+/// or below a sub-view's pin route through its chain (innermost covering
+/// layer), everything else to the own layer; same-store layers merge into
+/// one group with keys deduplicated. Execution — the actual read and the
+/// fan-back — stays with the sync and async shells.
+/// `same_store` is the caller's [`Store::same_store`](crate::store::Store::same_store)
+/// / [`AsyncStore::same_store`](crate::store::AsyncStore::same_store) —
+/// the two traits define it separately, so the planner takes it as a hook.
+pub(crate) fn plan_node_reads<'a, S, Id: TreeId, O: HashValue>(
+    subs: &'a [SubView<S, Id, O>],
+    own_store: &'a S,
+    own_id: Id,
+    nodes: &[NodeIndex],
+    same_store: impl Fn(&S, &S) -> bool,
+) -> Vec<RouteGroup<'a, S>> {
+    let mut groups: Vec<RouteGroup<'a, S>> = Vec::new();
+    // Per-group dedup index: (layer id, node) → slot in the group's keys.
+    let mut seen: Vec<BTreeMap<(Id, u64), usize>> = Vec::new();
 
-impl<'a, S: Store> NodeRouter<'a, S> {
-    /// An empty router.
-    pub(crate) fn new() -> Self {
-        Self { groups: Vec::new() }
-    }
-
-    /// Routes one node to a layer's `(store, id)`.
-    pub(crate) fn route<Id: TreeId>(
-        &mut self,
-        store: &'a S,
-        id: Id,
-        node: NodeIndex,
-        position: usize,
-    ) {
-        let key = keys::encode(&id, Table::Nodes, node.get());
-        match self
-            .groups
-            .iter_mut()
-            .find(|group| Store::same_store(group.store, store))
-        {
-            Some(group) => {
-                group.keys.push(key);
-                group.positions.push(position);
+    for (position, node) in nodes.iter().enumerate() {
+        // Each sub-view routes internally through its own (possibly
+        // multi-layer) chain; the own layer handles everything above the
+        // pins. A sub covering the node without a covering layer leaves the
+        // request unrouted (result stays `None`).
+        let mut routed = None;
+        let mut covered = false;
+        for sub in subs {
+            if node.get() <= sub.pinned_size.get() {
+                if let Some(layer) = sub.route(node.get()) {
+                    routed = Some((layer.store_ref(), layer.id_ref()));
+                }
+                covered = true;
+                break;
             }
-            None => self.groups.push(RouterGroup {
+        }
+        let (store, id) = match (routed, covered) {
+            (Some(target), _) => target,
+            (None, false) => (own_store, own_id),
+            (None, true) => continue,
+        };
+
+        let key = keys::encode(&id, Table::Nodes, node.get());
+        let existing = groups
+            .iter_mut()
+            .zip(&mut seen)
+            .find(|(group, _)| same_store(group.store, store));
+        if let Some((group, seen)) = existing {
+            if let Some(&slot) = seen.get(&(id, node.get())) {
+                group.slots[slot].push(position);
+            } else {
+                seen.insert((id, node.get()), group.keys.len());
+                group.keys.push(key);
+                group.slots.push(vec![position]);
+            }
+        } else {
+            groups.push(RouteGroup {
                 store,
                 keys: vec![key],
-                positions: vec![position],
-            }),
+                slots: vec![vec![position]],
+            });
+            seen.push(BTreeMap::from([((id, node.get()), 0_usize)]));
         }
     }
+    groups
+}
 
-    /// Executes one batched read per distinct store and fans the decoded
-    /// values back into a positionally aligned result.
-    ///
-    /// # Errors
-    ///
-    /// Store failures.
-    pub(crate) fn read<O: HashValue>(self, nodes: usize) -> Result<Vec<Option<O>>, S::Error> {
-        let mut results: Vec<Option<O>> = vec![None; nodes];
-        for group in self.groups {
-            let refs: Vec<&[u8]> = group.keys.iter().map(Vec::as_slice).collect();
-            let values = group.store.read(&refs)?;
-            for (value, position) in values.into_iter().zip(&group.positions) {
-                results[*position] = value.and_then(|bytes| O::from_bytes(&bytes));
-            }
-        }
-        Ok(results)
+/// Parses one stored node value: `None` = absent; a present value must
+/// parse as a hash. Present-but-unparsable is corruption, never an absent
+/// key — the shared read helper for the sync shell, the async shell, and
+/// the router.
+pub(crate) fn parse_node_value<S: Storage, O: HashValue>(
+    value: Option<Vec<u8>>,
+) -> Result<Option<O>, super::MmrError<S>> {
+    match value {
+        None => Ok(None),
+        Some(bytes) => O::from_bytes(&bytes)
+            .map(Some)
+            .ok_or(super::MmrError::Corrupted(
+                super::Corrupted::MalformedRecord {
+                    table: Table::Nodes,
+                },
+            )),
     }
 }
 
 impl<S: Store, Id: TreeId, O: HashValue> SubView<S, Id, O> {
-    /// Resolves the nullifier record for `leaf` through the layer chain.
-    /// Every layer's records — the pinned sub's own included — are gated by
-    /// that layer's pin size: a record written after the pin carries a later
-    /// size and is invisible through the view, exactly like appends past the
-    /// pin.
-    pub(crate) fn resolve_nullifier(
-        &self,
-        leaf: LeafIndex,
-    ) -> Result<Option<NullifierRecord>, S::Error> {
-        let node = leaf.node().get();
-        for layer in &self.layers {
-            if node <= layer.pinned_size.get() {
-                if let Some(record) = read_record(layer.store_ref(), layer.id_ref(), leaf)?
-                    && record.resolves_at(layer.pinned_size.get())
-                {
-                    return Ok(Some(record));
-                }
-                // The leaf's layer is this one; deeper layers cannot hold it.
-                break;
-            }
-        }
-        Ok(None)
-    }
-
     /// Erases the view's store, for building mixed-type stacks (every layer
     /// wrapped; see the module docs). Session-local by nature.
     #[must_use]
@@ -304,6 +331,48 @@ impl<S: Store, Id: TreeId, O: HashValue> SubView<S, Id, O> {
             _output: core::marker::PhantomData,
         }
     }
+}
+
+/// Validates that every layer of every sub-view persists a hasher identity +
+/// config matching the stack's hasher. A stack whose layers hash with a
+/// different identity or configuration does not reproduce the reference root
+/// of the same elements, so this runs at stack construction *and* at every
+/// stacked re-open. Cold path: one single-key read per layer.
+///
+/// Returns the first mismatching layer's recorded identity
+/// (`"name (config)"`), or `None` when all layers match.
+#[cfg(feature = "stacked_mmr")]
+pub(crate) fn first_layer_hasher_mismatch<H: Hasher, S: Store, Id: TreeId, O: HashValue>(
+    subs: &[SubView<S, Id, O>],
+    hasher: &H,
+) -> Option<alloc::string::String> {
+    for sub in subs {
+        for layer in &sub.layers {
+            let key = keys::encode(&layer.id_ref(), Table::HasherInfo, 0);
+            let values = layer.store_ref().read(&[&key]);
+            let stored = match values {
+                // Unreadable store: the identity cannot be confirmed —
+                // report a mismatch rather than swallowing the finding.
+                Ok(values) => match values.into_iter().next().flatten() {
+                    Some(stored) => stored,
+                    None => {
+                        return Some(alloc::string::ToString::to_string("missing hasher record"));
+                    }
+                },
+                Err(_) => return Some(alloc::format!("{} ({})", hasher.id(), hasher.config())),
+            };
+            let Some((stored_id, stored_config)) = crate::store::record::parse_hasher_info(&stored)
+            else {
+                return Some(alloc::string::ToString::to_string(
+                    "unreadable hasher record",
+                ));
+            };
+            if stored_id != hasher.id() || stored_config != hasher.config() {
+                return Some(alloc::format!("{stored_id} ({stored_config})"));
+            }
+        }
+    }
+    None
 }
 
 /// Re-opens a stacked MMR from its persisted sub-view metadata
@@ -348,54 +417,94 @@ pub fn open_stacked<H: Hasher, S: Retrievable, M: Stackable, Id: TreeId>(
         },
     ))?;
 
-    let mut subs = Vec::with_capacity(layers.len());
-    for layer in &layers {
-        let layer_store = S::open(&layer.locator).map_err(super::MmrError::Store)?;
-        // Cross-check: the layer must actually hold at least the pinned size.
-        let count_key = keys::encode(&layer.id, Table::NodeCount, 0);
-        let mut stored = layer_store
-            .read(&[&count_key])
-            .map_err(super::MmrError::Store)?;
-        let node_count = stored
-            .pop()
-            .flatten()
-            .as_deref()
-            .and_then(parse_counter)
-            .ok_or(super::MmrError::Corrupted(
-                super::Corrupted::MissingRecord {
-                    table: Table::NodeCount,
-                },
-            ))?;
-        // Node counts are bounded by MAX_LEAF_COUNT (< 2^63); on 32-bit
-        // targets an MMR wider than `usize` cannot be materialized, so the
-        // narrowing into the error's `usize` fields never loses information
-        // in practice.
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "node counts are bounded by MAX_LEAF_COUNT (< 2^63); on 32-bit targets a larger MMR cannot be materialized"
-        )]
-        if node_count < layer.pinned_size {
-            return Err(super::MmrError::Corrupted(
-                super::Corrupted::PeaksMismatch {
-                    expected: layer.pinned_size as usize,
-                    found: node_count as usize,
-                },
-            ));
-        }
-        subs.push(SubView {
-            layers: vec![LayerView {
+    // Reconstruct the sub-views exactly as `pin()` had them: distinct pin
+    // sizes (ascending) are the view boundaries, and a view with pin P
+    // carries every flattened layer whose pin is ≤ P, in bottom → top order
+    // (a view's pin is always its top layer's pinned size). Rebuilding one
+    // single-layer view per record instead would produce duplicate pins —
+    // which `validate_sub_views` (run by `open_stack`) rightly rejects.
+    let mut pins: Vec<u64> = layers.iter().map(|layer| layer.pinned_size).collect();
+    pins.sort_unstable();
+    pins.dedup();
+
+    let mut subs = Vec::with_capacity(pins.len());
+    for &pin in &pins {
+        let mut chain: Vec<LayerView<S, Id, H::Output>> = Vec::new();
+        for layer in &layers {
+            if layer.pinned_size > pin {
+                continue;
+            }
+            let layer_store = S::open(&layer.locator).map_err(super::MmrError::Store)?;
+            // Cross-check: the layer must actually hold at least the pinned
+            // size.
+            let count_key = keys::encode(&layer.id, Table::NodeCount, 0);
+            let mut stored = layer_store
+                .read(&[&count_key])
+                .map_err(super::MmrError::Store)?;
+            let node_count = stored
+                .pop()
+                .flatten()
+                .as_deref()
+                .and_then(parse_counter)
+                .ok_or(super::MmrError::Corrupted(
+                    super::Corrupted::MissingRecord {
+                        table: Table::NodeCount,
+                    },
+                ))?;
+            if node_count < layer.pinned_size {
+                return Err(super::MmrError::Corrupted(
+                    super::Corrupted::PinSizeMismatch {
+                        pinned: MmrSize::new_unchecked(layer.pinned_size),
+                        layer_size: MmrSize::new_unchecked(node_count),
+                    },
+                ));
+            }
+            chain.push(LayerView {
                 id: layer.id,
                 store: layer_store,
                 pinned_size: MmrSize::new_unchecked(layer.pinned_size),
                 locator: Some(layer.locator.clone()),
                 _output: core::marker::PhantomData,
-            }],
-            pinned_size: MmrSize::new_unchecked(layer.pinned_size),
+            });
+        }
+        subs.push(SubView {
+            layers: chain,
+            pinned_size: MmrSize::new_unchecked(pin),
             _output: core::marker::PhantomData,
         });
     }
 
     super::Mmr::open_stack(hasher, store, id, subs)
+}
+
+/// Re-opens a stacked MMR whose top layer is [`AppendOnly`] — the named
+/// alternative to the four-parameter [`open_stacked`] turbofish.
+///
+/// # Errors
+///
+/// As [`open_stacked`].
+#[cfg(feature = "stacked_mmr")]
+pub fn open_stacked_append_only<H: Hasher, S: Retrievable, Id: TreeId>(
+    hasher: H,
+    store: S,
+    id: Id,
+) -> Result<super::Mmr<H, S, super::Stacked, AppendOnly, Id>, super::MmrError<S>> {
+    open_stacked::<H, S, AppendOnly, Id>(hasher, store, id)
+}
+
+/// Re-opens a stacked MMR whose top layer is [`Nullifying`] — the named
+/// alternative to the four-parameter [`open_stacked`] turbofish.
+///
+/// # Errors
+///
+/// As [`open_stacked`].
+#[cfg(feature = "stacked_mmr")]
+pub fn open_stacked_nullifying<H: Hasher, S: Retrievable, Id: TreeId>(
+    hasher: H,
+    store: S,
+    id: Id,
+) -> Result<super::Mmr<H, S, super::Stacked, Nullifying, Id>, super::MmrError<S>> {
+    open_stacked::<H, S, Nullifying, Id>(hasher, store, id)
 }
 
 /// One persisted layer of a stacked MMR.
@@ -462,7 +571,7 @@ pub(crate) fn parse_subviews<Id: TreeId>(raw: &[u8]) -> Option<Vec<PersistedLaye
 
 /// Validates and orders sub-views for stacking.
 ///
-/// Requirements enforced here (all were silently violated in v0.5):
+/// Requirements enforced here:
 /// - pin sizes strictly increasing, no duplicates,
 /// - the top MMR's own range starts at the largest pin size,
 /// - every view's range is well-formed for an MMR (valid node count).
@@ -538,13 +647,17 @@ pub enum InvalidSubViews {
     /// 65535 layers, an id over 255 bytes, or an over-65535-byte locator).
     #[error("sub-view record exceeds the wire format's length prefixes")]
     Unrepresentable,
+    /// A sub-view's pinned peak nodes are absent or unparsable in its
+    /// store: the view's shape is valid but its content does not back the
+    /// pin ([`SubView::single`] is a forgeable constructor).
+    #[error("a pinned peak node is missing from its layer's store")]
+    MissingPeakNodes,
     /// No views supplied.
     #[error("at least one sub-view is required")]
     Empty,
 }
 
-/// Stacking construction failures. Generic over [`Storage`] — shares the
-/// sync/async error-unification model of
+/// Stacking construction failures, generic over [`Storage`] like
 /// [`MmrError`](super::MmrError).
 #[cfg(feature = "stacked_mmr")]
 #[derive(Debug, thiserror::Error)]
@@ -556,4 +669,19 @@ pub enum StackingError<S: Storage> {
     /// Store I/O failed.
     #[error("store error")]
     Store(#[source] S::Error),
+    /// The hasher's identity/config cannot be represented in the persisted
+    /// `HasherInfo` record (custom name over 255 bytes or config over
+    /// 65535 bytes) — rejected at creation instead of persisting a record
+    /// that would brick every later open.
+    #[error("hasher identity cannot be represented in the persisted record")]
+    UnrepresentableHasher,
+    /// A pinned layer's persisted hasher identity/config differs from the
+    /// stack's hasher — the stack root would not equal the reference root of
+    /// the same elements, so the stack is refused at construction (and at
+    /// re-open, as a [`Corrupted::HasherMismatch`](super::Corrupted)).
+    #[error("stacked layer hasher mismatch: store has {stored}")]
+    LayerHasherMismatch {
+        /// The layer's recorded hasher identity/config.
+        stored: alloc::string::String,
+    },
 }

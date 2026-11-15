@@ -4,7 +4,7 @@
 //! [`Stacked`](crate::mmr::Stacked)) says *where an MMR's history comes from*.
 //! Mode says *what may happen to its leaves after they exist*. The two are
 //! orthogonal: `Mmr<H, S, K, M>`, with `M = AppendOnly` by default so the
-//! common case stays `Mmr<PoseidonHasher, MyStore>`.
+//! common case stays `Mmr<PoseidonStarkHasher, MyStore>`.
 //!
 //! # The three modes
 //!
@@ -51,8 +51,6 @@
 
 /// Marker trait for mutability modes. Sealed: the crate defines all modes.
 pub trait Mode: sealed::Sealed {
-    /// Whether in-place leaf edits exist for this mode.
-    const IN_PLACE_EDITS: bool;
     /// Whether deletion is recorded as a nullifier write instead of a data
     /// change.
     const NULLIFYING: bool;
@@ -87,24 +85,26 @@ pub struct Editable;
 pub struct Nullifying;
 
 impl Mode for AppendOnly {
-    const IN_PLACE_EDITS: bool = false;
     const NULLIFYING: bool = false;
     const NAME: &'static str = "append_only";
 }
 
 impl Mode for Editable {
-    const IN_PLACE_EDITS: bool = true;
     const NULLIFYING: bool = false;
     const NAME: &'static str = "editable";
 }
 
 impl Mode for Nullifying {
-    const IN_PLACE_EDITS: bool = false;
     const NULLIFYING: bool = true;
     const NAME: &'static str = "nullifying";
 }
 
 mod sealed {
+    // Sealed trait: deliberately unnameable from outside the crate.
+    #[expect(
+        unnameable_types,
+        reason = "sealing requires the trait to be unnameable"
+    )]
     pub trait Sealed {}
     impl Sealed for super::AppendOnly {}
     impl Sealed for super::Editable {}

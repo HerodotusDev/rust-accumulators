@@ -5,12 +5,14 @@
 //! all serialize into with zero heap use. Accumulators are generic over
 //! [`TreeId`](crate::ids::TreeId), so any `Copy` id type (32-byte digests, semantic composites
 //! like `(chain_id, contract, slot)`, …) plugs in by implementing one
-//! method; the common case just infers `AccumulatorId` everywhere.
+//! method; the common case infers `AccumulatorId` everywhere.
 //!
 //! Store keys are length-prefixed binary (`[id_len][id bytes][table tag]
-//! [index]`), so ids of any length and content are safe — no delimiter can
-//! collide (fixing the v0.5 bug where an `mmr_id` containing `:` corrupted
-//! key parsing).
+//! [index]`), so no delimiter or id content can collide with the key
+//! structure. The id length prefix is
+//! one byte: ids must encode to **at most 255 bytes**
+//! (`store::keys::encode` panics beyond that — silent truncation would
+//! alias one accumulator's keyspace onto another's).
 //!
 //! Feature flags:
 //! - `uuid_v4` — `random_v4`,
@@ -20,13 +22,62 @@
 
 use alloc::vec::Vec;
 
+use crate::primitives::hex;
+
 /// An accumulator identifier usable in store keys.
 ///
 /// Implement this for your own id type and pass it wherever an id is
 /// required; [`AccumulatorId`] is the built-in default.
+///
+/// # Key-encoding bound
+///
+/// The store-key layout length-prefixes the id encoding with a single
+/// byte, so [`TreeId::encode_into`] must emit **at most 255 bytes**.
+/// `store::keys::encode` asserts this bound (a longer id is a programming
+/// error: it cannot be represented, and truncating it would collide
+/// keyspaces across accumulators).
+///
+/// A composite id — any `Copy` type with a fixed-size canonical encoding
+/// plugs in:
+///
+/// ```
+/// use accumulators::ids::TreeId;
+///
+/// /// Names one accumulator slot: (chain, contract, slot).
+/// #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+/// struct ChainSlot {
+///     chain_id: u64,
+///     contract: [u8; 20],
+///     slot: u64,
+/// }
+///
+/// impl TreeId for ChainSlot {
+///     fn encode_into(&self, out: &mut Vec<u8>) {
+///         out.extend_from_slice(&self.chain_id.to_be_bytes());
+///         out.extend_from_slice(&self.contract);
+///         out.extend_from_slice(&self.slot.to_be_bytes());
+///     }
+///
+///     fn from_bytes(bytes: &[u8]) -> Option<Self> {
+///         let (chain, rest) = bytes.split_first_chunk::<8>()?;
+///         let (contract, rest) = rest.split_first_chunk::<20>()?;
+///         let slot = rest.first_chunk::<8>()?;
+///         Some(Self {
+///             chain_id: u64::from_be_bytes(*chain),
+///             contract: *contract,
+///             slot: u64::from_be_bytes(*slot),
+///         })
+///     }
+/// }
+///
+/// let id = ChainSlot { chain_id: 1, contract: [7; 20], slot: 42 };
+/// let mut encoded = Vec::new();
+/// id.encode_into(&mut encoded);
+/// assert_eq!(ChainSlot::from_bytes(&encoded), Some(id));
+/// ```
 pub trait TreeId: Copy + Eq + Ord + core::hash::Hash + core::fmt::Debug {
     /// Appends the canonical byte encoding to `out` (the store-key form).
-    /// Any length works — the key layout length-prefixes id bytes.
+    /// Must produce at most 255 bytes — see the trait-level bound.
     fn encode_into(&self, out: &mut Vec<u8>);
 
     /// Rebuilds from the canonical byte encoding, or `None` on a wrong
@@ -129,25 +180,8 @@ impl core::str::FromStr for AccumulatorId {
     type Err = AccumulatorIdParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let bytes = s.as_bytes();
-        if bytes.len() != 32 {
-            return Err(AccumulatorIdParseError::WrongLength(bytes.len()));
-        }
         let mut out = [0; 16];
-        for (i, chunk) in bytes.as_chunks::<2>().0.iter().enumerate() {
-            let hi = (chunk[0] as char)
-                .to_digit(16)
-                .ok_or(AccumulatorIdParseError::BadHex)?;
-            let lo = (chunk[1] as char)
-                .to_digit(16)
-                .ok_or(AccumulatorIdParseError::BadHex)?;
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "each digit is 0..=15, so (hi << 4) | lo is at most 0xFF"
-            )]
-            let byte = ((hi << 4) | lo) as u8;
-            out[i] = byte;
-        }
+        hex::decode_into(s, &mut out)?;
         Ok(Self(out))
     }
 }
@@ -178,6 +212,15 @@ impl core::fmt::Display for AccumulatorIdParseError {
 
 impl core::error::Error for AccumulatorIdParseError {}
 
+impl From<crate::primitives::hex::DecodeError> for AccumulatorIdParseError {
+    fn from(error: crate::primitives::hex::DecodeError) -> Self {
+        match error {
+            crate::primitives::hex::DecodeError::WrongLength(len) => Self::WrongLength(len),
+            crate::primitives::hex::DecodeError::BadHex => Self::BadHex,
+        }
+    }
+}
+
 impl TreeId for AccumulatorId {
     fn encode_into(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.0);
@@ -187,13 +230,4 @@ impl TreeId for AccumulatorId {
         let array: [u8; 16] = bytes.try_into().ok()?;
         Some(Self(array))
     }
-}
-
-/// Encodes any id into an owned buffer (the store-key form).
-#[cfg(any(feature = "mmr", feature = "merkle_tree"))]
-#[expect(dead_code, reason = "shared codec; used by stacked persistence paths")]
-pub(crate) fn encoded_id<Id: TreeId>(id: &Id) -> Vec<u8> {
-    let mut out = Vec::new();
-    id.encode_into(&mut out);
-    out
 }

@@ -24,9 +24,9 @@ use core::num::NonZeroU64;
 
 /// Position of a node in the MMR's 1-based node space.
 ///
-/// Deliberately a distinct type from [`LeafIndex`]: the v0.5 API accepted bare
-/// `usize` in both spaces and callers passed leaves where nodes were expected
-/// (or vice versa) with no diagnostic.
+/// Deliberately a distinct type from [`LeafIndex`]: leaf and node spaces are
+/// different vocabularies, and a distinct type turns mixing them up into a
+/// compile error.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct NodeIndex(NonZeroU64);
 
@@ -35,8 +35,6 @@ impl NodeIndex {
     pub const FIRST: Self = Self(NonZeroU64::MIN);
 
     /// Creates an index, or `None` for `0` (which is not a valid node).
-    ///
-    /// Named `try_new` per Rust convention: fallible construction.
     #[must_use]
     pub const fn try_new(index: u64) -> Option<Self> {
         match NonZeroU64::new(index) {
@@ -146,8 +144,10 @@ const fn matches_height(n: u64, h: u32) -> bool {
     }
     let base = 1u64 << shift;
     let target = n.wrapping_add(1);
-    // q·base = target + popcount(q−1), and popcount ≤ 64, so at most two
-    // candidates for q.
+    // q·base = target + padding with padding = popcount(q−1) ∈ [0, 64], so a
+    // solution's q must satisfy q·base ∈ [target, target + 64] — i.e. q lies
+    // in the window [target/base, (target + 64)/base]. Only that window is
+    // searched.
     let lo = target / base;
     let hi = target.saturating_add(64) / base;
     let mut q = if lo == 0 { 1 } else { lo };
@@ -165,6 +165,28 @@ const fn matches_height(n: u64, h: u32) -> bool {
         q += 1;
     }
     false
+}
+
+/// Failed to build a [`NodeIndex`] from a raw `u64`: node indexes are
+/// 1-based, so `0` names no node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct NodeIndexZero;
+
+impl fmt::Display for NodeIndexZero {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "node index 0 is invalid: node indexes are 1-based")
+    }
+}
+
+impl core::error::Error for NodeIndexZero {}
+
+impl TryFrom<u64> for NodeIndex {
+    type Error = NodeIndexZero;
+
+    fn try_from(index: u64) -> Result<Self, Self::Error> {
+        Self::try_new(index).ok_or(NodeIndexZero)
+    }
 }
 
 impl fmt::Display for NodeIndex {
@@ -217,6 +239,30 @@ impl LeafCount {
     }
 }
 
+impl TryFrom<u64> for LeafCount {
+    type Error = crate::primitives::LeafSpaceOverflow;
+
+    fn try_from(count: u64) -> Result<Self, Self::Error> {
+        if count <= MAX_LEAF_COUNT {
+            Ok(Self(count))
+        } else {
+            Err(crate::primitives::LeafSpaceOverflow(count))
+        }
+    }
+}
+
+impl From<LeafCount> for u64 {
+    fn from(count: LeafCount) -> Self {
+        count.0
+    }
+}
+
+impl fmt::Display for LeafCount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// Total number of nodes in the MMR (the "MMR size").
 ///
 /// Not every value is a valid MMR size: valid sizes are those where the
@@ -259,6 +305,35 @@ impl MmrSize {
     }
 }
 
+/// Failed to build an [`MmrSize`] from a raw `u64`: the value does not
+/// correspond to a well-formed MMR (its leftover right spine is non-empty).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct InvalidMmrSize(
+    /// The rejected raw value.
+    pub u64,
+);
+
+impl fmt::Display for InvalidMmrSize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} is not a valid MMR size: the leftover right spine is non-empty",
+            self.0
+        )
+    }
+}
+
+impl core::error::Error for InvalidMmrSize {}
+
+impl TryFrom<u64> for MmrSize {
+    type Error = InvalidMmrSize;
+
+    fn try_from(size: u64) -> Result<Self, Self::Error> {
+        Self::try_new(size).ok_or(InvalidMmrSize(size))
+    }
+}
+
 impl fmt::Display for MmrSize {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
@@ -274,8 +349,15 @@ impl Height {
     pub const LEAF: Self = Self(0);
 
     /// Wraps a raw height.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `height` exceeds 63 — beyond it the height could not
+    /// belong to any node of a u64-sized MMR (the tallest peak of the
+    /// largest representable mountain is 63).
     #[must_use]
     pub const fn new(height: u8) -> Self {
+        assert!(height <= 63, "height beyond the layout range");
         Self(height)
     }
 
@@ -367,6 +449,9 @@ const fn largest_mountain(bound: u64) -> u64 {
 /// well-formed or the leaf is at or beyond it.
 #[must_use]
 pub fn sibling_path(leaf: LeafIndex, size: MmrSize) -> Vec<PathStep> {
+    if size.leaf_count().is_none() {
+        return Vec::new();
+    }
     let mut leaf_index = leaf.get();
     let mut node = leaf.node().get();
     let mut height = 0_u32;
@@ -461,14 +546,13 @@ const fn leaf_count_of_size(size: u64) -> Option<LeafCount> {
 }
 
 /// Folds a list of peak hashes into the single bagged peak, right to left with
-/// the leftmost peak outermost, per the current (test-pinned) semantics.
+/// the leftmost peak outermost. The fold order is pinned by golden tests —
+/// it defines the root every verifier computes.
 ///
 /// A single peak bags to itself; zero peaks bags to the hasher's genesis
 /// value (see [`Hasher::genesis`]).
 ///
-/// Infallible by construction: bagging is a fold of
-/// [`Hasher::hash_pair`] calls, and `hash_pair` is infallible — the v0.5 arity error class does not
-/// exist here.
+/// Infallible: bagging is a fold of [`Hasher::hash_pair`] calls.
 #[must_use]
 pub fn bag_peaks<H: Hasher>(hasher: &H, peaks: &[H::Output]) -> H::Output {
     match peaks.len() {
@@ -486,10 +570,9 @@ pub fn bag_peaks<H: Hasher>(hasher: &H, peaks: &[H::Output]) -> H::Output {
 
 /// Computes the MMR root from bagged peaks and the node count.
 ///
-/// Preserves the existing binding `root = H(node_count, bag)` — the node
-/// count enters as a canonical integer value
-/// ([`crate::primitives::HashValue::from_u64`]); this is hash-format-sensitive and pinned by
-/// golden tests.
+/// Binding: `root = H(node_count, bag)` — the node count enters as a
+/// canonical big-endian `u64` integer
+/// ([`crate::primitives::HashValue::from_u64`]). Pinned by golden tests.
 #[must_use]
 pub fn root_from<H: Hasher>(hasher: &H, bag: H::Output, size: MmrSize) -> H::Output {
     hasher.hash_pair(H::Output::from_u64(size.get()), bag)

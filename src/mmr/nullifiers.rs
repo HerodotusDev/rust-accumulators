@@ -53,6 +53,18 @@
 //! records" here. Bulk audit use cases need a store-level scan of the
 //! `Nullifiers` table (possible because the key layout is public and
 //! deterministic).
+//!
+//! # Single-writer assumption
+//!
+//! Recording is a **non-atomic read-modify-write** (read the existing
+//! record, put only if the candidate strengthens it) through `&self`
+//! receivers. Under a single writer per `(store, id, leaf)` this is exactly
+//! the strengthen-only semantics documented above; with *concurrent
+//! writers*, the read and the put can interleave and a weaker record can
+//! overwrite a stronger one written in between (deep → shallow regression).
+//! The store contract's atomicity is per batch, not per read-modify-write
+//! cycle — serialize nullification per accumulator (one handle, or one
+//! writer per store) rather than relying on this type for exclusion.
 
 use super::layout::MmrSize;
 use crate::ids::TreeId;
@@ -62,10 +74,12 @@ use alloc::vec::Vec;
 
 /// Failures of nullifier-record operations.
 ///
-/// Its own enum (not raw `S::Error`) because one failure mode is not a
-/// store failure at all: the wire format defines size `0` as *deep*, so a
-/// shallow record with size `0` would silently upgrade itself — that is a
-/// caller bug, rejected with [`NullifierError::ZeroShallowSize`].
+/// Its own enum (not raw `S::Error`) because two failure modes are not
+/// store failures: the wire format defines size `0` as *deep*, so a shallow
+/// record with size `0` would silently upgrade itself — that is a caller
+/// bug, rejected with [`NullifierError::ZeroShallowSize`]; and a stored
+/// record that no longer parses as a size ([`NullifierError::MalformedRecord`])
+/// must fail closed, never read as "not nullified".
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum NullifierError<S: Storage> {
@@ -78,6 +92,12 @@ pub enum NullifierError<S: Storage> {
     /// (call [`NullifierSet::nullify_deep`](NullifierSet::nullify_deep) for deep semantics).
     #[error("shallow nullification cannot use size 0: 0 is the deep marker")]
     ZeroShallowSize,
+
+    /// A nullifier record exists but cannot be parsed (not a `u64` BE
+    /// size). Treated as an error, never as "not nullified" — a corrupt
+    /// record that silently resolved as absent would fail open.
+    #[error("nullifier record is malformed")]
+    MalformedRecord,
 }
 
 /// How far a nullification reaches through stacks.
@@ -108,6 +128,11 @@ pub enum NullifierRecord {
 }
 
 impl NullifierRecord {
+    /// Parses one stored record: a `u64` BE size (`0` = deep).
+    pub(crate) fn parse(bytes: &[u8]) -> Option<Self> {
+        crate::store::record::parse_counter(bytes).map(Self::from_encoded)
+    }
+
     /// The wire value: size at nullification, `0` for deep.
     pub(crate) const fn encoded(self) -> u64 {
         match self {
@@ -139,9 +164,26 @@ impl NullifierRecord {
 
 /// A borrowed view of the nullifier records of one MMR (its own records
 /// only — stacked resolution walks sub-views itself).
+///
+/// # Single-writer assumption
+///
+/// The write path is a non-atomic read-modify-write through `&self` (see the
+/// module docs): concurrent writers to the same records can regress a deep
+/// record to shallow. Records only strengthen under one writer per
+/// accumulator — serialize nullification, don't share this handle across
+/// writing threads.
 pub struct NullifierSet<'s, S, Id> {
     pub(crate) store: &'s S,
     pub(crate) id: Id,
+}
+
+// Id summary only — the borrowed store is never rendered.
+impl<Id: TreeId, S> core::fmt::Debug for NullifierSet<'_, S, Id> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NullifierSet")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<S: Store, Id: TreeId> NullifierSet<'_, S, Id> {
@@ -161,14 +203,14 @@ impl<S: Store, Id: TreeId> NullifierSet<'_, S, Id> {
     ///
     /// # Errors
     ///
-    /// [`NullifierError::ZeroShallowSize`] for `at == 0`, store failures
-    /// otherwise.
+    /// [`NullifierError::ZeroShallowSize`] for `at == 0`,
+    /// [`NullifierError::MalformedRecord`] for a corrupt existing record,
+    /// store failures otherwise.
     pub fn nullify_shallow(&self, leaf: LeafIndex, at: MmrSize) -> Result<bool, NullifierError<S>> {
         if at.get() == 0 {
             return Err(NullifierError::ZeroShallowSize);
         }
         nullify_record(self.store, self.id, leaf, NullifierRecord::Shallow { at })
-            .map_err(NullifierError::Store)
     }
 
     /// Records a **deep** nullification of `leaf` (applies through any
@@ -178,76 +220,121 @@ impl<S: Store, Id: TreeId> NullifierSet<'_, S, Id> {
     ///
     /// # Errors
     ///
-    /// Store failures.
+    /// [`NullifierError::MalformedRecord`] for a corrupt existing record,
+    /// store failures otherwise.
     pub fn nullify_deep(&self, leaf: LeafIndex) -> Result<bool, NullifierError<S>> {
         nullify_record(self.store, self.id, leaf, NullifierRecord::Deep)
-            .map_err(NullifierError::Store)
     }
 
     /// The nullifier record for `leaf`, if any.
     ///
     /// # Errors
     ///
-    /// Store failures.
+    /// [`NullifierError::MalformedRecord`] for a present-but-unparsable
+    /// record, store failures otherwise.
     pub fn record(&self, leaf: LeafIndex) -> Result<Option<NullifierRecord>, NullifierError<S>> {
-        read_record(self.store, self.id, leaf).map_err(NullifierError::Store)
+        read_record(self.store, self.id, leaf)
     }
 
     /// Batch lookup: records for many leaves, positionally aligned.
     ///
     /// # Errors
     ///
-    /// Store failures.
+    /// As [`Self::record`].
     pub fn records<I>(&self, leaves: I) -> Result<Vec<Option<NullifierRecord>>, NullifierError<S>>
     where
         I: IntoIterator<Item = LeafIndex>,
     {
         let leaves: Vec<LeafIndex> = leaves.into_iter().collect();
-        let hashed: Vec<Vec<u8>> = leaves
-            .iter()
-            .map(|leaf| keys::encode(&self.id, keys::Table::Nullifiers, leaf.get()))
-            .collect();
-        let key_refs: Vec<&[u8]> = hashed.iter().map(Vec::as_slice).collect();
-        let values = self.store.read(&key_refs).map_err(NullifierError::Store)?;
-        Ok(values
-            .into_iter()
-            .map(|value| {
-                value
-                    .and_then(|bytes| crate::store::record::parse_counter(&bytes))
-                    .map(NullifierRecord::from_encoded)
-            })
-            .collect())
+        read_records(self.store, self.id, &leaves)
     }
 }
 
-/// Reads one record (shared by the sync set and the async shell).
+/// Reads records for many leaves in **one batched read**, positionally
+/// aligned with `leaves`. A present-but-unparsable record is
+/// [`NullifierError::MalformedRecord`] — it must never read as "not
+/// nullified" (fail-open).
+pub(crate) fn read_records<S: Store, Id: TreeId>(
+    store: &S,
+    id: Id,
+    leaves: &[LeafIndex],
+) -> Result<Vec<Option<NullifierRecord>>, NullifierError<S>> {
+    if leaves.is_empty() {
+        return Ok(Vec::new());
+    }
+    let keys: Vec<Vec<u8>> = leaves
+        .iter()
+        .map(|leaf| keys::encode(&id, keys::Table::Nullifiers, leaf.get()))
+        .collect();
+    let key_refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+    store
+        .read(&key_refs)
+        .map_err(NullifierError::Store)?
+        .into_iter()
+        .map(|value| match value {
+            None => Ok(None),
+            Some(bytes) => NullifierRecord::parse(&bytes)
+                .map(Some)
+                .ok_or(NullifierError::MalformedRecord),
+        })
+        .collect()
+}
+
+/// Reads one record (shared by the sync set and the async shell). A
+/// present-but-unparsable record is [`NullifierError::MalformedRecord`] —
+/// it must never read as "not nullified" (fail-open).
 pub(crate) fn read_record<S: Store, Id: TreeId>(
     store: &S,
     id: Id,
     leaf: LeafIndex,
-) -> Result<Option<NullifierRecord>, S::Error> {
-    let key = keys::encode(&id, keys::Table::Nullifiers, leaf.get());
-    let mut values = store.read(&[&key])?;
-    Ok(values
-        .pop()
-        .flatten()
-        .and_then(|bytes| crate::store::record::parse_counter(&bytes))
-        .map(NullifierRecord::from_encoded))
+) -> Result<Option<NullifierRecord>, NullifierError<S>> {
+    Ok(read_records(store, id, &[leaf])?
+        .into_iter()
+        .next()
+        .flatten())
+}
+
+/// Reads records for many leaves through an async store in one batched
+/// read (positional). See [`read_records`] for the malformed-record rule.
+pub(crate) async fn read_records_async<S: AsyncStore, Id: TreeId>(
+    store: &S,
+    id: Id,
+    leaves: &[LeafIndex],
+) -> Result<Vec<Option<NullifierRecord>>, NullifierError<S>> {
+    if leaves.is_empty() {
+        return Ok(Vec::new());
+    }
+    let keys: Vec<Vec<u8>> = leaves
+        .iter()
+        .map(|leaf| keys::encode(&id, keys::Table::Nullifiers, leaf.get()))
+        .collect();
+    let key_refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+    store
+        .read(&key_refs)
+        .await
+        .map_err(NullifierError::Store)?
+        .into_iter()
+        .map(|value| match value {
+            None => Ok(None),
+            Some(bytes) => NullifierRecord::parse(&bytes)
+                .map(Some)
+                .ok_or(NullifierError::MalformedRecord),
+        })
+        .collect()
 }
 
 /// Reads one record through an async store (shared by the async shell).
+/// See [`read_records`] for the malformed-record rule.
 pub(crate) async fn read_record_async<S: AsyncStore, Id: TreeId>(
     store: &S,
     id: Id,
     leaf: LeafIndex,
-) -> Result<Option<NullifierRecord>, S::Error> {
-    let key = keys::encode(&id, keys::Table::Nullifiers, leaf.get());
-    let mut values = store.read(&[&key]).await?;
-    Ok(values
-        .pop()
-        .flatten()
-        .and_then(|bytes| crate::store::record::parse_counter(&bytes))
-        .map(NullifierRecord::from_encoded))
+) -> Result<Option<NullifierRecord>, NullifierError<S>> {
+    Ok(read_records_async(store, id, &[leaf])
+        .await?
+        .into_iter()
+        .next()
+        .flatten())
 }
 
 /// Writes one record with strengthen-only conflict resolution (shared by the
@@ -257,17 +344,77 @@ pub(crate) fn nullify_record<S: Store, Id: TreeId>(
     id: Id,
     leaf: LeafIndex,
     record: NullifierRecord,
-) -> Result<bool, S::Error> {
+) -> Result<bool, NullifierError<S>> {
     match read_record(store, id, leaf)? {
         Some(existing) if existing.strength_over(record) => Ok(false),
         _ => {
             let key = keys::encode(&id, keys::Table::Nullifiers, leaf.get());
             let mut batch = crate::store::Batch::new();
             batch.put_owned(key, crate::store::record::counter(record.encoded()));
-            store.write(batch)?;
+            store.write(batch).map_err(NullifierError::Store)?;
             Ok(true)
         }
     }
+}
+
+/// Writes many records in **one batched write** with strengthen-only
+/// conflict resolution: duplicate requests merge first (strongest wins —
+/// identical to sequential [`nullify_record`] calls, whose merge is a max
+/// over the records' total order), existing records are read in one
+/// batched call, and only records that strengthen what is stored are put.
+///
+/// `keys` must align positionally with `records` (pre-encoded by the
+/// caller, which owns the id/store routing).
+///
+/// # Errors
+///
+/// [`NullifierError::MalformedRecord`] for a corrupt existing record, store
+/// failures otherwise.
+#[cfg(feature = "draft_mmr")]
+pub(crate) fn write_records<S: Store>(
+    store: &S,
+    keys: Vec<Vec<u8>>,
+    records: Vec<NullifierRecord>,
+) -> Result<(), NullifierError<S>> {
+    // Merge duplicate-key requests: the strongest candidate wins, matching
+    // sequential writes where each later op must strengthen the earlier
+    // one's record.
+    let mut deduped_keys: Vec<Vec<u8>> = Vec::with_capacity(keys.len());
+    let mut candidates: Vec<NullifierRecord> = Vec::with_capacity(keys.len());
+    let mut slot_of: alloc::collections::BTreeMap<alloc::vec::Vec<u8>, usize> =
+        alloc::collections::BTreeMap::new();
+    for (key, record) in keys.into_iter().zip(records) {
+        if let Some(&slot) = slot_of.get(&key) {
+            candidates[slot] = candidates[slot].stronger(record);
+        } else {
+            slot_of.insert(key.clone(), candidates.len());
+            deduped_keys.push(key);
+            candidates.push(record);
+        }
+    }
+
+    // One batched read of what is stored; a put is emitted only when the
+    // candidate strengthens it.
+    let key_refs: Vec<&[u8]> = deduped_keys.iter().map(Vec::as_slice).collect();
+    let existing = store.read(&key_refs).map_err(NullifierError::Store)?;
+    let mut batch = crate::store::Batch::new();
+    for (key, (candidate, stored)) in deduped_keys
+        .into_iter()
+        .zip(candidates.into_iter().zip(existing))
+    {
+        if stored
+            .as_deref()
+            .and_then(NullifierRecord::parse)
+            .is_some_and(|stored| stored.strength_over(candidate))
+        {
+            continue;
+        }
+        batch.put_owned(key, crate::store::record::counter(candidate.encoded()));
+    }
+    if batch.is_empty() {
+        return Ok(());
+    }
+    store.write(batch).map_err(NullifierError::Store)
 }
 
 /// Async counterpart of [`nullify_record`].
@@ -276,14 +423,14 @@ pub(crate) async fn nullify_record_async<S: AsyncStore, Id: TreeId>(
     id: Id,
     leaf: LeafIndex,
     record: NullifierRecord,
-) -> Result<bool, S::Error> {
+) -> Result<bool, NullifierError<S>> {
     match read_record_async(store, id, leaf).await? {
         Some(existing) if existing.strength_over(record) => Ok(false),
         _ => {
             let key = keys::encode(&id, keys::Table::Nullifiers, leaf.get());
             let mut batch = crate::store::Batch::new();
             batch.put_owned(key, crate::store::record::counter(record.encoded()));
-            store.write(batch).await?;
+            store.write(batch).await.map_err(NullifierError::Store)?;
             Ok(true)
         }
     }
@@ -292,11 +439,22 @@ pub(crate) async fn nullify_record_async<S: AsyncStore, Id: TreeId>(
 impl NullifierRecord {
     /// Whether the existing record should be kept over `candidate`
     /// (records only strengthen; see the module docs).
-    fn strength_over(self, candidate: Self) -> bool {
+    pub(crate) fn strength_over(self, candidate: Self) -> bool {
         match (self, candidate) {
             (Self::Deep, _) => true,
             (Self::Shallow { .. }, Self::Deep) => false,
             (Self::Shallow { at: current }, Self::Shallow { at }) => current.get() <= at.get(),
+        }
+    }
+
+    /// The stronger of two records: deep overrides shallow; among shallows
+    /// the smaller — more restrictive — size wins (equal sizes keep `self`,
+    /// the first-seen record).
+    pub(crate) fn stronger(self, other: Self) -> Self {
+        if self.strength_over(other) {
+            self
+        } else {
+            other
         }
     }
 }

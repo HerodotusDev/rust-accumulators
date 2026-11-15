@@ -25,24 +25,18 @@
 //! leaf's sequence to its net effect — an append erased by a later delete
 //! appends nothing at all.
 //!
-//! v0.5 defects this design fixes:
-//! - the draft poked the concrete `InMemoryStore` internals during commit —
-//!   here the overlay is the crate's own structure and commit is a batched
-//!   replay through the store contract,
-//! - commit failed halfway with no rollback — atomicity is now the store
-//!   contract, and a failed commit returns the draft (and its log) via
-//!   [`CommitFailure`] instead of dropping it,
-//! - the draft borrowed `&mut` without explaining why — the mutable borrow
-//!   is load-bearing: commit updates the base handle's cached state.
+//! A commit is atomic per store segment: a failure mid-commit can leave
+//! earlier segments applied (deep nullifier records cross stores). A failed
+//! commit returns the draft with its log via [`CommitFailure`].
 
 use super::AppendBatchOutcome;
 use super::AppendOutcome;
-use super::kinds::DeepNullifiable;
+use super::kinds::{DeepNullifiable, EditableKind};
 use super::layout::{LeafCount, MmrSize, NodeIndex, PathStep, Side, peaks_of, sibling_path};
 use super::mode::{Editable, Mode, Nullifying, Stackable};
-use super::nullifiers::NullifierDepth;
+use super::nullifiers::{NullifierDepth, NullifierRecord};
 use super::proof::MultiProof;
-use super::state::MmrState;
+use super::state::{MmrState, Provenance};
 use crate::hashers::{Hasher, HasherError};
 use crate::ids::{AccumulatorId, TreeId};
 use crate::primitives::{HashValue, LeafIndex};
@@ -64,14 +58,18 @@ pub(crate) enum DraftOp<O: HashValue> {
         leaf: LeafIndex,
         /// New hash for the leaf.
         new: O,
-        /// Lost-update gate evaluated at commit time.
+        /// Lost-update gate: commit-time for pre-existing leaves,
+        /// evaluated and stripped at buffer time for draft-appended
+        /// leaves (see [`Draft::update`]).
         expected_current: Option<O>,
     },
     /// Clear a leaf in place.
     Delete {
         /// Target leaf.
         leaf: LeafIndex,
-        /// Lost-update gate evaluated at commit time.
+        /// Lost-update gate: commit-time for pre-existing leaves,
+        /// evaluated and stripped at buffer time for draft-appended
+        /// leaves (see [`Draft::update`]).
         expected_current: Option<O>,
     },
     /// Record a nullification.
@@ -96,25 +94,32 @@ pub enum Optimise {
     /// Fold each leaf's operation sequence to its net effect before
     /// applying:
     ///
-    /// - an append erased by a later in-draft `delete` appends nothing,
+    /// - an append erased by a later in-draft `delete` appends nothing (a
+    ///   later edit re-occupies the leaf: the append survives with the new
+    ///   value),
     /// - update chains collapse to the final value,
     /// - an append **nullified later in the same draft** skips both the
     ///   append and the nullifier record — the leaf never existed in any
-    ///   committed state,
+    ///   committed state (a `Nullifying` draft has no edit ops, so nothing
+    ///   can re-occupy the leaf afterwards),
     /// - nullifications of *pre-existing* leaves always apply: nullifiers
     ///   are external commitments (on-chain maps) and cannot be unsaid.
     ///
     /// **Lost-update gates survive folding, fail-closed.** Gates on
-    /// pre-existing leaves are preserved: a folded edit chain keeps the
-    /// *earliest* gate of its chain, and an append+delete pair whose delete
-    /// carries a gate is pre-checked at fold time — a gate that could not
-    /// pass fails the commit up front. Gates on *draft-appended* leaves are
-    /// trivially satisfied (the value is draft-local; no concurrent writer
-    /// can exist) and fold away.
+    /// *pre-existing* leaves are preserved: a folded edit chain keeps the
+    /// *earliest* gate of its chain. Gates on *draft-appended* leaves are
+    /// evaluated at buffer time against the draft-local value (no concurrent
+    /// writer can observe a draft leaf) and stripped: a surviving gate would
+    /// be evaluated against a rewritten value, or against a replay index
+    /// shifted by annihilated appends — a wrong-leaf edit.
     ///
-    /// Produces a *different* final shape than [`Optimise::Off`] (lower leaf
-    /// count, shifted node indexes for subsequent appends) — pick this only
-    /// when the skipped history is not load-bearing.
+    /// The committed shape differs from [`Optimise::Off`]: erased appends
+    /// lower the leaf count, so later appends shift to earlier indexes, and
+    /// an append resurrected by a later edit re-enters at the end. With a
+    /// base of 3 leaves, the buffered sequence `append(A)`, `delete(3)`,
+    /// `append(B)` commits leaf 3 = `B`; under [`Optimise::Off`] the same
+    /// log commits leaf 3 = `A`, leaf 4 = `B`. Pick this only when the
+    /// skipped history is not load-bearing.
     On,
 }
 
@@ -143,6 +148,32 @@ pub struct Draft<'m, H: Hasher, S, K, M = super::AppendOnly, Id = AccumulatorId>
     /// Current values of nodes written by the draft (appended nodes, edited
     /// paths) — read parity without touching the base.
     pub(crate) overlay: BTreeMap<u64, H::Output>,
+    /// Leaves with a buffered nullification, mapped to the record the replay
+    /// will write — the O(1) member check behind [`Self::check_nullified`]
+    /// and the source for [`Self::nullifier_record`] (kept in lockstep with
+    /// the log; only populated in [`Nullifying`] drafts).
+    pub(crate) buffered_nullified: BTreeMap<LeafIndex, NullifierRecord>,
+}
+
+// Summary of the composed state; op-log/overlay internals are not rendered.
+impl<H: Hasher, S, K, M, Id: TreeId> core::fmt::Debug for Draft<'_, H, S, K, M, Id> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Draft")
+            .field("id", &self.base.id)
+            .field("leaf_count", &self.state.leaf_count())
+            .field("size", &self.state.node_count())
+            .field("provenance", &self.state.provenance())
+            .field("root", &self.state.root(&self.base.hasher))
+            .field(
+                "draft_len",
+                &self
+                    .state
+                    .leaf_count
+                    .get()
+                    .saturating_sub(self.base.state.leaf_count.get()),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl<H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'_, H, S, K, M, Id> {
@@ -159,7 +190,9 @@ impl<H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'_, H, S, K
     /// Appends many elements to the draft in memory.
     ///
     /// Accepts anything iterable of byte-like items — `&[&[u8]]`,
-    /// `Vec<Vec<u8>>`, iterators of `Bytes`, etc.
+    /// `Vec<Vec<u8>>`, iterators of `Bytes`, etc. One
+    /// [`apply_append_batch`](super::state::apply_append_batch) pass — the
+    /// root is derived once from the final state, not per element.
     ///
     /// # Errors
     ///
@@ -172,20 +205,32 @@ impl<H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'_, H, S, K
         I: IntoIterator,
         I::Item: AsRef<[u8]>,
     {
-        let mut first_leaf = None;
-        let mut appended = 0_u64;
+        let mut element_hashes = Vec::new();
         for element in elements {
-            let element_hash = self.base.hasher.hash_leaf(element.as_ref())?;
-            let outcome = self.append_hashed(element_hash);
-            if first_leaf.is_none() {
-                first_leaf = Some(outcome.leaf);
-            }
-            appended += 1;
+            element_hashes.push(self.base.hasher.hash_leaf(element.as_ref())?);
         }
+        let first_leaf = self.state.leaf_count.next_leaf();
+        if element_hashes.is_empty() {
+            return Ok(AppendBatchOutcome {
+                first_leaf,
+                appended: LeafCount::ZERO,
+                root: self.root(),
+            });
+        }
+
+        let delta =
+            super::state::apply_append_batch(&self.base.hasher, &self.state, &element_hashes);
+        for (node, hash) in &delta.nodes {
+            self.overlay.insert(node.get(), *hash);
+        }
+        self.state = delta.state;
+        self.ops
+            .extend(element_hashes.iter().map(|hash| DraftOp::Append(*hash)));
+
         Ok(AppendBatchOutcome {
-            first_leaf: first_leaf.unwrap_or_else(|| self.state.leaf_count.next_leaf()),
-            appended: LeafCount::new(appended),
-            root: self.root(),
+            first_leaf,
+            appended: LeafCount::new(element_hashes.len() as u64),
+            root: delta.root,
         })
     }
 
@@ -206,13 +251,47 @@ impl<H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'_, H, S, K
         }
     }
 
+    /// The draft's id — the base handle's id (drafts never mint one).
+    #[must_use]
+    pub const fn id(&self) -> Id {
+        self.base.id
+    }
+
+    /// Provenance: full history or peaks-only (with the seed size) — the
+    /// composed view's provenance, which drafts never change (delegates to
+    /// the base handle).
+    #[must_use]
+    pub const fn provenance(&self) -> Provenance {
+        self.base.provenance()
+    }
+
     /// Draft root: base state composed with the buffered log, from memory.
     ///
-    /// Infallible: composition folds [`Hasher::hash_pair`] calls, which are
-    /// infallible by contract.
+    /// Infallible: composition only folds [`Hasher::hash_pair`] calls,
+    /// which cannot fail.
     #[must_use]
     pub fn root(&self) -> H::Output {
         self.state.root(&self.base.hasher)
+    }
+
+    /// The stored hash of a leaf over the composed (base + draft) view, if
+    /// the leaf is occupied and readable. See
+    /// [`Mmr::leaf_hash`](super::Mmr::leaf_hash).
+    ///
+    /// Draft-appended leaves resolve through the overlay; base leaves
+    /// through one batched read per distinct store. Also the cheap way to
+    /// source `expected_current` gates. Returns
+    /// [`MmrError::UnprovableLeaf`](super::MmrError::UnprovableLeaf) below a
+    /// [`WithPeaks`](crate::mmr::WithPeaks) provenance floor (the value
+    /// cannot be known, distinct from an unoccupied leaf's `None`).
+    ///
+    /// # Errors
+    ///
+    /// As [`Mmr::leaf_hash`](super::Mmr::leaf_hash), plus store failures.
+    pub fn leaf_hash(&self, leaf: LeafIndex) -> Result<Option<H::Output>, super::MmrError<S>> {
+        self.check_provable(leaf)?;
+        let mut loaded = self.resolve_nodes(&[leaf.node()])?;
+        Ok(loaded.pop().flatten())
     }
 
     /// Inclusion proof over the composed (base + draft) view.
@@ -296,9 +375,8 @@ impl<H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'_, H, S, K
     /// view with a deduplicated sibling pool.
     ///
     /// Accepts any iterable of leaf indexes. Base leaves resolve through the
-    /// base's stores (one batched read per distinct store, nullifier
-    /// resolution and provenance floor included); draft leaves resolve
-    /// through the log.
+    /// base's stores (one batched read per distinct store for nodes and
+    /// nullifiers alike); draft leaves resolve through the log.
     ///
     /// # Errors
     ///
@@ -312,7 +390,24 @@ impl<H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'_, H, S, K
         leaves.dedup();
         for &leaf in &leaves {
             self.check_provable(leaf)?;
-            self.check_nullified(leaf)?;
+        }
+        if M::NULLIFYING {
+            for &leaf in &leaves {
+                if self.buffered_nullified.contains_key(&leaf) {
+                    return Err(super::MmrError::LeafNullified { leaf });
+                }
+            }
+            let base_leaves: Vec<LeafIndex> = leaves
+                .iter()
+                .copied()
+                .filter(|leaf| leaf.get() < self.base.state.leaf_count.get())
+                .collect();
+            let resolved = self.base.resolve_nullifiers(&base_leaves)?;
+            for (leaf, record) in base_leaves.iter().zip(&resolved) {
+                if record.is_some() {
+                    return Err(super::MmrError::LeafNullified { leaf: *leaf });
+                }
+            }
         }
 
         let paths: Vec<Vec<PathStep>> = leaves
@@ -322,8 +417,11 @@ impl<H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'_, H, S, K
         let (pool_indexes, pool_refs) = super::proof::build_sibling_pool(&paths);
 
         let element_indexes: Vec<NodeIndex> = leaves.iter().map(|leaf| leaf.node()).collect();
-        let loaded_elements = self.resolve_nodes(&element_indexes)?;
-        let loaded_pool = self.resolve_nodes(&pool_indexes)?;
+        let mut indexes = Vec::with_capacity(element_indexes.len() + pool_indexes.len());
+        indexes.extend_from_slice(&element_indexes);
+        indexes.extend_from_slice(&pool_indexes);
+        let loaded = self.resolve_nodes(&indexes)?;
+        let (loaded_elements, loaded_pool) = loaded.split_at(element_indexes.len());
         let missing = || {
             super::MmrError::Corrupted(super::Corrupted::MissingRecord {
                 table: crate::store::keys::Table::Nodes,
@@ -332,12 +430,14 @@ impl<H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'_, H, S, K
 
         Ok(MultiProof {
             element_hashes: loaded_elements
-                .into_iter()
+                .iter()
+                .copied()
                 .map(|value| value.ok_or_else(missing))
                 .collect::<Result<Vec<_>, _>>()?,
             leaves,
             sibling_pool: loaded_pool
-                .into_iter()
+                .iter()
+                .copied()
                 .map(|value| value.ok_or_else(missing))
                 .collect::<Result<Vec<_>, _>>()?,
             sibling_refs: pool_refs,
@@ -355,6 +455,7 @@ impl<H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'_, H, S, K
     /// # Errors
     ///
     /// [`super::MmrError::Verify`] when the proof is structurally inconsistent.
+    #[must_use = "a verification result is only meaningful when checked"]
     pub fn verify(
         &self,
         proof: &super::proof::Proof<H::Output>,
@@ -372,6 +473,7 @@ impl<H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'_, H, S, K
     ///
     /// [`super::MmrError::Verify`] when the proof or the element set is
     /// structurally inconsistent.
+    #[must_use = "a verification result is only meaningful when checked"]
     pub fn verify_multi<I>(
         &self,
         proof: &MultiProof<H::Output>,
@@ -403,14 +505,11 @@ impl<H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'_, H, S, K
     /// immediately (own records always do), base records through the base's
     /// layer resolution.
     fn check_nullified(&self, leaf: LeafIndex) -> Result<(), super::MmrError<S>> {
-        if M::NULLIFYING {
-            let buffered = self
-                .ops
-                .iter()
-                .any(|op| matches!(op, DraftOp::Nullify { leaf: target, .. } if *target == leaf));
-            if buffered || self.base.resolve_nullifier(leaf)?.is_some() {
-                return Err(super::MmrError::LeafNullified { leaf });
-            }
+        if M::NULLIFYING
+            && (self.buffered_nullified.contains_key(&leaf)
+                || self.base.resolve_nullifier(leaf)?.is_some())
+        {
+            return Err(super::MmrError::LeafNullified { leaf });
         }
         Ok(())
     }
@@ -476,16 +575,21 @@ impl<H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'_, H, S, K
     }
 }
 
-impl<H: Hasher, S: Store, K: super::Kind, Id: TreeId> Draft<'_, H, S, K, Editable, Id> {
+impl<H: Hasher, S: Store, K: EditableKind, Id: TreeId> Draft<'_, H, S, K, Editable, Id> {
     /// Buffers an in-place rewrite of `leaf` (in memory — no store writes).
     ///
-    /// `expected_current` is evaluated **at commit time** against the base's
-    /// then-current state (lost-update gate between draft start and commit).
+    /// `expected_current` gates the edit, fail-closed: on a *pre-existing*
+    /// leaf it is evaluated at commit time against the base's then-current
+    /// state (lost-update gate between draft start and commit); on a
+    /// *draft-appended* leaf it is evaluated here against the draft-local
+    /// value (no concurrent writer can observe a draft leaf) and the gate
+    /// never reaches the replay.
     ///
     /// # Errors
     ///
     /// [`HasherError`] for malformed elements,
-    /// [`super::MmrError::UnprovableLeaf`] for out-of-scope leaves.
+    /// [`super::MmrError::UnprovableLeaf`] for out-of-scope leaves,
+    /// [`super::MmrError::UpdateMismatch`] for a failing draft-leaf gate.
     pub fn update(
         &mut self,
         leaf: LeafIndex,
@@ -522,13 +626,43 @@ impl<H: Hasher, S: Store, K: super::Kind, Id: TreeId> Draft<'_, H, S, K, Editabl
         )
     }
 
-    /// Shared edit buffering: scope check, composed-state path recompute.
+    /// Shared edit buffering: scope check, draft-leaf gate evaluation,
+    /// composed-state path recompute.
     fn buffer_edit(
         &mut self,
         leaf: LeafIndex,
-        op: DraftOp<H::Output>,
+        mut op: DraftOp<H::Output>,
     ) -> Result<(), super::MmrError<S>> {
         self.check_provable(leaf)?;
+        // Draft-leaf gates are evaluated now and stripped: the value is
+        // draft-local, and a surviving gate would be re-evaluated against a
+        // rewritten value or a replay index shifted by annihilated appends.
+        if leaf.get() >= self.base.state.leaf_count.get() {
+            let gate = match &op {
+                DraftOp::Update {
+                    expected_current, ..
+                }
+                | DraftOp::Delete {
+                    expected_current, ..
+                } => *expected_current,
+                _ => unreachable!("buffer_edit only receives edits"),
+            };
+            if let Some(expected) = gate {
+                let current = self.overlay.get(&leaf.node().get()).copied();
+                if current != Some(expected) {
+                    return Err(super::MmrError::UpdateMismatch { leaf });
+                }
+            }
+            match &mut op {
+                DraftOp::Update {
+                    expected_current, ..
+                }
+                | DraftOp::Delete {
+                    expected_current, ..
+                } => *expected_current = None,
+                _ => unreachable!("buffer_edit only receives edits"),
+            }
+        }
         let new_hash = match &op {
             DraftOp::Update { new, .. } => *new,
             DraftOp::Delete { .. } => self.base.hasher.genesis(),
@@ -552,14 +686,42 @@ impl<H: Hasher, S: Store, K: super::Kind, Id: TreeId> Draft<'_, H, S, K, Nullify
     ///
     /// # Errors
     ///
-    /// [`super::MmrError::UnprovableLeaf`] when `leaf` is at or beyond the
+    /// [`super::MmrError::LeafOutOfRange`] when `leaf` is at or beyond the
     /// composed leaf count.
     pub fn nullify_shallow(&mut self, leaf: LeafIndex) -> Result<(), super::MmrError<S>> {
         self.buffer_nullify(leaf, NullifierDepth::Shallow)
     }
 
+    /// The nullifier record for `leaf` over the composed (base + draft)
+    /// view: a buffered nullification resolves immediately — with exactly
+    /// the record its replay writes (a shallow record's size is the composed
+    /// size at buffer time, which is the size at its replay point); otherwise
+    /// the base's layer resolution decides. `None` when the leaf is not
+    /// nullified. Mirrors the handle's
+    /// [`NullifierSet::record`](crate::mmr::NullifierSet::record).
+    ///
+    /// The composed view is the buffer-time one: an append-nullify pair on a
+    /// draft leaf folded away by [`Optimise::On`] writes no record at commit,
+    /// while this query — like every draft read — still reports the buffered
+    /// record.
+    ///
+    /// # Errors
+    ///
+    /// Base nullifier resolution failures
+    /// ([`super::MmrError::Nullifier`]).
+    pub fn nullifier_record(
+        &self,
+        leaf: LeafIndex,
+    ) -> Result<Option<NullifierRecord>, super::MmrError<S>> {
+        if let Some(&record) = self.buffered_nullified.get(&leaf) {
+            return Ok(Some(record));
+        }
+        self.base.resolve_nullifier(leaf)
+    }
+
     /// Buffers a **shallow** nullification of the old leaf **and** an append
-    /// of the new element — the draft's `replace`.
+    /// of the new element at the composed view's next leaf index — the
+    /// draft's `replace`; the old position keeps its index and is nullified.
     ///
     /// # Errors
     ///
@@ -574,19 +736,39 @@ impl<H: Hasher, S: Store, K: super::Kind, Id: TreeId> Draft<'_, H, S, K, Nullify
         Ok(())
     }
 
-    /// Shared nullify buffering: composed range check.
+    /// Shared nullify buffering: composed range check. The rejection is
+    /// [`super::MmrError::LeafOutOfRange`]: nullifier records are
+    /// index-keyed, so only the range itself — not a provenance floor —
+    /// rejects here.
     fn buffer_nullify(
         &mut self,
         leaf: LeafIndex,
         depth: NullifierDepth,
     ) -> Result<(), super::MmrError<S>> {
         if leaf.get() >= self.state.leaf_count.get() {
-            return Err(super::MmrError::UnprovableLeaf {
+            return Err(super::MmrError::LeafOutOfRange {
                 leaf,
-                provable_from: LeafIndex::FIRST,
+                leaf_count: self.state.leaf_count,
             });
         }
         self.ops.push(DraftOp::Nullify { leaf, depth });
+        // Records only strengthen (see [`super::nullifiers`]): a deep
+        // buffer overrides an earlier shallow one, among shallows the
+        // first — smallest — size wins.
+        let candidate = match depth {
+            NullifierDepth::Shallow => NullifierRecord::Shallow {
+                at: self.state.node_count,
+            },
+            NullifierDepth::Deep => NullifierRecord::Deep,
+        };
+        self.buffered_nullified
+            .entry(leaf)
+            .and_modify(|existing| {
+                if !existing.strength_over(candidate) {
+                    *existing = candidate;
+                }
+            })
+            .or_insert(candidate);
         Ok(())
     }
 }
@@ -601,14 +783,15 @@ impl<H: Hasher, S: Store, K: DeepNullifiable, Id: TreeId> Draft<'_, H, S, K, Nul
     ///
     /// # Errors
     ///
-    /// [`super::MmrError::UnprovableLeaf`] when `leaf` is at or beyond the
+    /// [`super::MmrError::LeafOutOfRange`] when `leaf` is at or beyond the
     /// composed leaf count.
     pub fn nullify_deep(&mut self, leaf: LeafIndex) -> Result<(), super::MmrError<S>> {
         self.buffer_nullify(leaf, NullifierDepth::Deep)
     }
 
-    /// Buffers a **deep** nullification of the old leaf **and** an append of
-    /// the new element. See [`Self::nullify_deep`] for availability.
+    /// Buffers a **deep** nullification of the old leaf **and** an append
+    /// of the new element at the composed view's next leaf index. See
+    /// [`Self::nullify_deep`] for availability.
     ///
     /// # Errors
     ///
@@ -627,24 +810,28 @@ impl<H: Hasher, S: Store, K: DeepNullifiable, Id: TreeId> Draft<'_, H, S, K, Nul
 impl<'m, H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'m, H, S, K, M, Id> {
     /// Replays the buffered log into the base and updates its cached state.
     ///
-    /// Appends and nullifier records land in one batch per target store
-    /// (see [`Optimise`] for replay strategies). **Deep** nullifier records
-    /// target the owning sub-MMR's store — a separate write, therefore not
-    /// atomic together with the rest (known limitation; see the store
-    /// atomicity contract).
+    /// **One batch write per store segment**: consecutive appends coalesce
+    /// into a single batched append
+    /// ([`apply_append_batch`](super::state::apply_append_batch)), and each
+    /// run of nullifications commits as one batched read + one batched write
+    /// per target store (see [`Optimise`] for replay strategies). An edit,
+    /// or an alternation between appends and nullifications, flushes what is
+    /// pending — the write count is one per segment, not one per operation.
+    /// **Deep** nullifier records are written to the owning sub-MMR's store,
+    /// so a commit touching them is not atomic as a whole: a failure after
+    /// earlier segments applied leaves those segments applied.
     ///
-    /// Consumes the draft; on failure the log comes back inside
-    /// [`CommitFailure::draft`] — the safe action (discard) is never lost to
-    /// a failed commit. Note that after a failure the log may be *partially
-    /// applied* (deep records cross stores); inspect the error before
-    /// retrying, and prefer [`Self::discard`] over a blind re-commit.
+    /// Consumes the draft. On failure the draft — with its log — comes back
+    /// inside [`CommitFailure::draft`]; inspect the error before retrying,
+    /// and prefer [`Self::discard`] over a blind re-commit.
     ///
     /// # Errors
     ///
-    /// [`CommitFailure`] wrapping store failures, hasher failures, scope
-    /// violations at apply time (edits below a `WithPeaks` floor or below a
-    /// stack point, [`super::MmrError::UpdateMismatch`] from a lost-update
-    /// gate).
+    /// [`CommitFailure`] wrapping store failures and apply-time rejections:
+    /// an edit below a `WithPeaks` provenance floor
+    /// ([`super::MmrError::UnprovableLeaf`]), a missing node record
+    /// ([`super::MmrError::Corrupted`]), or
+    /// [`super::MmrError::UpdateMismatch`] from a lost-update gate.
     #[expect(
         clippy::result_large_err,
         reason = "CommitFailure deliberately carries the full draft back; losing the log would be worse than the large error"
@@ -659,8 +846,30 @@ impl<'m, H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'m, H, 
         let mut appended = 0_u64;
         let mut edits = 0_usize;
         let mut nullifications = 0_usize;
+        let mut replay = BatchedReplay::default();
         for op in &ops {
-            if let Err(error) = apply(this.base, op) {
+            let applied = match op {
+                DraftOp::Append(hash) => replay.append(this.base, *hash),
+                DraftOp::Update {
+                    leaf,
+                    new,
+                    expected_current,
+                } => replay.flush(this.base).and_then(|()| {
+                    this.base
+                        .update_hashed(*leaf, *new, *expected_current)
+                        .map(|_| ())
+                }),
+                DraftOp::Delete {
+                    leaf,
+                    expected_current,
+                } => replay.flush(this.base).and_then(|()| {
+                    this.base
+                        .update_hashed(*leaf, this.base.hasher.genesis(), *expected_current)
+                        .map(|_| ())
+                }),
+                DraftOp::Nullify { leaf, depth } => replay.nullify(this.base, *leaf, *depth),
+            };
+            if let Err(error) = applied {
                 return Err(CommitFailure { error, draft: this });
             }
             match op {
@@ -668,6 +877,9 @@ impl<'m, H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'m, H, 
                 DraftOp::Update { .. } | DraftOp::Delete { .. } => edits += 1,
                 DraftOp::Nullify { .. } => nullifications += 1,
             }
+        }
+        if let Err(error) = replay.flush(this.base) {
+            return Err(CommitFailure { error, draft: this });
         }
 
         Ok(CommitReport {
@@ -690,9 +902,9 @@ impl<'m, H: Hasher, S: Store + Clone, K: super::Kind, M: Stackable, Id: TreeId>
     /// Applies the log as a **new stacked layer** on top of the base instead
     /// of replaying it into the base.
     ///
-    /// Only exists for [`Stackable`] base modes — a draft on
-    /// an [`Editable`] base cannot commit as a stack, because
-    /// the new layer would pin an editable MMR (compile-time guarantee).
+    /// Only exists for [`Stackable`] base modes: a draft on an
+    /// [`Editable`] base cannot commit as a stack — the new layer would
+    /// pin an editable MMR (compile-time).
     /// Appends and nullifications express naturally as a new layer (shallow
     /// records land on the new top, deep records on their owners).
     ///
@@ -733,12 +945,10 @@ impl<'m, H: Hasher, S: Store + Clone, K: super::Kind, M: Stackable, Id: TreeId>
             this.base.id,
             S::clone(&this.base.store),
             this.base.state.node_count,
-            Store::locator(&this.base.store),
         ));
 
-        // Validate before touching anything: the pins come from validated
-        // handles, so a rejection here is a caller bug, but it must not leave
-        // the log half-applied.
+        // Validate before anything is written: a rejection here must not
+        // leave the log half-applied.
         if let Err(error) = super::stacked::validate_sub_views(&subs) {
             return Err(CommitFailure {
                 error: super::MmrError::Stacking(error),
@@ -746,6 +956,9 @@ impl<'m, H: Hasher, S: Store + Clone, K: super::Kind, M: Stackable, Id: TreeId>
             });
         }
 
+        // The hasher's rendered identity is captured before `hasher` moves
+        // into `stack` — the layer-hasher-mismatch arm reports it.
+        let supplied = alloc::format!("{} ({})", hasher.id(), hasher.config());
         let mut stacked =
             match super::Mmr::<H, S, super::Stacked, M, Id>::stack(hasher, store, id, subs) {
                 Ok(stacked) => stacked,
@@ -761,50 +974,126 @@ impl<'m, H: Hasher, S: Store + Clone, K: super::Kind, M: Stackable, Id: TreeId>
                         draft: this,
                     });
                 }
+                Err(super::stacked::StackingError::UnrepresentableHasher) => {
+                    return Err(CommitFailure {
+                        error: super::MmrError::UnrepresentableHasher,
+                        draft: this,
+                    });
+                }
+                Err(super::stacked::StackingError::LayerHasherMismatch { stored }) => {
+                    // Same finding `Mmr::stack` reports as a corrupted
+                    // hasher record.
+                    return Err(CommitFailure {
+                        error: super::MmrError::Corrupted(super::Corrupted::HasherMismatch {
+                            stored,
+                            supplied,
+                        }),
+                        draft: this,
+                    });
+                }
             };
 
+        // Same batching contract as [`Self::commit`].
+        let mut replay = BatchedReplay::default();
         for op in &ops {
-            // Only appends and nullifications can exist for Stackable modes:
-            // edits require an Editable base, which cannot be pinned.
+            // Edits cannot exist here: they require an Editable base,
+            // which cannot be pinned.
             let outcome = match op {
-                DraftOp::Append(hash) => stacked.append_hashed(*hash).map(|_| ()),
-                DraftOp::Update { leaf, .. } | DraftOp::Delete { leaf, .. } => {
-                    Err(super::MmrError::UpdateMismatch { leaf: *leaf })
-                }
-                DraftOp::Nullify { leaf, depth } => {
-                    stacked.record_nullifier(*leaf, *depth).map(|_| ())
-                }
+                DraftOp::Append(hash) => replay.append(&mut stacked, *hash),
+                DraftOp::Update { leaf, .. } | DraftOp::Delete { leaf, .. } => replay
+                    .flush(&mut stacked)
+                    .and_then(|()| Err(super::MmrError::UpdateMismatch { leaf: *leaf })),
+                DraftOp::Nullify { leaf, depth } => replay.nullify(&mut stacked, *leaf, *depth),
             };
             if let Err(error) = outcome {
                 return Err(CommitFailure { error, draft: this });
             }
+        }
+        if let Err(error) = replay.flush(&mut stacked) {
+            return Err(CommitFailure { error, draft: this });
         }
 
         Ok(stacked)
     }
 }
 
-/// Applies one planned op to the base.
-fn apply<H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId>(
-    base: &mut super::Mmr<H, S, K, M, Id>,
-    op: &DraftOp<H::Output>,
-) -> Result<(), super::MmrError<S>> {
-    match op {
-        DraftOp::Append(hash) => base.append_hashed(*hash).map(|_| ()),
-        DraftOp::Update {
-            leaf,
-            new,
-            expected_current,
-        } => base
-            .update_hashed(*leaf, *new, *expected_current)
-            .map(|_| ()),
-        DraftOp::Delete {
-            leaf,
-            expected_current,
-        } => base
-            .update_hashed(*leaf, base.hasher.genesis(), *expected_current)
-            .map(|_| ()),
-        DraftOp::Nullify { leaf, depth } => base.record_nullifier(*leaf, *depth).map(|_| ()),
+/// Coalescing replay buffer for draft commits ([`Draft::commit`] and
+/// [`Draft::commit_as_stacked`]): consecutive appends batch into **one**
+/// batched append write, and each run of nullifications batches per target
+/// store. The two queues never hold data at once — an arriving append
+/// flushes the pending nullifier run first, and an arriving nullification
+/// flushes the pending appends first — so each segment's nullifier records
+/// see exactly the base state (and the "size at nullification") the
+/// sequential replay would have given them.
+struct BatchedReplay<H: Hasher> {
+    appends: Vec<H::Output>,
+    nullifies: Vec<(LeafIndex, NullifierDepth)>,
+}
+
+impl<H: Hasher> Default for BatchedReplay<H> {
+    fn default() -> Self {
+        Self {
+            appends: Vec::new(),
+            nullifies: Vec::new(),
+        }
+    }
+}
+
+impl<H: Hasher> BatchedReplay<H> {
+    /// Buffers one append; a pending nullifier run is flushed first.
+    fn append<S: Store, K: super::Kind, M: Mode, Id: TreeId>(
+        &mut self,
+        base: &mut super::Mmr<H, S, K, M, Id>,
+        hash: H::Output,
+    ) -> Result<(), super::MmrError<S>> {
+        self.flush_nullifies(base)?;
+        self.appends.push(hash);
+        Ok(())
+    }
+
+    /// Buffers one nullification; pending appends are flushed first so the
+    /// record's size-at-nullification matches the sequential replay.
+    fn nullify<S: Store, K: super::Kind, M: Mode, Id: TreeId>(
+        &mut self,
+        base: &mut super::Mmr<H, S, K, M, Id>,
+        leaf: LeafIndex,
+        depth: NullifierDepth,
+    ) -> Result<(), super::MmrError<S>> {
+        self.flush_appends(base)?;
+        self.nullifies.push((leaf, depth));
+        Ok(())
+    }
+
+    /// Commits everything pending: appends as one batched write, nullifier
+    /// records as one batched read + write per target store.
+    fn flush<S: Store, K: super::Kind, M: Mode, Id: TreeId>(
+        &mut self,
+        base: &mut super::Mmr<H, S, K, M, Id>,
+    ) -> Result<(), super::MmrError<S>> {
+        self.flush_appends(base)?;
+        self.flush_nullifies(base)
+    }
+
+    fn flush_appends<S: Store, K: super::Kind, M: Mode, Id: TreeId>(
+        &mut self,
+        base: &mut super::Mmr<H, S, K, M, Id>,
+    ) -> Result<(), super::MmrError<S>> {
+        if self.appends.is_empty() {
+            return Ok(());
+        }
+        let hashes = core::mem::take(&mut self.appends);
+        base.append_hashed_batch(&hashes).map(|_| ())
+    }
+
+    fn flush_nullifies<S: Store, K: super::Kind, M: Mode, Id: TreeId>(
+        &mut self,
+        base: &mut super::Mmr<H, S, K, M, Id>,
+    ) -> Result<(), super::MmrError<S>> {
+        if self.nullifies.is_empty() {
+            return Ok(());
+        }
+        let requests = core::mem::take(&mut self.nullifies);
+        base.record_nullifiers(&requests)
     }
 }
 
@@ -842,6 +1131,10 @@ fn collapse_edit<O: HashValue>(
         )
     {
         // Chain collapse: final value, earliest gate.
+        #[expect(
+            clippy::expect_used,
+            reason = "last_edit is maintained in lockstep with folded slot occupancy"
+        )]
         let slot_op = folded[slot]
             .as_ref()
             .expect("last_edit only indexes present slots");
@@ -857,7 +1150,13 @@ fn collapse_edit<O: HashValue>(
 /// `base_leaf_count` splits pre-existing leaves (indexes stay stable) from
 /// draft-appended leaves (whose folded indexes shift down as appends are
 /// erased — folded appends carry no leaf index at all; replay assigns them
-/// sequentially).
+/// sequentially, so surviving appends replay in log order).
+///
+/// Draft-leaf ops arrive gate-free (evaluated and stripped in
+/// `buffer_edit`), so the fold reduces to pure value transitions: an edit
+/// rewrites the pending append's value, a delete/nullify annihilates it,
+/// and a later update re-occupies an annihilated leaf (the append
+/// resurrects with the new value).
 fn fold<H: Hasher>(
     ops: &[DraftOp<H::Output>],
     base_leaf_count: LeafCount,
@@ -868,7 +1167,7 @@ fn fold<H: Hasher>(
     let mut append_slot: BTreeMap<u64, usize> = BTreeMap::new();
     // Last folded slot touching a pre-existing leaf (edits/nullifies).
     let mut last_edit: BTreeMap<u64, usize> = BTreeMap::new();
-    // Buffer-time leaves whose in-draft append was erased.
+    // Buffer-time leaves whose in-draft append was annihilated.
     let mut erased: BTreeSet<u64> = BTreeSet::new();
     // Buffer-time leaf index of the next append.
     let mut next_leaf = base_leaf_count.get();
@@ -883,12 +1182,14 @@ fn fold<H: Hasher>(
             DraftOp::Update { leaf, new, .. } => {
                 let leaf_value = leaf.get();
                 if leaf_value >= base_leaf_count.get() {
-                    // In-draft appended leaf: rewrite the append's value.
-                    // Gates fold away — the value is draft-local.
-                    if let Some(&slot) = append_slot.get(&leaf_value)
-                        && !erased.contains(&leaf_value)
-                    {
+                    // Draft-appended leaf: rewrite the pending append's
+                    // value; after an annihilating delete, re-occupy the
+                    // leaf (the append resurrects with the new value).
+                    if let Some(&slot) = append_slot.get(&leaf_value) {
                         folded[slot] = Some(DraftOp::Append(*new));
+                    } else if erased.remove(&leaf_value) {
+                        folded.push(Some(DraftOp::Append(*new)));
+                        append_slot.insert(leaf_value, folded.len() - 1);
                     }
                     continue;
                 }
@@ -902,23 +1203,15 @@ fn fold<H: Hasher>(
             }
             DraftOp::Delete {
                 leaf,
-                expected_current,
+                expected_current: _,
             } => {
                 let leaf_value = leaf.get();
                 if leaf_value >= base_leaf_count.get() {
-                    if let Some(&slot) = append_slot.get(&leaf_value)
-                        && !erased.contains(&leaf_value)
-                    {
-                        if expected_current.is_some() {
-                            // The gate refers to a draft-local value; keep
-                            // both ops so it is evaluated fail-closed.
-                            folded.push(Some(op.clone()));
-                            last_edit.insert(leaf_value, folded.len() - 1);
-                        } else {
-                            // The append and the delete annihilate.
-                            folded[slot] = None;
-                            erased.insert(leaf_value);
-                        }
+                    // Gate-free by construction (stripped at buffer time):
+                    // the append and the delete annihilate.
+                    if let Some(slot) = append_slot.remove(&leaf_value) {
+                        folded[slot] = None;
+                        erased.insert(leaf_value);
                     }
                     continue;
                 }
@@ -934,11 +1227,11 @@ fn fold<H: Hasher>(
             DraftOp::Nullify { leaf, depth } => {
                 let leaf_value = leaf.get();
                 if leaf_value >= base_leaf_count.get() {
-                    // An append nullified in the same draft: skip both — the
-                    // leaf never existed in any committed state.
-                    if let Some(&slot) = append_slot.get(&leaf_value)
-                        && !erased.contains(&leaf_value)
-                    {
+                    // An append nullified in the same draft: skip both —
+                    // the leaf never existed in any committed state.
+                    // (Nullifying drafts have no edit ops, so nothing can
+                    // re-occupy the leaf afterwards.)
+                    if let Some(slot) = append_slot.remove(&leaf_value) {
                         folded[slot] = None;
                         erased.insert(leaf_value);
                     }
@@ -997,6 +1290,26 @@ pub type StackedCommitResult<'m, H, S, K, M, Id> =
 /// The draft may be *partially applied* when deep nullifier records were in
 /// play (they cross stores and are not atomic with the rest) — inspect
 /// [`Self::error`] before deciding to retry or [`Draft::discard`].
+///
+/// `Debug` (a state summary) makes `Result::unwrap` usable on
+/// [`CommitResult`]:
+///
+/// ```
+/// # #[cfg(feature = "draft_mmr")]
+/// # fn commit_result_unwraps() {
+/// use accumulators::hashers::KeccakSolHasher;
+/// use accumulators::ids::AccumulatorId;
+/// use accumulators::mmr::{Mmr, Optimise};
+/// use accumulators::store::memory::InMemoryStore;
+///
+/// let mut mmr: Mmr<KeccakSolHasher, _> =
+///     Mmr::create(KeccakSolHasher, InMemoryStore::new(), AccumulatorId::ZERO).unwrap();
+/// let mut draft = mmr.start_draft();
+/// draft.append(b"element").unwrap();
+/// let report = draft.commit(Optimise::Off).unwrap();
+/// assert_eq!(report.appended.get(), 1);
+/// # }
+/// ```
 pub struct CommitFailure<'m, H: Hasher, S: Store, K, M, Id> {
     /// What went wrong.
     pub error: super::MmrError<S>,
@@ -1004,17 +1317,13 @@ pub struct CommitFailure<'m, H: Hasher, S: Store, K, M, Id> {
     pub draft: Draft<'m, H, S, K, M, Id>,
 }
 
-impl<H: Hasher, S: Store, K, M, Id> CommitFailure<'_, H, S, K, M, Id> {
-    /// The error that caused the failure.
-    #[must_use]
-    pub const fn error(&self) -> &super::MmrError<S> {
-        &self.error
-    }
-
-    /// Discards the failed draft and returns the error, for `?`-style
-    /// propagation when the log is not worth recovering.
-    #[must_use]
-    pub fn into_error(self) -> super::MmrError<S> {
-        self.error
+impl<H: Hasher, S: Store + core::fmt::Debug, K, M, Id: TreeId> core::fmt::Debug
+    for CommitFailure<'_, H, S, K, M, Id>
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CommitFailure")
+            .field("error", &self.error)
+            .field("draft", &self.draft)
+            .finish()
     }
 }

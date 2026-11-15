@@ -1,35 +1,29 @@
-//! Incremental Merkle tree redesign: sparse storage, zero-hash ladder, fixed
-//! proofs.
-//!
-//! v0.5 defects this design fixes:
-//! - **init was `O(size)`**: `initialize` materialized every leaf and every
-//!   internal node into the store. Here only occupied leaves and their
-//!   ancestors are stored — init writes a constant number of records and an
-//!   empty tree stores nothing beyond metadata.
-//! - **the non-power-of-2 proof bug**: null-padded parents were folded into
-//!   parent hashes but never stored, so `get_inclusion_proof` hit missing
-//!   keys with `NotFound` (~18% of leaves in a 10k tree). The zero-hash
-//!   ladder makes virtual (unoccupied) siblings *computable*, not stored:
-//!   proofs for any index within capacity always succeed.
-//! - **metadata not persisted**: size/depth/null value lived only in the
-//!   struct. Here depth, null leaf and hasher identity are persisted at
-//!   creation and validated on re-open (same mechanism as the MMR).
-//! - **mutating out-params** in `verify_multi_proof` (`&mut Vec<...>` × 3) —
-//!   the redesign returns structured results.
+//! Incremental Merkle tree: sparse storage, zero-hash ladder, fixed proofs.
 //!
 //! The tree is a *sparse* incremental tree of fixed capacity `2^depth`:
-//! leaves are set in place (like the owner's usage in proving systems), the
+//! leaves are set in place (the usual usage in proving systems), the
 //! root updates incrementally, and unoccupied leaves hash to the null leaf.
+//! Only occupied leaves and their ancestors are stored — creating a tree
+//! writes a constant number of records, and an empty tree stores nothing
+//! beyond metadata.
+//!
+//! Unoccupied (virtual) siblings are *computable*, not stored: the
+//! zero-hash ladder ([`ZeroLadder`](crate::merkle::ZeroLadder)) supplies their hashes, so proofs for
+//! any index within capacity always succeed. Depth, null leaf and hasher
+//! identity are persisted at creation and validated on re-open (same
+//! mechanism as the MMR).
 //!
 //! Nodes live under the [`Table::TreeNode`](crate::store::keys::Table::TreeNode) table keyed by the **1-based
 //! heap index** (root `1`, leaf `i` at `2^depth + i`); the root is heap node
 //! `1`. Unoccupied nodes are never written — reads fall back to the
 //! zero-hash ladder.
 //!
-//! Note (intentional asymmetry with the MMR): single-leaf `proof` returns the
-//! bare sibling list — the tree has one fixed root and the caller already
-//! holds it (see [`IncrementalMerkleTree::root`](crate::merkle::IncrementalMerkleTree::root)); the proof's commitment is
-//! the root passed to [`IncrementalMerkleTree::verify`](crate::merkle::IncrementalMerkleTree::verify). The MMR's proofs are
+//! # Proofs are not self-contained (unlike MMR proofs)
+//!
+//! A single-leaf [`IncrementalMerkleTree::proof`](crate::merkle::IncrementalMerkleTree::proof) returns the bare sibling
+//! list: the tree has one fixed root and the caller already holds it (see
+//! [`IncrementalMerkleTree::root`](crate::merkle::IncrementalMerkleTree::root)); the proof's commitment is the root
+//! passed to [`IncrementalMerkleTree::verify`](crate::merkle::IncrementalMerkleTree::verify). MMR proofs are
 //! self-contained because an MMR's root moves with every append.
 
 use crate::hashers::HasherError;
@@ -43,6 +37,10 @@ use alloc::vec::Vec;
 ///
 /// Generic over the id type like the MMR handle (`crate::mmr::Mmr`) — the
 /// default [`AccumulatorId`] covers the common case.
+#[expect(
+    missing_debug_implementations,
+    reason = "generic over non-Debug store types"
+)]
 pub struct IncrementalMerkleTree<H: crate::hashers::Hasher, S, Id = AccumulatorId> {
     pub(crate) hasher: H,
     pub(crate) store: S,
@@ -58,8 +56,7 @@ pub struct IncrementalMerkleTree<H: crate::hashers::Hasher, S, Id = AccumulatorI
 /// Precomputed hashes of unoccupied subtrees at every level.
 ///
 /// `ladder[0]` is the null leaf; `ladder[i + 1] = H(ladder[i], ladder[i])`.
-/// This is what makes virtual siblings computable and fixes the
-/// non-power-of-2 proof bug at its root.
+/// This is what makes virtual siblings computable without storing them.
 #[derive(Clone, Debug)]
 pub struct ZeroLadder<O: HashValue> {
     pub(crate) levels: Vec<O>,
@@ -82,6 +79,12 @@ impl<O: HashValue> ZeroLadder<O> {
     }
 
     /// Hash of an unoccupied subtree at the given level.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `level` exceeds the ladder's depth — the ladder only
+    /// holds `depth + 1` levels (0..=depth), and `levels` is built in
+    /// [`Self::new`] exactly that long.
     #[must_use]
     pub fn at(&self, level: u8) -> O {
         self.levels[level as usize]
@@ -93,8 +96,11 @@ impl<O: HashValue> ZeroLadder<O> {
 pub struct SetOutcome<O: HashValue> {
     /// The leaf that was written.
     pub index: LeafIndex,
-    /// Previous hash at this leaf, if it was occupied.
-    pub previous: Option<O>,
+    /// Previous hash at this leaf: the leaf's stored value, or the zero-
+    /// ladder null leaf when the leaf was unoccupied. Use
+    /// [`IncrementalMerkleTree::leaf_hash`] to distinguish an occupied leaf
+    /// from an unoccupied one (a leaf can legitimately hold the null value).
+    pub previous: O,
     /// New root after the write.
     pub root: O,
 }
@@ -135,9 +141,23 @@ pub enum TreeError<S: Storage> {
         depth: u8,
     },
 
+    /// A multiproof of zero leaves was requested — there is nothing to
+    /// prove, and the verifier could never reproduce a root from an empty
+    /// proof.
+    #[error("multiproof of zero leaves")]
+    EmptyProof,
+
     /// Persisted metadata is missing or inconsistent.
     #[error("tree metadata is missing or inconsistent: {0}")]
     Corrupted(#[source] TreeCorrupted),
+
+    /// The caller-supplied hasher's identity/config cannot be represented in
+    /// the persisted metadata (an over-long hasher name/config) — rejected
+    /// at creation instead of persisting a record that would brick every
+    /// later open. Distinct from [`TreeError::Corrupted`]: the store is
+    /// fine, the input is not.
+    #[error("hasher identity cannot be represented in the persisted metadata")]
+    UnrepresentableHasher,
 }
 
 /// Specific corruption findings when re-opening a tree — the granular
@@ -157,9 +177,13 @@ pub enum TreeCorrupted {
     HasherMismatch {
         /// Hasher identity/config recorded at creation (read from the store).
         stored: alloc::string::String,
-        /// Hasher passed to the constructor.
-        supplied: &'static str,
+        /// Hasher passed to the constructor, rendered as `id (config)`.
+        supplied: alloc::string::String,
     },
+    /// A node value exists but cannot be parsed as a hash value — a corrupt
+    /// record, distinct from an unoccupied node (which is the zero ladder).
+    #[error("tree node value is malformed")]
+    MalformedNode,
 }
 
 /// Heap index of leaf `i` in a tree of `depth` levels.
@@ -190,7 +214,7 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
         let mut batch = crate::store::Batch::new();
         batch.put_owned(
             keys::encode(&id, Table::HasherInfo, 0),
-            record::hasher_info(&hasher),
+            record::hasher_info(&hasher).ok_or(TreeError::UnrepresentableHasher)?,
         );
         batch.put_owned(keys::encode(&id, Table::TreeMeta, 0), {
             let mut meta = Vec::with_capacity(1 + H::Output::LEN);
@@ -246,7 +270,7 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
         if stored_id != hasher.id() || stored_config != hasher.config() {
             return Err(TreeError::Corrupted(TreeCorrupted::HasherMismatch {
                 stored: alloc::format!("{stored_id} ({stored_config})"),
-                supplied: "",
+                supplied: alloc::format!("{} ({})", hasher.id(), hasher.config()),
             }));
         }
 
@@ -255,13 +279,11 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
         if depth == 0 || depth > 63 {
             return Err(malformed());
         }
+        // `from_bytes` validates the exact length.
         let Some(null_bytes) = meta.get(1..) else {
             return Err(malformed());
         };
         let null_leaf = H::Output::from_bytes(null_bytes).ok_or_else(malformed)?;
-        if null_bytes.len() != H::Output::LEN {
-            return Err(malformed());
-        }
 
         // The root is whatever the last write left; its shape is validated
         // by the HashValue parse.
@@ -297,9 +319,43 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
         self.null_leaf
     }
 
+    /// The stored hash of a leaf, or `None` when the leaf is unoccupied
+    /// (never the ladder's null value — an occupied leaf may legitimately
+    /// hold it, so the `Option` is the only honest occupied/unoccupied
+    /// distinction). Mirrors the MMR's `leaf_hash` and sources
+    /// [`Self::set_leaf`]'s `expected_current` gate; one single-key read.
+    ///
+    /// # Errors
+    ///
+    /// [`TreeError::IndexOutOfRange`] beyond capacity, a malformed node
+    /// record, or store failures.
+    pub fn leaf_hash(&self, index: LeafIndex) -> Result<Option<H::Output>, TreeError<S>> {
+        if index.get() >= self.capacity() {
+            return Err(TreeError::IndexOutOfRange {
+                index,
+                capacity: self.capacity(),
+            });
+        }
+        Ok(self
+            .load_nodes(&[leaf_heap(self.depth, index)])?
+            .pop()
+            .flatten())
+    }
+
     /// Sets a leaf in place. Writing over an occupied leaf requires the
-    /// current value — the update gate that v0.5's `update` provided via
-    /// proof-verification, but without a store round trip to fetch the root.
+    /// current value.
+    ///
+    /// Gate semantics: `None` writes unconditionally (including over an
+    /// occupied leaf); `Some(expected)` is a compare-and-swap — the write
+    /// proceeds only when the leaf's current value equals `expected`
+    /// ([`Self::leaf_hash`] sources it; an unoccupied leaf's current value
+    /// is [`Self::null_leaf`]). Like the nullifier records, the gate reads
+    /// and writes through `&self`-style non-atomic access: the check and the
+    /// write are **not** a single atomic transaction, so the gate protects
+    /// against acting on stale reads, not against concurrent writers to the
+    /// same tree. **Single-writer per tree** is the operating assumption —
+    /// concurrent `set_leaf` calls through separate handles can lose updates
+    /// (last write wins at the store).
     ///
     /// # Errors
     ///
@@ -320,27 +376,40 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
         }
         let new_hash = self.hasher.hash_leaf(element)?;
 
-        // Current value at the leaf: store read, ladder for unoccupied.
+        // One batched read for the leaf and all its siblings; unoccupied
+        // nodes fall back to the zero ladder.
         let leaf_heap_index = leaf_heap(self.depth, index);
-        let mut loaded = self.load_nodes(&[leaf_heap_index])?;
-        let previous = loaded.pop().flatten().or(Some(self.ladder.at(0)));
+        let mut needed: Vec<u64> = Vec::with_capacity(self.depth as usize + 1);
+        needed.push(leaf_heap_index);
+        let mut heap = leaf_heap_index;
+        for _ in 0..self.depth {
+            needed.push(heap ^ 1);
+            heap >>= 1;
+        }
+        let loaded = self.load_nodes(&needed)?;
+        // Occupied → stored value; unoccupied → the zero-ladder null leaf
+        // (see [`SetOutcome::previous`]).
+        let previous = loaded[0].unwrap_or(self.null_leaf);
         if let Some(expected) = expected_current
-            && previous != Some(expected)
+            && previous != expected
         {
             return Err(TreeError::UpdateMismatch { index });
         }
 
-        // Walk up: sibling from store or ladder; write every changed node.
+        // Walk up: sibling from the batched read or the ladder; collect
+        // every changed node for the one batch write.
         let mut hash = new_hash;
         let mut heap = leaf_heap_index;
         let mut changed = vec![(heap, hash)];
-        for level in 0..self.depth {
-            let sibling_heap = heap ^ 1;
-            let mut sibling = self.load_nodes(&[sibling_heap])?;
-            let sibling = sibling
-                .pop()
-                .flatten()
-                .unwrap_or_else(|| self.ladder.at(level));
+        for (level, sibling) in loaded[1..].iter().enumerate() {
+            // `level < siblings.len() == depth`, and depth <= 63 is
+            // validated at create/open, so it always fits in u8.
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "level < depth <= 63 (validated at create/open)"
+            )]
+            let level = level as u8;
+            let sibling = sibling.unwrap_or_else(|| self.ladder.at(level));
             hash = if heap & 1 == 1 {
                 // Node is the right child: sibling sits on the left.
                 self.hasher.hash_pair(sibling, hash)
@@ -370,9 +439,8 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
 
     /// Inclusion proof for a leaf: sibling hashes leaf→root, virtual
     /// siblings materialized from the ladder. Always succeeds within
-    /// capacity — the non-power-of-2 bug is structurally gone. The proof
-    /// commits against [`Self::root`] (see the module note on why this is
-    /// not self-contained like MMR proofs).
+    /// capacity. The proof commits against [`Self::root`] (see the module
+    /// note on why this is not self-contained like MMR proofs).
     ///
     /// # Errors
     ///
@@ -416,6 +484,7 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
     /// # Errors
     ///
     /// Hasher failures.
+    #[must_use = "a verification result is only meaningful when checked"]
     pub fn verify(
         &self,
         index: LeafIndex,
@@ -447,16 +516,25 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
     }
 
     /// Multi-leaf proof: minimal sibling set covering all requested leaves,
-    /// returned as an explicit structure (not mutating out-params).
+    /// returned as an explicit structure.
+    ///
+    /// An empty index set is rejected: a proof of zero leaves carries no
+    /// commitment, and letting the producer accept it while the verifier
+    /// returns `Ok(false)` would be a self-inconsistency between the two
+    /// halves.
     ///
     /// # Errors
     ///
-    /// [`TreeError::IndexOutOfRange`] or store failures.
+    /// [`TreeError::IndexOutOfRange`] or store failures;
+    /// [`TreeError::EmptyProof`] for an empty index set.
     pub fn multiproof<I>(&self, indexes: I) -> Result<TreeMultiProof<H::Output>, TreeError<S>>
     where
         I: IntoIterator<Item = LeafIndex>,
     {
         let mut indexes: Vec<LeafIndex> = indexes.into_iter().collect();
+        if indexes.is_empty() {
+            return Err(TreeError::EmptyProof);
+        }
         indexes.sort_unstable();
         indexes.dedup();
         for &index in &indexes {
@@ -514,20 +592,28 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
         })
     }
 
-    /// Verifies a multi-leaf proof against the current root — consuming the
+    /// Verifies a multi-leaf proof against the given root — consuming the
     /// proof's structural contract (see [`TreeMultiProof`]'s ordering
     /// documentation). No store access.
+    ///
+    /// The root is a parameter (mirroring [`Self::verify`], which also takes
+    /// one): a captured multiproof can be verified against any trusted root
+    /// — including historical ones — not only the tree's current root.
+    /// Pass [`Self::root`] for the current-root check. An empty proof
+    /// (zero indexes — hand-built; [`Self::multiproof`] rejects producing
+    /// one) never verifies: `Ok(false)`.
     ///
     /// `elements` must align positionally with the proof's indexes.
     ///
     /// # Errors
     ///
-    /// Structural inconsistency, hasher failures, or an element count not
-    /// matching the proof.
+    /// Hasher failures.
+    #[must_use = "a verification result is only meaningful when checked"]
     pub fn verify_multi<I>(
         &self,
         proof: &TreeMultiProof<H::Output>,
         elements: I,
+        root: H::Output,
     ) -> Result<bool, TreeError<S>>
     where
         I: IntoIterator,
@@ -603,36 +689,37 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
         if siblings.next().is_some() {
             return Ok(false);
         }
-        Ok(values.len() == 1 && values[0].1 == self.root())
+        Ok(values.len() == 1 && values[0].1 == root)
     }
 
-    /// Batched heap-node read from the store.
+    /// Batched heap-node read from the store. A present-but-unparsable
+    /// value is [`TreeCorrupted::MalformedNode`] — it must never read as an
+    /// unoccupied node (the caller would silently substitute the ladder's
+    /// zero hash, producing a wrong proof and a corrupted root on the next
+    /// write).
     fn load_nodes(&self, heaps: &[u64]) -> Result<Vec<Option<H::Output>>, TreeError<S>> {
         let encoded: Vec<Vec<u8>> = heaps
             .iter()
             .map(|heap| keys::encode(&self.id, Table::TreeNode, *heap))
             .collect();
         let refs: Vec<&[u8]> = encoded.iter().map(Vec::as_slice).collect();
-        Ok(self
-            .store
+        self.store
             .read(&refs)
             .map_err(TreeError::Store)?
             .into_iter()
-            .map(|value| value.and_then(|bytes| H::Output::from_bytes(&bytes)))
-            .collect())
+            .map(|value| match value {
+                None => Ok(None),
+                Some(bytes) => H::Output::from_bytes(&bytes)
+                    .map(Some)
+                    .ok_or(TreeError::Corrupted(TreeCorrupted::MalformedNode)),
+            })
+            .collect()
     }
 }
 
-/// Multi-leaf proof with explicit structure (v0.5's `verify_multi_proof`
-/// took three `&mut Vec` out-params; this returns data instead).
+/// Multi-leaf proof with explicit structure.
 ///
-/// # Ordering (the v0.5 `IndexMap` contract, preserved by construction)
-///
-/// v0.5 used an `IndexMap` so the sibling list came out in bottom-up,
-/// level-by-level discovery order — the order its verifier consumed via
-/// `proof.remove(0)`. Here the same order is produced directly by the
-/// level walk over structured (depth, index) keys — no ordered hash map
-/// needed — and is part of this type's contract:
+/// # Ordering (part of this type's contract)
 ///
 /// - `indexes` ascending, `values` (from the verified elements) positionally
 ///   paired with them,
