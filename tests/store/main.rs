@@ -1,5 +1,16 @@
-//! Behavior tests for the storage layer: the in-memory reference backend,
-//! the SQLite backend on native targets, the binary key layout, and `AccumulatorId`.
+//! Behavior tests for the storage layer: the binary key layout,
+//! `AccumulatorId`, the in-memory reference backend, the SQLite backend on
+//! native targets, and the backend-agnostic conformance suite
+//! ([`conformance`]) that both backends satisfy.
+
+#![expect(
+    clippy::expect_used,
+    reason = "tests and benches fail loudly by design: expect on fixtures is the contract"
+)]
+#[path = "../common/mod.rs"]
+mod common;
+
+mod conformance;
 
 mod key_layout {
     use accumulators::ids::{AccumulatorId, TreeId};
@@ -35,10 +46,35 @@ mod key_layout {
         }
     }
 
+    /// An id that encodes past the 255-byte wire bound — encode must panic
+    /// instead of truncating (silent truncation would alias keyspaces
+    /// across accumulators).
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+    struct OverlongId;
+
+    impl TreeId for OverlongId {
+        fn encode_into(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&[0u8; 256]);
+        }
+
+        fn from_bytes(bytes: &[u8]) -> Option<Self> {
+            if bytes.len() == 256 { Some(Self) } else { None }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "caps ids at 255")]
+    fn encoding_an_id_past_the_wire_bound_panics() {
+        let _ = keys::encode(&OverlongId, Table::Nodes, 0);
+    }
+
     #[test]
     fn encoded_keys_follow_the_wire_layout() {
         let id = AccumulatorId::from_bytes([0xab; 16]);
-        let key = keys::encode(&id, Table::Nodes, 5);
+        // A subkey whose byte pattern is asymmetric so the endianness of the
+        // trailing 8 bytes is observable, not just their length.
+        let subkey = 0x0102_0304_0506_0708;
+        let key = keys::encode(&id, Table::Nodes, subkey);
         assert_eq!(
             key.len(),
             1 + 16 + 1 + 8,
@@ -55,7 +91,11 @@ mod key_layout {
             Table::Nodes as u8,
             "the table tag is the discriminant"
         );
-        assert_eq!(&key[18..], &5u64.to_be_bytes(), "the subkey is big-endian");
+        assert_eq!(
+            &key[18..],
+            &subkey.to_be_bytes(),
+            "the subkey is big-endian"
+        );
     }
 
     #[test]
@@ -86,13 +126,14 @@ mod key_layout {
         }
     }
 
+    /// The unassigned-tag half of the wire-tag contract: anything outside the
+    /// assigned discriminants must decode as foreign. (The assigned half is
+    /// owned by `encode_decode_round_trips_every_table_and_subkey` and the
+    /// discriminant declarations themselves — a `from_repr(tag) == tag` loop
+    /// over the same enum would only compare the subject with itself.)
     #[test]
-    fn table_from_repr_round_trips_the_wire_tags() {
-        for tag in 0..=9u8 {
-            let table = Table::from_repr(tag).expect("tags 0..=9 are assigned");
-            assert_eq!(table as u8, tag, "wire tags are the discriminants");
-        }
-        for tag in [10u8, 64, 200, 255] {
+    fn unassigned_table_tags_are_foreign() {
+        for tag in [11u8, 64, 200, 255] {
             assert!(Table::from_repr(tag).is_none(), "tag {tag} is unassigned");
         }
     }
@@ -126,20 +167,6 @@ mod key_layout {
     }
 
     #[test]
-    fn subkeys_are_encoded_big_endian() {
-        let key = keys::encode(
-            &AccumulatorId::ZERO,
-            Table::Nullifiers,
-            0x0102_0304_0506_0708,
-        );
-        assert_eq!(
-            &key[key.len() - 8..],
-            &[1, 2, 3, 4, 5, 6, 7, 8],
-            "the subkey bytes are big-endian"
-        );
-    }
-
-    #[test]
     fn custom_length_ids_round_trip() {
         let short = ThreeByteId([0x11, 0x22, 0x33]);
         let key = keys::encode(&short, Table::TreeNode, 7);
@@ -165,151 +192,14 @@ mod key_layout {
 
 mod memory {
     use accumulators::store::memory::InMemoryStore;
-    use accumulators::store::{Batch, Retrievable, Store, StoreLocator};
-
-    #[test]
-    fn read_results_are_positionally_aligned() {
-        let store = InMemoryStore::new();
-        let mut batch = Batch::new();
-        batch.put(b"alpha", b"value-1");
-        batch.put(b"beta", b"value-2");
-        batch.put(b"gamma", b"value-3");
-        store.write(batch).expect("memory writes are infallible");
-
-        let keys: &[&[u8]] = &[b"beta", b"absent", b"alpha", b"alpha"];
-        let results = store.read(keys).expect("memory reads are infallible");
-        assert_eq!(results.len(), 4, "one result per requested key");
-        assert_eq!(
-            results[0].as_deref(),
-            Some(b"value-2".as_slice()),
-            "results follow key order"
-        );
-        assert_eq!(results[1], None, "absent keys read back as None");
-        assert_eq!(results[2].as_deref(), Some(b"value-1".as_slice()));
-        assert_eq!(
-            results[3].as_deref(),
-            Some(b"value-1".as_slice()),
-            "repeated keys repeat their result"
-        );
-    }
-
-    #[test]
-    fn read_with_no_keys_returns_no_results() {
-        let store = InMemoryStore::new();
-        let results = store.read(&[]).expect("memory reads are infallible");
-        assert!(results.is_empty(), "no keys, no results");
-    }
-
-    #[test]
-    fn batch_applies_puts_and_deletes_together() {
-        let store = InMemoryStore::new();
-        let mut setup = Batch::new();
-        setup.put(b"doomed", b"old");
-        store.write(setup).expect("memory writes are infallible");
-
-        let mut batch = Batch::new();
-        batch.put(b"fresh", b"new");
-        batch.delete(b"doomed");
-        store.write(batch).expect("memory writes are infallible");
-
-        let results = store
-            .read(&[b"fresh", b"doomed"])
-            .expect("memory reads are infallible");
-        assert_eq!(
-            results[0].as_deref(),
-            Some(b"new".as_slice()),
-            "puts in the batch apply"
-        );
-        assert_eq!(results[1], None, "deletes in the batch apply");
-    }
-
-    #[test]
-    fn later_batch_ops_override_earlier_ones() {
-        let store = InMemoryStore::new();
-
-        let mut batch = Batch::new();
-        batch.put(b"key", b"first");
-        batch.put(b"key", b"second");
-        store.write(batch).expect("memory writes are infallible");
-        let results = store.read(&[b"key"]).expect("memory reads are infallible");
-        assert_eq!(
-            results[0].as_deref(),
-            Some(b"second".as_slice()),
-            "the last put wins"
-        );
-
-        let mut batch = Batch::new();
-        batch.put(b"other", b"doomed");
-        batch.delete(b"other");
-        store.write(batch).expect("memory writes are infallible");
-        let results = store
-            .read(&[b"other"])
-            .expect("memory reads are infallible");
-        assert_eq!(results[0], None, "a trailing delete removes the key");
-
-        let mut batch = Batch::new();
-        batch.delete(b"third");
-        batch.put(b"third", b"kept");
-        store.write(batch).expect("memory writes are infallible");
-        let results = store
-            .read(&[b"third"])
-            .expect("memory reads are infallible");
-        assert_eq!(
-            results[0].as_deref(),
-            Some(b"kept".as_slice()),
-            "a put after a delete keeps the key"
-        );
-    }
-
-    #[test]
-    fn owned_batch_ops_write_runtime_built_keys_and_values() {
-        let store = InMemoryStore::new();
-        let runtime_key = vec![9, 8, 7];
-
-        let mut batch = Batch::new();
-        batch.put(runtime_key.as_slice(), b"borrowed-value");
-        batch.put_owned(runtime_key.clone(), vec![1, 2, 3]);
-        batch.put(b"static", b"static-value");
-        store.write(batch).expect("memory writes are infallible");
-
-        let results = store
-            .read(&[runtime_key.as_slice(), b"static"])
-            .expect("memory reads are infallible");
-        assert_eq!(
-            results[0].as_deref(),
-            Some([1, 2, 3].as_slice()),
-            "the owned put over the borrowed one wins"
-        );
-        assert_eq!(results[1].as_deref(), Some(b"static-value".as_slice()));
-
-        let mut batch = Batch::new();
-        batch.delete(runtime_key);
-        store.write(batch).expect("memory writes are infallible");
-        let results = store
-            .read(&[&[9, 8, 7]])
-            .expect("memory reads are infallible");
-        assert_eq!(results[0], None, "the owned delete removes the key");
-    }
-
-    #[test]
-    fn empty_batch_is_a_noop() {
-        let store = InMemoryStore::new();
-        assert!(Batch::new().is_empty(), "a fresh batch is empty");
-        store
-            .write(Batch::new())
-            .expect("memory writes are infallible");
-        let results = store
-            .read(&[b"anything"])
-            .expect("memory reads are infallible");
-        assert_eq!(results[0], None, "an empty batch writes nothing");
-    }
+    use accumulators::store::{Retrievable, Store, StoreLocator};
 
     #[test]
     fn clones_share_data_and_identity() {
         let store = InMemoryStore::new();
         let clone = store.clone();
 
-        let mut batch = Batch::new();
+        let mut batch = accumulators::store::Batch::new();
         batch.put(b"shared", b"visible");
         clone.write(batch).expect("memory writes are infallible");
 
@@ -336,7 +226,7 @@ mod memory {
         let first = InMemoryStore::new();
         let second = InMemoryStore::new();
 
-        let mut batch = Batch::new();
+        let mut batch = accumulators::store::Batch::new();
         batch.put(b"key", b"first");
         first.write(batch).expect("memory writes are infallible");
 
@@ -353,7 +243,7 @@ mod memory {
         let first = InMemoryStore::shared("store-test-shared-same");
         let second = InMemoryStore::shared("store-test-shared-same");
 
-        let mut batch = Batch::new();
+        let mut batch = accumulators::store::Batch::new();
         batch.put(b"key", b"value");
         first.write(batch).expect("memory writes are infallible");
 
@@ -385,7 +275,7 @@ mod memory {
         let shared = InMemoryStore::shared("store-test-shared-vs-standalone");
         let standalone = InMemoryStore::new();
 
-        let mut batch = Batch::new();
+        let mut batch = accumulators::store::Batch::new();
         batch.put(b"key", b"value");
         shared.write(batch).expect("memory writes are infallible");
 
@@ -403,7 +293,7 @@ mod memory {
     fn shared_locator_round_trips_through_open() {
         let original = InMemoryStore::shared("store-test-open-roundtrip");
 
-        let mut batch = Batch::new();
+        let mut batch = accumulators::store::Batch::new();
         batch.put(b"key", b"value");
         original.write(batch).expect("memory writes are infallible");
 
@@ -438,7 +328,7 @@ mod memory {
             .expect("memory reads are infallible");
         assert_eq!(results[0], None, "unknown locators start empty");
 
-        let mut batch = Batch::new();
+        let mut batch = accumulators::store::Batch::new();
         batch.put(b"seed", b"planted");
         opened.write(batch).expect("memory writes are infallible");
 
@@ -456,11 +346,14 @@ mod memory {
 
     #[test]
     fn locators_reflect_the_construction_mode() {
+        // A standalone store is session-local: no locator at all (an empty
+        // locator would violate canonical-locator equality — every
+        // standalone store would collide on it).
         let standalone = InMemoryStore::new();
         assert_eq!(
             Store::locator(&standalone),
-            Some(StoreLocator::from(Vec::new())),
-            "standalone stores have an empty locator"
+            None,
+            "standalone stores have no locator"
         );
 
         let shared = InMemoryStore::shared("store-test-locator-name");
@@ -474,7 +367,7 @@ mod memory {
     #[test]
     fn clear_removes_every_entry() {
         let store = InMemoryStore::new();
-        let mut batch = Batch::new();
+        let mut batch = accumulators::store::Batch::new();
         batch.put(b"key", b"value");
         store.write(batch).expect("memory writes are infallible");
 
@@ -486,7 +379,8 @@ mod memory {
     #[test]
     fn memory_writes_are_infallible() {
         let store = InMemoryStore::new();
-        let outcome: Result<(), core::convert::Infallible> = Store::write(&store, Batch::new());
+        let outcome: Result<(), core::convert::Infallible> =
+            Store::write(&store, accumulators::store::Batch::new());
         assert!(outcome.is_ok(), "the memory error type is Infallible");
     }
 }
@@ -609,232 +503,15 @@ mod mmr_id {
 
 #[cfg(all(feature = "sqlite", not(target_family = "wasm")))]
 mod sqlite {
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
     use accumulators::store::sqlite::SqliteStore;
-    use accumulators::store::{AsyncStore, Batch};
+    use accumulators::store::{AsyncStore, Batch, StoreLocator};
 
-    static NEXT_DB_ID: AtomicU64 = AtomicU64::new(0);
-
-    /// A unique file path per call so tests never share a database.
-    fn temp_db_path(label: &str) -> PathBuf {
-        let id = NEXT_DB_ID.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "accumulators-store-{label}-{}-{id}.db",
-            std::process::id()
-        ))
-    }
-
-    /// Removes the database and its WAL/SHM sidecars, ignoring absence.
-    fn cleanup_db(path: &Path) {
-        for suffix in ["", "-wal", "-shm"] {
-            let sidecar = format!("{}{suffix}", path.display());
-            let _ = std::fs::remove_file(sidecar);
-        }
-    }
-
-    #[tokio::test]
-    async fn file_databases_round_trip_batched_writes() {
-        let path = temp_db_path("roundtrip");
-        let store = SqliteStore::connect(&path)
-            .await
-            .expect("file sqlite opens");
-
-        let mut batch = Batch::new();
-        batch.put(b"alpha", &[0, 1, 2, 255]);
-        batch.put(b"beta", b"value-2");
-        store
-            .write(batch)
-            .await
-            .expect("sqlite writes only fail on I/O");
-
-        let keys: &[&[u8]] = &[b"beta", b"alpha", b"absent"];
-        let results = store
-            .read(keys)
-            .await
-            .expect("sqlite reads only fail on I/O");
-        assert_eq!(results.len(), 3, "one result per requested key");
-        assert_eq!(results[0].as_deref(), Some(b"value-2".as_slice()));
-        assert_eq!(
-            results[1].as_deref(),
-            Some([0, 1, 2, 255].as_slice()),
-            "binary values round-trip verbatim"
-        );
-        assert_eq!(results[2], None, "absent keys read back as None");
-
-        cleanup_db(&path);
-    }
-
-    #[tokio::test]
-    async fn duplicate_read_keys_stay_positionally_aligned() {
-        let path = temp_db_path("duplicates");
-        let store = SqliteStore::connect(&path)
-            .await
-            .expect("file sqlite opens");
-
-        let mut batch = Batch::new();
-        batch.put(b"dup", b"value");
-        batch.put(b"other", b"value-2");
-        store
-            .write(batch)
-            .await
-            .expect("sqlite writes only fail on I/O");
-
-        let keys: &[&[u8]] = &[b"dup", b"other", b"dup", b"dup", b"absent"];
-        let results = store
-            .read(keys)
-            .await
-            .expect("sqlite reads only fail on I/O");
-        assert_eq!(results.len(), 5, "duplicate keys must not collapse results");
-        for value in [
-            results[0].as_deref(),
-            results[2].as_deref(),
-            results[3].as_deref(),
-        ] {
-            assert_eq!(
-                value,
-                Some(b"value".as_slice()),
-                "every duplicate entry carries the value"
-            );
-        }
-        assert_eq!(results[1].as_deref(), Some(b"value-2".as_slice()));
-        assert_eq!(results[4], None);
-
-        cleanup_db(&path);
-    }
-
-    #[tokio::test]
-    async fn read_with_no_keys_returns_no_results() {
-        let path = temp_db_path("empty-read");
-        let store = SqliteStore::connect(&path)
-            .await
-            .expect("file sqlite opens");
-        let results = store
-            .read(&[])
-            .await
-            .expect("sqlite reads only fail on I/O");
-        assert!(results.is_empty(), "no keys, no results");
-
-        cleanup_db(&path);
-    }
-
-    #[tokio::test]
-    async fn batch_applies_puts_and_deletes_together() {
-        let path = temp_db_path("batch");
-        let store = SqliteStore::connect(&path)
-            .await
-            .expect("file sqlite opens");
-
-        let mut setup = Batch::new();
-        setup.put(b"doomed", b"old");
-        store
-            .write(setup)
-            .await
-            .expect("sqlite writes only fail on I/O");
-
-        let mut batch = Batch::new();
-        batch.put(b"fresh", b"new");
-        batch.delete(b"doomed");
-        store
-            .write(batch)
-            .await
-            .expect("sqlite writes only fail on I/O");
-
-        let results = store
-            .read(&[b"fresh", b"doomed"])
-            .await
-            .expect("sqlite reads only fail on I/O");
-        assert_eq!(
-            results[0].as_deref(),
-            Some(b"new".as_slice()),
-            "puts in the batch apply"
-        );
-        assert_eq!(results[1], None, "deletes in the batch apply");
-
-        cleanup_db(&path);
-    }
-
-    #[tokio::test]
-    async fn later_batch_ops_override_earlier_ones() {
-        let path = temp_db_path("override");
-        let store = SqliteStore::connect(&path)
-            .await
-            .expect("file sqlite opens");
-
-        let mut batch = Batch::new();
-        batch.put(b"key", b"first");
-        batch.put(b"key", b"second");
-        store
-            .write(batch)
-            .await
-            .expect("sqlite writes only fail on I/O");
-        let results = store
-            .read(&[b"key"])
-            .await
-            .expect("sqlite reads only fail on I/O");
-        assert_eq!(
-            results[0].as_deref(),
-            Some(b"second".as_slice()),
-            "the last put wins"
-        );
-
-        let mut batch = Batch::new();
-        batch.put(b"other", b"doomed");
-        batch.delete(b"other");
-        store
-            .write(batch)
-            .await
-            .expect("sqlite writes only fail on I/O");
-        let results = store
-            .read(&[b"other"])
-            .await
-            .expect("sqlite reads only fail on I/O");
-        assert_eq!(results[0], None, "a trailing delete removes the key");
-
-        let mut batch = Batch::new();
-        batch.delete(b"third");
-        batch.put(b"third", b"kept");
-        store
-            .write(batch)
-            .await
-            .expect("sqlite writes only fail on I/O");
-        let results = store
-            .read(&[b"third"])
-            .await
-            .expect("sqlite reads only fail on I/O");
-        assert_eq!(
-            results[0].as_deref(),
-            Some(b"kept".as_slice()),
-            "a put after a delete keeps the key"
-        );
-
-        cleanup_db(&path);
-    }
-
-    #[tokio::test]
-    async fn empty_batch_write_succeeds() {
-        let path = temp_db_path("empty-batch");
-        let store = SqliteStore::connect(&path)
-            .await
-            .expect("file sqlite opens");
-        store
-            .write(Batch::new())
-            .await
-            .expect("empty batches are a no-op");
-        let results = store
-            .read(&[b"anything"])
-            .await
-            .expect("sqlite reads only fail on I/O");
-        assert_eq!(results[0], None, "an empty batch writes nothing");
-
-        cleanup_db(&path);
-    }
+    use crate::common::TempDb;
 
     #[tokio::test]
     async fn cloned_handles_share_data_and_identity() {
-        let path = temp_db_path("clone");
-        let store = SqliteStore::connect(&path)
+        let db = TempDb::new("clone");
+        let store = SqliteStore::connect(db.path())
             .await
             .expect("file sqlite opens");
         let clone = store.clone();
@@ -856,8 +533,6 @@ mod sqlite {
             "clones share the pool"
         );
         assert!(store.same_store(&clone), "clones report the same storage");
-
-        cleanup_db(&path);
     }
 
     #[tokio::test]
@@ -888,11 +563,11 @@ mod sqlite {
 
     #[tokio::test]
     async fn file_databases_share_a_locator_across_connections() {
-        let path = temp_db_path("locator");
-        let first = SqliteStore::connect(&path)
+        let db = TempDb::new("locator");
+        let first = SqliteStore::connect(db.path())
             .await
             .expect("file sqlite opens");
-        let second = SqliteStore::connect(&path)
+        let second = SqliteStore::connect(db.path())
             .await
             .expect("file sqlite opens");
 
@@ -906,15 +581,13 @@ mod sqlite {
             first.same_store(&second),
             "same-path connections name the same storage"
         );
-
-        cleanup_db(&path);
     }
 
     #[tokio::test]
     async fn file_databases_persist_across_connections() {
-        let path = temp_db_path("persist");
+        let db = TempDb::new("persist");
         {
-            let store = SqliteStore::connect(&path)
+            let store = SqliteStore::connect(db.path())
                 .await
                 .expect("file sqlite opens");
             let mut batch = Batch::new();
@@ -925,7 +598,7 @@ mod sqlite {
                 .expect("sqlite writes only fail on I/O");
         }
 
-        let reopened = SqliteStore::connect(&path)
+        let reopened = SqliteStore::connect(db.path())
             .await
             .expect("file sqlite re-opens");
         let results = reopened
@@ -937,14 +610,12 @@ mod sqlite {
             Some(b"value".as_slice()),
             "data survives dropping the handle"
         );
-
-        cleanup_db(&path);
     }
 
     #[tokio::test]
     async fn open_async_reconnects_from_the_locator() {
-        let path = temp_db_path("open-async");
-        let original = SqliteStore::connect(&path)
+        let db = TempDb::new("open-async");
+        let original = SqliteStore::connect(db.path())
             .await
             .expect("file sqlite opens");
 
@@ -972,7 +643,92 @@ mod sqlite {
             reopened.same_store(&original),
             "same-path stores are the same storage"
         );
+    }
 
-        cleanup_db(&path);
+    /// Locators are the raw OS path bytes. A non-UTF-8 locator is rejected
+    /// by the backend (SQLite requires UTF-8 filenames) rather than lossily
+    /// fabricated into a wrong file — the locator round trip never invents
+    /// bytes.
+    #[tokio::test]
+    async fn non_utf8_locators_fail_closed_instead_of_fabricating_a_path() {
+        // The raw-byte locator contract: the bytes are the exact OS path.
+        let db = TempDb::new("raw-bytes");
+        let original = SqliteStore::connect(db.path())
+            .await
+            .expect("file sqlite opens");
+        let locator = AsyncStore::locator(&original).expect("file databases have locators");
+        assert_eq!(
+            locator.as_bytes(),
+            db.path().as_os_str().as_encoded_bytes(),
+            "the locator is the raw OS path, never a lossy string"
+        );
+        drop(original);
+
+        // A non-UTF-8 locator cannot become a lossy path: the backend
+        // rejects it, it does not silently open something else.
+        let mut forged = b"accumulators-store-".to_vec();
+        forged.extend_from_slice(&[0xff, 0xfe, b'.', b'd', b'b']);
+        let forged_locator = StoreLocator::from_bytes(forged);
+        assert!(
+            SqliteStore::open_async(&forged_locator).await.is_err(),
+            "a non-utf8 locator must fail closed"
+        );
+    }
+
+    /// `:memory:` detection is an exact match: a file with `:memory:` inside
+    /// its name is a real, re-openable file — not a database alias.
+    #[tokio::test]
+    async fn a_path_containing_memory_marker_is_a_real_file() {
+        let db = TempDb::new("inner-memory");
+        // Build a path that embeds the `:memory:` marker inside the file name.
+        let marker_path = db.path().with_file_name(format!(
+            "prefix:memory:{}",
+            db.path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("utf8 name")
+        ));
+
+        let original = SqliteStore::connect(&marker_path)
+            .await
+            .expect("opens as a file database");
+        let locator = AsyncStore::locator(&original).expect("file databases have locators");
+        assert!(
+            !locator.as_bytes().starts_with(b"memory:"),
+            "a file containing the marker keeps its path locator"
+        );
+
+        let reopened = SqliteStore::open_async(&locator)
+            .await
+            .expect("the file is re-openable");
+        assert!(
+            reopened.same_store(&original),
+            "the marker-bearing file behaves like any file database"
+        );
+
+        // The marker file lives outside the guard's path — clean it up here.
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", marker_path.display()));
+        }
+    }
+
+    /// In-memory locators are synthetic ids — `open_async` rejects them
+    /// instead of silently fabricating a *file* named `memory:…`.
+    #[tokio::test]
+    async fn open_async_rejects_memory_locators() {
+        let store = SqliteStore::in_memory()
+            .await
+            .expect("in-memory sqlite opens");
+        let locator =
+            AsyncStore::locator(&store).expect("in-memory stores carry a synthetic locator");
+        assert!(
+            locator.as_bytes().starts_with(b"memory:"),
+            "in-memory locators are synthetic `memory:` ids"
+        );
+
+        match SqliteStore::open_async(&locator).await {
+            Err(_) => {}
+            Ok(_) => panic!("a memory: locator must not fabricate a file"),
+        }
     }
 }

@@ -1,25 +1,18 @@
 //! Storage abstraction: a minimal, batch-first, byte-oriented key-value
-//! contract.
-//!
-//! The v0.5 `Store` trait is `String → String` with seven methods, plus a
-//! parallel layer of `InStoreTable` / `InStoreCounter` handles and fn-pointer
-//! routing hooks for stacked MMRs. The redesign collapses all of that into
-//! two methods over bytes:
+//! contract — two methods over bytes:
 //!
 //! - [`Store::read`](crate::store::Store::read) — batched point reads, positional results,
 //! - [`Store::write`](crate::store::Store::write) — an **atomic** [`Batch`](crate::store::Batch) of puts and deletes.
 //!
 //! Everything else (namespacing, counters, typed node tables) lives with the
 //! accumulator, not the store. This is the smallest surface a new backend
-//! (rocksdb, redb, fjall, postgres, redis, …) needs to implement, and it maps
-//! 1:1 onto each backend's native batch API.
+//! (postgres, redis, …) needs to implement, and it maps 1:1 onto each
+//! backend's native batch API.
 //!
 //! # Contracts a store implementation must honor
 //!
 //! 1. `read` returns results **positionally aligned** with the requested
-//!    keys; missing keys are `None`, never errors. (The v0.5 contract —
-//!    "omit missing keys from the map" — was undocumented and only
-//!    inferable from call sites; here it's in the type.)
+//!    keys; missing keys are `None`, never errors.
 //! 2. `write` applies all operations atomically: observers see either the
 //!    full batch or none of it. **This is a hard requirement, not an
 //!    optimization** — see "Atomicity (required)" below.
@@ -60,8 +53,23 @@ use core::future::Future;
 #[cfg(feature = "memory")]
 pub mod memory;
 
+#[cfg(feature = "heapless")]
+pub mod heapless;
+
 #[cfg(all(feature = "sqlite", not(target_family = "wasm")))]
 pub mod sqlite;
+
+#[cfg(all(feature = "sled", not(target_family = "wasm")))]
+pub mod sled;
+
+#[cfg(all(feature = "fjall", not(target_family = "wasm")))]
+pub mod fjall;
+
+#[cfg(all(feature = "redb", not(target_family = "wasm")))]
+pub mod redb;
+
+#[cfg(all(feature = "rocksdb", not(target_family = "wasm")))]
+pub mod rocksdb;
 
 /// The error axis of a storage backend, shared by the sync and async
 /// contracts.
@@ -83,6 +91,56 @@ pub trait Storage {
 /// Object safety is not a goal — accumulators are generic over `S: Store`
 /// for static dispatch. Async backends implement [`AsyncStore`] instead and
 /// plug into the async MMR (`crate::mmr::AsyncMmr`).
+///
+/// A minimal backend is a batched read and an atomic write — a map behind a
+/// lock already satisfies the contract (the lock-protected snapshot makes
+/// every write all-or-nothing by construction):
+///
+/// ```
+/// use accumulators::store::{Batch, Op, Store, Storage};
+/// use std::borrow::Cow;
+/// use std::collections::BTreeMap;
+/// use std::sync::Mutex;
+///
+/// #[derive(Default)]
+/// struct MapStore(Mutex<BTreeMap<Vec<u8>, Vec<u8>>>);
+///
+/// impl Storage for MapStore {
+///     type Error = core::convert::Infallible;
+/// }
+///
+/// impl Store for MapStore {
+///     fn read(&self, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>, Self::Error> {
+///         let map = self.0.lock().unwrap();
+///         Ok(keys.iter().map(|k| map.get(*k).cloned()).collect())
+///     }
+///
+///     fn write(&self, batch: Batch<'_>) -> Result<(), Self::Error> {
+///         let mut map = self.0.lock().unwrap();
+///         for op in batch.ops {
+///             match op {
+///                 Op::Put { key, value } => {
+///                     map.insert(key.into_owned(), value.into_owned());
+///                 }
+///                 Op::Delete { key } => {
+///                     map.remove(&key.into_owned());
+///                 }
+///             }
+///         }
+///         Ok(())
+///     }
+/// }
+///
+/// let store = MapStore::default();
+/// let batch: Batch = [Op::Put {
+///     key: Cow::Borrowed(b"key"),
+///     value: Cow::Borrowed(b"value"),
+/// }]
+/// .into_iter()
+/// .collect();
+/// store.write(batch).unwrap();
+/// assert_eq!(store.read(&[b"key"]).unwrap(), vec![Some(b"value".to_vec())]);
+/// ```
 pub trait Store: Storage {
     /// Batched point read. Results are positionally aligned with `keys`;
     /// `None` for keys not present.
@@ -164,10 +222,9 @@ pub trait AsyncStore: Storage {
 /// An atomic unit of storage mutations.
 ///
 /// Constructed by pushing operations, then handed to [`Store::write`].
-/// Borrowed keys and values where possible so hot paths can write from
-/// stack buffers without cloning; `Cow` slots accept runtime-built keys and
-/// values (the crate's own key encoder returns `Vec<u8>`) without a second
-/// operation variant per ownership shape.
+/// Keys and values are `Cow` so hot paths can write borrowed bytes without
+/// cloning, while runtime-built keys and values (the crate's own key encoder
+/// returns `Vec<u8>`) fit the same batch.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Batch<'a> {
     /// Ordered operations; applied in order within the atomic write.
@@ -206,6 +263,20 @@ impl<'a> Batch<'a> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.ops.is_empty()
+    }
+}
+
+impl<'a> Extend<Op<'a>> for Batch<'a> {
+    fn extend<I: IntoIterator<Item = Op<'a>>>(&mut self, iter: I) {
+        self.ops.extend(iter);
+    }
+}
+
+impl<'a> FromIterator<Op<'a>> for Batch<'a> {
+    fn from_iter<I: IntoIterator<Item = Op<'a>>>(iter: I) -> Self {
+        Self {
+            ops: iter.into_iter().collect(),
+        }
     }
 }
 
@@ -289,10 +360,19 @@ impl From<String> for StoreLocator {
 /// caller-chosen id as their locator (session-scoped stacks).
 ///
 /// Locator equality doubles as store identity: the stacked-MMR router
-/// resolves identities **once at construction** into a batch plan, then
-/// makes exactly one batched call per distinct store per operation —
-/// merging same-store groups is therefore strictly no slower than one call
-/// per group (see the `stacked` module's batching section).
+/// groups requests **per store** at every operation (same-store layers join
+/// one batched call, keys deduplicated) and makes exactly one batched call
+/// per distinct store per operation.
+///
+/// # Relationship to [`Store::locator`]
+///
+/// [`Store::locator`] is the *hint* a store gives when asked (default
+/// `None`); [`Retrievable::canonical_locator`] is the *canonical* answer
+/// used for persistence. Pinning persists `Store::locator`, so a store
+/// implementing both should make the default `locator()` return the same
+/// bytes as `canonical_locator()` — override `locator()` whenever the
+/// inherited default (`None`) would under-report a re-openable store (the
+/// reference `InMemoryStore::shared` (feature `memory`) does exactly this).
 pub trait Retrievable: Store + Sized {
     /// The canonical locator of this store instance.
     fn canonical_locator(&self) -> StoreLocator;
@@ -377,10 +457,23 @@ impl<S: Store + Send + Sync + 'static> DynStore for S {
 /// wrap **every** layer — top included — in `ErasedStore` and build the
 /// stack over `S = ErasedStore`:
 ///
-/// ```ignore
-/// let subs = vec![sqlite_mmr.pin().erased(), memory_mmr.pin().erased()];
-/// Mmr::stack(hasher, ErasedStore::new(memory_store), id, subs)
 /// ```
+/// use accumulators::ids::AccumulatorId;
+/// use accumulators::mmr::{MmrSize, SubView};
+/// use accumulators::store::memory::InMemoryStore;
+/// use accumulators::store::ErasedStore;
+///
+/// // Each layer's view is erased individually, then assembled into a stack.
+/// let store = InMemoryStore::shared("erased-store-doc");
+/// let view: SubView<_, AccumulatorId> =
+///     SubView::single(AccumulatorId::ZERO, store, MmrSize::ZERO);
+/// let erased: SubView<ErasedStore, _> = view.erased();
+/// # let _ = erased;
+/// ```
+///
+/// (An `Mmr::pin()` produces the same view from a live accumulator; see
+/// `crate::mmr::SubView::erased` and the `stacked_mmr` feature for the full
+/// flow.)
 ///
 /// Costs (all opt-in, per wrapped layer): dynamic dispatch per *batched*
 /// operation (noise next to I/O), and errors surfaced as [`DynError`]
@@ -420,6 +513,10 @@ impl Store for ErasedStore {
 
     fn write(&self, batch: Batch<'_>) -> Result<(), Self::Error> {
         self.0.write_dyn(batch)
+    }
+
+    fn identity(&self) -> usize {
+        self.0.identity_dyn()
     }
 
     fn same_store(&self, other: &Self) -> bool {
@@ -524,6 +621,10 @@ impl AsyncStore for ErasedAsyncStore {
         self.0.locator_dyn()
     }
 
+    fn identity(&self) -> usize {
+        self.0.identity_dyn()
+    }
+
     fn same_store(&self, other: &Self) -> bool {
         self.0.identity_dyn() == other.0.identity_dyn()
     }
@@ -565,6 +666,7 @@ impl AsyncStore for ErasedAsyncStore {
 /// | `Mode`       | text record — the mode's `NAME`                                                                   |
 /// | `Nullifiers` | counter — size at nullification, `0` = deep                                                       |
 /// | `Subviews`   | `[count: u16 BE]` then per layer, bottom → top: `[id_len: u8][id][pinned_size: u64 BE][locator_len: u16 BE][locator]` |
+/// | `Provenance` | `[kind: u8]` (`0` = full history, `1` = peaks-only) +, for peaks-only, `[seed node count: u64 BE]`      |
 /// | `TreeNode`   | hash value; subkey is the **1-based heap index** (root `1`, leaf `i` at `2^depth + i`)            |
 /// | `TreeMeta`   | `[depth: u8][null leaf: hash value]`                                                              |
 ///
@@ -590,7 +692,11 @@ pub mod keys {
     ///
     /// Renaming these variants does not change persisted data; **reordering
     /// or renumbering does** — treat the discriminants as a wire format.
+    ///
+    /// `#[non_exhaustive]`: the wire format grows as the crate grows (new
+    /// tables), so downstream matches must carry a wildcard arm.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    #[non_exhaustive]
     #[repr(u8)]
     pub enum Table {
         /// Node hashes: subkey is the [`u64`] node index.
@@ -604,7 +710,7 @@ pub mod keys {
         /// Hasher identity + config, persisted at creation: subkey `0`.
         HasherInfo = 4,
         /// Mutability mode, persisted at creation: subkey `0`, value is the
-        /// the mode's `NAME` string.
+        /// mode's `NAME` string.
         Mode = 5,
         /// Nullifier records
         /// (`Nullifying` mode): subkey is
@@ -620,6 +726,13 @@ pub mod keys {
         /// Merkle-tree metadata: subkey `0`, value is
         /// `[depth: u8][null leaf: hash value]`.
         TreeMeta = 9,
+        /// MMR provenance (full history vs peaks-only seed): subkey `0`,
+        /// value is `[kind: u8]` (`0` = full, `1` = peaks-only) +, for
+        /// peaks-only, the seed node count as `u64` BE (see the module-level
+        /// format spec). Persisted at creation; every `open` path requires
+        /// it — without it a peaks-only MMR would silently reopen as
+        /// full-history and its proof floor would be lost.
+        Provenance = 10,
     }
 
     impl Table {
@@ -638,23 +751,34 @@ pub mod keys {
                 7 => Some(Self::Subviews),
                 8 => Some(Self::TreeNode),
                 9 => Some(Self::TreeMeta),
+                10 => Some(Self::Provenance),
                 _ => None,
             }
         }
     }
 
     /// Encodes a full key.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the id encodes to more than 255 bytes: the u8 length
+    /// prefix is the key wire format, so a longer id cannot be represented
+    /// — and silently truncating it would alias one accumulator's keyspace
+    /// onto another's (cross-accumulator corruption). A too-long id is a
+    /// programming error, not a runtime condition.
     #[must_use]
     pub fn encode<Id: TreeId>(id: &Id, table: Table, subkey: u64) -> Vec<u8> {
         let mut key = Vec::with_capacity(1 + 16 + 1 + 8);
         let mut id_bytes = Vec::new();
         id.encode_into(&mut id_bytes);
-        // The u8 length prefix is the key wire format; id encodings longer
-        // than 255 bytes cannot be represented in a key. The signature is
-        // frozen (infallible `Vec<u8>`), so the bound is documented here.
+        assert!(
+            u8::try_from(id_bytes.len()).is_ok(),
+            "tree id encodes to {} bytes; the key wire format caps ids at 255",
+            id_bytes.len()
+        );
         #[expect(
             clippy::cast_possible_truncation,
-            reason = "u8 length prefix is the key wire format; ids <= 255 bytes"
+            reason = "checked above: len <= 255 fits u8"
         )]
         key.push(id_bytes.len() as u8);
         key.extend_from_slice(&id_bytes);
@@ -694,7 +818,7 @@ pub(crate) mod record {
     /// Encodes a `u64` counter (8 bytes BE).
     #[cfg(feature = "mmr")]
     #[must_use]
-    pub fn counter(value: u64) -> Vec<u8> {
+    pub(crate) fn counter(value: u64) -> Vec<u8> {
         value.to_be_bytes().to_vec()
     }
 
@@ -706,11 +830,11 @@ pub(crate) mod record {
 
     /// Encodes a text record (`[len: u16 BE][utf-8]`).
     #[must_use]
-    pub fn text(value: &str) -> Vec<u8> {
+    pub(crate) fn text(value: &str) -> Vec<u8> {
         let mut out = Vec::with_capacity(2 + value.len());
-        // The u16 BE length prefix is the text wire format; records longer
-        // than 65535 bytes cannot be represented. The signature is frozen
-        // (infallible `Vec<u8>`, crate-internal callers in other modules).
+        // u16 BE length prefix is the text wire format. Callers must check
+        // `value.len() <= u16::MAX` first (as `hasher_info` does): a silent
+        // cast truncation would corrupt the record and brick later opens.
         #[expect(
             clippy::cast_possible_truncation,
             reason = "u16 length prefix is the text wire format; len < 65536"
@@ -729,27 +853,31 @@ pub(crate) mod record {
 
     /// Encodes a hash value of the hasher's output type.
     #[must_use]
-    pub fn hash_value<O: HashValue>(value: &O) -> Vec<u8> {
+    pub(crate) fn hash_value<O: HashValue>(value: &O) -> Vec<u8> {
         value.to_vec()
     }
 
     /// Encodes the `HasherInfo` record: wire tag + (custom) name + config.
+    ///
+    /// Returns `None` when the hasher cannot be represented in the wire
+    /// format: a custom name over 255 bytes (u8 length prefix) or a config
+    /// over 65535 bytes (u16 length prefix). The caller must fail at
+    /// creation — silently truncating would persist a record that bricks
+    /// every later open with a permanent hasher mismatch.
     #[must_use]
-    pub fn hasher_info<H: Hasher>(hasher: &H) -> Vec<u8> {
+    pub(crate) fn hasher_info<H: Hasher>(hasher: &H) -> Option<Vec<u8>> {
+        let config = hasher.config();
+        if config.len() > u16::MAX as usize {
+            return None;
+        }
         let mut out = Vec::new();
         out.push(hasher.id().tag());
         if let HasherId::Custom(name) = hasher.id() {
-            // The u8 length prefix is the HasherInfo wire format; custom
-            // hasher names longer than 255 bytes cannot be represented.
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "u8 length prefix is the HasherInfo wire format"
-            )]
-            out.push(name.len() as u8);
+            out.push(u8::try_from(name.len()).ok()?);
             out.extend_from_slice(name.as_bytes());
         }
-        out.extend_from_slice(&text(&hasher.config()));
-        out
+        out.extend_from_slice(&text(&config));
+        Some(out)
     }
 
     /// Decodes the `HasherInfo` record into its parts.
@@ -764,5 +892,51 @@ pub(crate) mod record {
             (HasherId::from_tag(tag, None)?, rest)
         };
         Some((id, parse_text(rest)?))
+    }
+}
+
+/// Helpers shared by the native store backends.
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(
+        feature = "sqlite",
+        feature = "sled",
+        feature = "fjall",
+        feature = "redb",
+        feature = "rocksdb"
+    )
+))]
+pub(crate) mod internal {
+    /// Rebuilds raw locator bytes into an OS path.
+    ///
+    /// Filesystem-backed store locators carry the raw OS path bytes (the
+    /// encoding [`std::path::Path::as_os_str`] produces through
+    /// `as_encoded_bytes`), so re-opening must rebuild the path
+    /// byte-for-byte: routing the bytes through a lossy string would name a
+    /// different file and break re-opening.
+    ///
+    /// On unix and windows the platform provides a byte-level `OsString`
+    /// bridge, so the round trip is lossless — non-UTF-8 paths survive. On
+    /// other platforms there is no such bridge; there the bytes are decoded
+    /// lossily (invalid sequences replaced), and a non-UTF-8 locator cannot
+    /// round-trip.
+    ///
+    /// Used by every native filesystem-backed store: sqlite, sled, fjall,
+    /// redb and rocksdb.
+    pub(crate) fn os_path_bytes(bytes: &[u8]) -> std::path::PathBuf {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt as _;
+            std::path::PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec()))
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt as _;
+            std::path::PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec()))
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            std::path::PathBuf::from(alloc::string::String::from_utf8_lossy(bytes).into_owned())
+        }
     }
 }
