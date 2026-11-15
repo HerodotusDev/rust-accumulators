@@ -26,8 +26,9 @@
 //!   [`LeafIndex`](primitives::LeafIndex), and the leaf-space bound.
 //! - [`hashers`] — the [`Hasher`](hashers::Hasher) trait (infallible pair
 //!   hashing, fallible leaf ingestion, persisted config) and built-ins:
-//!   Keccak256 (the `SolKeccak` alias), Poseidon, Pedersen,
-//!   and the Cairo-flavored Blake2s. Custom hashers are one trait impl away.
+//!   `KeccakSolHasher` (Solidity keccak packing), `PoseidonStarkHasher`,
+//!   `PedersenStarkHasher`, and the Cairo-flavored `Blake2sStarkHasher`.
+//!   Custom hashers are one trait impl away.
 //! - [`ids`] — [`AccumulatorId`](ids::AccumulatorId) (uuid v4/v7, ULID, custom bytes) and the
 //!   [`TreeId`](ids::TreeId) extension point.
 #![cfg_attr(
@@ -40,25 +41,63 @@
 )]
 #![cfg_attr(
     feature = "store",
-    doc = "  [`Retrievable`](store::Retrievable) stores and opt-in erasure adapters.\n"
+    doc = "  [`Retrievable`](store::Retrievable) stores and opt-in erasure adapters\n"
+)]
+#![cfg_attr(feature = "store", doc = "  ([`ErasedStore`](store::ErasedStore) /\n")]
+#![cfg_attr(
+    feature = "store",
+    doc = "  [`ErasedAsyncStore`](store::ErasedAsyncStore)).\n"
 )]
 #![cfg_attr(
-    all(feature = "store", any(feature = "memory", feature = "sqlite")),
-    doc = "  Built-in backends: `memory` (std) and `sqlite` (native async);\n"
+    all(
+        feature = "store",
+        any(
+            feature = "memory",
+            feature = "sqlite",
+            feature = "sled",
+            feature = "fjall",
+            feature = "redb",
+            feature = "rocksdb",
+            feature = "heapless"
+        )
+    ),
+    doc = "  Built-in backends: `memory` (std), `sqlite` (native, async),\n"
 )]
 #![cfg_attr(
-    all(feature = "store", not(any(feature = "memory", feature = "sqlite"))),
+    all(
+        feature = "store",
+        any(
+            feature = "sled",
+            feature = "fjall",
+            feature = "redb",
+            feature = "rocksdb"
+        )
+    ),
+    doc = "  `sled`, `fjall`, `redb`, and `rocksdb` (native),\n"
+)]
+#![cfg_attr(
+    all(feature = "store", feature = "heapless"),
+    doc = "  `heapless` (`no_std`, fixed-capacity, allocation-free map) —\n"
+)]
+#![cfg_attr(
+    all(
+        feature = "store",
+        not(any(
+            feature = "memory",
+            feature = "sqlite",
+            feature = "sled",
+            feature = "fjall",
+            feature = "redb",
+            feature = "rocksdb",
+            feature = "heapless"
+        ))
+    ),
     doc = "  Built-in backends are opt-in via the `memory` and `sqlite` features;\n"
 )]
 #![cfg_attr(
-    all(feature = "store", any(feature = "memory", feature = "sqlite")),
-    doc = "  users plug in rocksdb, redb, fjall, postgres,\n"
+    feature = "store",
+    doc = "  or users plug in redis, … by implementing two methods.\n"
 )]
-#![cfg_attr(
-    all(feature = "store", not(any(feature = "memory", feature = "sqlite"))),
-    doc = "  and users plug in rocksdb, redb, fjall, postgres,\n"
-)]
-#![cfg_attr(feature = "store", doc = "  redis, … by implementing two methods.\n")]
 #![cfg_attr(
     feature = "mmr",
     doc = "- [`mmr`] — the accumulator: sync [`Mmr`](mmr::Mmr) and\n"
@@ -77,13 +116,28 @@
 )]
 #![cfg_attr(
     feature = "mmr",
-    doc = "  with standalone verification, pinned sub-views and stacking, in-memory\n"
+    doc = "  with standalone verification, pinned sub-views and stacking, and\n"
 )]
 #![cfg_attr(
     feature = "mmr",
-    doc = "  drafts with commit/discard/commit-as-stacked, and shallow/deep\n"
+    doc = "  shallow/deep nullification via [`NullifierSet`](mmr::NullifierSet).\n"
 )]
-#![cfg_attr(feature = "mmr", doc = "  nullification.\n")]
+#![cfg_attr(
+    feature = "mmr",
+    doc = "  Kind × mode shorthands live as type aliases — [`PlainAppendMmr`](mmr::PlainAppendMmr)\n"
+)]
+#![cfg_attr(
+    feature = "mmr",
+    doc = "  and friends spell the full handle generics once per valid combination.\n"
+)]
+#![cfg_attr(
+    feature = "draft_mmr",
+    doc = "  [`Draft`](mmr::Draft) overlays add in-memory commit / discard /\n"
+)]
+#![cfg_attr(
+    feature = "draft_mmr",
+    doc = "  commit-as-stacked on top of any MMR.\n"
+)]
 #![cfg_attr(
     feature = "merkle_tree",
     doc = "- [`merkle`] — the incremental Merkle tree: sparse storage, zero-hash\n"
@@ -92,7 +146,18 @@
     feature = "merkle_tree",
     doc = "  ladder (proofs for every index within capacity), persisted metadata.\n"
 )]
-//!
+#![cfg_attr(
+    feature = "serde",
+    doc = "- [`serde_impls`] — serde support: hex-string hashes and ids, hex-hash\n"
+)]
+#![cfg_attr(
+    feature = "serde",
+    doc = "  proofs and multiproofs, and the [`HexHash`](serde_impls::HexHash)\n"
+)]
+#![cfg_attr(
+    feature = "serde",
+    doc = "  adapter for foreign hash outputs (e.g. felts).\n"
+)]
 //!
 //! - **`Hash` is `[u8; 32]` behind a newtype** (field hashers use
 //!   `starknet_crypto::Felt`): bytes end-to-end, `Copy` semantics, no hex
@@ -117,21 +182,59 @@
     feature = "store",
     doc = "  See [`Store::write`](store::Store::write).\n"
 )]
+//! # Quick start
+//!
+//! The default features (`mmr`, `memory`, `keccak_sol`, `uuid_v4`) are a working
+//! out-of-the-box MMR:
+//!
+//! ```
+//! use accumulators::hashers::KeccakSolHasher;
+//! use accumulators::ids::AccumulatorId;
+//! use accumulators::mmr::Mmr;
+//! use accumulators::primitives::LeafIndex;
+//! use accumulators::store::memory::InMemoryStore;
+//!
+//! let mut mmr: Mmr<KeccakSolHasher, _> = Mmr::create(
+//!     KeccakSolHasher,
+//!     InMemoryStore::new(),
+//!     AccumulatorId::random_v4(),
+//! )
+//! .unwrap();
+//!
+//! mmr.append(b"element 0").unwrap();
+//! mmr.append(b"element 1").unwrap();
+//!
+//! let proof = mmr.proof(LeafIndex::new(0)).unwrap();
+//! assert!(mmr.verify(&proof, b"element 0").unwrap());
+//! assert!(!mmr.verify(&proof, b"forged").unwrap());
+//! ```
 //!
 //! # Platform support
 //!
 //! The core is `no_std` + `alloc`. The async surfaces (`AsyncMmr`, the
-//! SQLite store) and the std-backed memory store are opt-in via features
-//! (`sqlite`, `memory`); everything builds for `wasm32-unknown-unknown`.
+//! SQLite store), the std-backed memory store, and the allocator-free
+//! `heapless` store are opt-in via features (`sqlite`, `memory`,
+//! `heapless`); everything builds for `wasm32-unknown-unknown`.
+//!
+//! Allocation contract: the crate requires `alloc` and allocates where data
+//! is unbounded — proof and multiproof construction and verification build
+//! sibling paths and deduplicated pools on the heap. The opt-in `heapless`
+//! store is the exception at the storage layer: its fixed-capacity map
+//! never allocates (see the `heapless` store feature).
 //!
 //! # Feature flags
 //!
 //! Accumulators: `mmr`, `stacked_mmr`, `draft_mmr`, `merkle_tree`,
-//! `incremental_merkle_tree`. Hashers: `keccak`, `poseidon`, `pedersen`,
-//! `blake`. Stores: `memory`, `sqlite`. Ids: `uuid_v4`, `uuid_v7`, `ulid`
-//! (the time-based constructors additionally need `std`). Platform:
+//! `incremental_merkle_tree`. Hashers: `keccak_sol`, `poseidon_stark`, `pedersen_stark`,
+//! `blake2s_stark`. Stores: `memory`, `heapless`, `sqlite`, `sled`, `fjall`,
+//! `redb`, `rocksdb`. Ids: `uuid_v4`, `uuid_v7`, `ulid`
+//! (the time-based constructors additionally need `std`). Serialization:
+//! `serde` (hex-string hashes, ids, proofs, multiproofs, and nullifier
+//! records). Platform:
 //! `std` (implied by the std-backed stores). Default is
-//! `["store", "hasher"]`; `all` enables everything.
+//! `["mmr", "memory", "keccak_sol", "uuid_v4"]` — a working out-of-the-box
+//! MMR with an in-memory store; `all` enables everything,
+//! `--no-default-features` stays the embedded story.
 
 #![no_std]
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -157,6 +260,10 @@ pub mod mmr;
 
 /// Zero-cost primitive types shared by every accumulator family.
 pub mod primitives;
+
+/// Serde implementations: hex-string hashes and ids, plain-number indexes.
+#[cfg(feature = "serde")]
+pub mod serde_impls;
 
 /// Storage abstraction: stores, batches, keys, erasure.
 #[cfg(feature = "store")]
