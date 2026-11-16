@@ -828,6 +828,117 @@ fn merge_sibling(node: NodeIndex, parent: NodeIndex) -> NodeIndex {
     }
 }
 
+/// Why consistency-proof generation stopped before any node fetch:
+/// `prev_size` sits outside the provable range. The three sizes are the
+/// payload of the typed [`MmrError::InvalidPrevSize`](super::MmrError::InvalidPrevSize) rejection every shell
+/// raises from it.
+pub(crate) struct PrevSizeRejection {
+    /// The rejected size.
+    pub prev_size: MmrSize,
+    /// The smallest servable size.
+    pub provable_from: MmrSize,
+    /// The node count generation was asked for.
+    pub current: MmrSize,
+}
+
+/// The generation plan for a consistency proof from `prev_size` to
+/// `current`: either the pair is degenerate and the proof is complete from
+/// the caller's cached peaks, or one positional node fetch is required.
+pub(crate) enum ConsistencyPlan<O: HashValue> {
+    /// The proof is complete: the trivial prefix (`prev_size == current`)
+    /// or the empty prefix (`prev_size == 0`) — no node access.
+    Ready(ConsistencyProof<O>),
+    /// Fetch these node indexes in one batched read: the first `peak_count`
+    /// are the earlier MMR's peaks, the rest the bridge nodes.
+    Fetch {
+        /// The earlier peaks, then the bridge nodes, in order.
+        indexes: Vec<NodeIndex>,
+        /// How many of [`Self::indexes`] head the earlier peaks.
+        peak_count: usize,
+    },
+}
+
+/// Pure consistency-proof planning shared by every shell (sync handle,
+/// async handle, both drafts): validation, the degenerate pairs, and the
+/// fetch list. Callers supply their own node resolution and assemble via
+/// [`consistency_from_loaded`].
+pub(crate) fn consistency_plan<O: HashValue>(
+    prev_size: MmrSize,
+    current: MmrSize,
+    floor: MmrSize,
+    peaks: &[O],
+) -> Result<ConsistencyPlan<O>, PrevSizeRejection> {
+    if prev_size.leaf_count().is_none() || prev_size > current {
+        return Err(PrevSizeRejection {
+            prev_size,
+            provable_from: floor,
+            current,
+        });
+    }
+    // The degenerate sizes need no history: the trivial prefix uses the
+    // cached peaks, and the empty prefix's root is a public constant.
+    if prev_size == current {
+        return Ok(ConsistencyPlan::Ready(ConsistencyProof {
+            prev_size,
+            size: current,
+            prev_peaks: peaks.to_vec(),
+            path: Vec::new(),
+        }));
+    }
+    if prev_size == MmrSize::ZERO {
+        return Ok(ConsistencyPlan::Ready(ConsistencyProof {
+            prev_size,
+            size: current,
+            prev_peaks: Vec::new(),
+            path: peaks.to_vec(),
+        }));
+    }
+    if prev_size < floor {
+        return Err(PrevSizeRejection {
+            prev_size,
+            provable_from: floor,
+            current,
+        });
+    }
+
+    let peak_indexes = peaks_of(prev_size);
+    let mut indexes = Vec::clone(&peak_indexes);
+    indexes.extend_from_slice(&consistency_bridge_nodes(prev_size, current));
+    Ok(ConsistencyPlan::Fetch {
+        peak_count: peak_indexes.len(),
+        indexes,
+    })
+}
+
+/// Assembles the proof from the fetched node values: the first `peak_count`
+/// entries are the earlier peaks, the rest the bridge nodes (positional —
+/// see [`ConsistencyPlan::Fetch`]).
+pub(crate) fn consistency_from_loaded<O: HashValue>(
+    prev_size: MmrSize,
+    current: MmrSize,
+    loaded: &[Option<O>],
+    peak_count: usize,
+) -> Result<ConsistencyProof<O>, super::Corrupted> {
+    let (peaks_loaded, bridge_loaded) = loaded.split_at(peak_count);
+    let missing = || super::Corrupted::MissingRecord {
+        table: crate::store::keys::Table::Nodes,
+    };
+    Ok(ConsistencyProof {
+        prev_size,
+        size: current,
+        prev_peaks: peaks_loaded
+            .iter()
+            .copied()
+            .map(|value| value.ok_or_else(missing))
+            .collect::<Result<Vec<_>, _>>()?,
+        path: bridge_loaded
+            .iter()
+            .copied()
+            .map(|value| value.ok_or_else(missing))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
 /// Resolves a later-frontier node's hash from the proof's known values,
 /// expanding internal nodes recursively. Every expanded node is a node of
 /// the later MMR (children of MMR nodes are MMR nodes), so expansion

@@ -447,6 +447,65 @@ impl<H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'_, H, S, K
         })
     }
 
+    /// Builds a consistency proof over the composed (base + draft) view:
+    /// the composed view at `prev_size` — an earlier node count of the same
+    /// node space — is a prefix of the current composed view. Verify with
+    /// [`verify_consistency_proof`](super::proof::verify_consistency_proof);
+    /// the verifier needs only the hasher and the two roots.
+    ///
+    /// Semantics mirror [`Mmr::consistency_proof`](super::Mmr::consistency_proof)
+    /// exactly, with the draft's composed resolver standing in for the
+    /// store: the earlier peaks and the bridge nodes resolve through the
+    /// same overlay-over-base read every draft proof uses. Draft reads
+    /// serve only the *current* composed view — there is no historical
+    /// pinning — so a buffered update or delete rewrites the values a
+    /// prefix proof carries, exactly as the base handle's own in-place
+    /// edits do on the committed side: the prefix statement is about the
+    /// node values the composed view serves *now*. Prefixes reaching into
+    /// the draft's appends (sizes above the base's node count) resolve
+    /// entirely through the overlay; the base's provenance floor still
+    /// gates `prev_size`; the degenerate pairs (`prev_size == size`, and
+    /// `prev_size == 0`) are served from the composed peaks with no store
+    /// access. Nullifiers do not participate: a consistency proof is a
+    /// statement about the structure's prefixes, not about leaf validity —
+    /// buffered nullifications change no node values and no records are
+    /// consulted.
+    ///
+    /// [`Optimise`] is deliberately absent from the read path: the composed
+    /// state is the buffer-time fold of the log in order, whichever replay
+    /// strategy commits it later — a folded log can commit a *different*
+    /// (smaller) shape, so a pre-commit proof commits the composed view,
+    /// not the post-commit one.
+    ///
+    /// # Errors
+    ///
+    /// [`super::MmrError::InvalidPrevSize`] for a `prev_size` outside the
+    /// provable range, [`super::MmrError::Corrupted`] when a required node
+    /// is missing, store failures otherwise.
+    pub fn consistency_proof(
+        &self,
+        prev_size: MmrSize,
+    ) -> Result<super::proof::ConsistencyProof<H::Output>, super::MmrError<S>> {
+        let current = self.state.node_count;
+        let floor = match self.base.state.provenance {
+            Provenance::Full => MmrSize::ZERO,
+            Provenance::FromPeaks { size_at_creation } => size_at_creation,
+        };
+        match super::proof::consistency_plan(prev_size, current, floor, &self.state.peaks)? {
+            super::proof::ConsistencyPlan::Ready(proof) => Ok(proof),
+            super::proof::ConsistencyPlan::Fetch {
+                indexes,
+                peak_count,
+            } => {
+                // One composed read: the earlier peaks, then the bridge
+                // nodes — split positionally.
+                let loaded = self.resolve_nodes(&indexes)?;
+                super::proof::consistency_from_loaded(prev_size, current, &loaded, peak_count)
+                    .map_err(super::MmrError::Corrupted)
+            }
+        }
+    }
+
     /// Verifies a proof against the draft's *current* root (the composed
     /// base + draft view). For standalone verification — no draft instance,
     /// e.g. in a verifier process — use [`super::proof::verify_proof`], which
@@ -485,6 +544,33 @@ impl<H: Hasher, S: Store, K: super::Kind, M: Mode, Id: TreeId> Draft<'_, H, S, K
     {
         let valid = super::proof::verify_multi_proof(&self.base.hasher, proof, elements)?;
         Ok(valid && proof.root == self.root())
+    }
+
+    /// Verifies a consistency proof whose target is the draft's *current*
+    /// composed root. `prev_root` is the caller's trusted anchor for the
+    /// earlier state — obtained from wherever that state was
+    /// authenticated; a draft cannot recompute a historical root because
+    /// it serves only the current composed view. The structural check is
+    /// the standalone
+    /// [`verify_consistency_proof`](super::proof::verify_consistency_proof).
+    ///
+    /// # Errors
+    ///
+    /// [`super::MmrError::Verify`] when the proof is structurally
+    /// inconsistent.
+    #[must_use = "a verification result is only meaningful when checked"]
+    pub fn verify_consistency(
+        &self,
+        proof: &super::proof::ConsistencyProof<H::Output>,
+        prev_root: H::Output,
+    ) -> Result<bool, super::MmrError<S>> {
+        let valid = super::proof::verify_consistency_proof(
+            &self.base.hasher,
+            proof,
+            prev_root,
+            self.root(),
+        )?;
+        Ok(valid)
     }
 
     /// Whether `leaf` is provable in the composed view: inside the composed
@@ -1157,7 +1243,10 @@ fn collapse_edit<O: HashValue>(
 /// rewrites the pending append's value, a delete/nullify annihilates it,
 /// and a later update re-occupies an annihilated leaf (the append
 /// resurrects with the new value).
-fn fold<H: Hasher>(
+///
+/// Crate-internal: the async draft's commit reuses this fold verbatim —
+/// the net-effect semantics are store-independent.
+pub(crate) fn fold<H: Hasher>(
     ops: &[DraftOp<H::Output>],
     base_leaf_count: LeafCount,
 ) -> Vec<DraftOp<H::Output>> {

@@ -241,6 +241,18 @@ pub enum MmrError<S: Storage> {
     UnrepresentableHasher,
 }
 
+/// The pure planner's range rejection maps onto the shells' typed variant —
+/// the planner itself stays error-enum-free.
+impl<S: Storage> From<super::proof::PrevSizeRejection> for MmrError<S> {
+    fn from(rejected: super::proof::PrevSizeRejection) -> Self {
+        Self::InvalidPrevSize {
+            prev_size: rejected.prev_size,
+            provable_from: rejected.provable_from,
+            current: rejected.current,
+        }
+    }
+}
+
 /// Specific corruption findings when opening or resuming an MMR.
 ///
 /// `open` validates every persisted record shape it reads; these are the
@@ -600,67 +612,19 @@ impl<H: Hasher, S: Store, K: Kind, M: Mode, Id: TreeId> Mmr<H, S, K, M, Id> {
             Provenance::Full => MmrSize::ZERO,
             Provenance::FromPeaks { size_at_creation } => size_at_creation,
         };
-        if prev_size.leaf_count().is_none() || prev_size > current {
-            return Err(MmrError::InvalidPrevSize {
-                prev_size,
-                provable_from: floor,
-                current,
-            });
+        match super::proof::consistency_plan(prev_size, current, floor, &self.state.peaks)? {
+            super::proof::ConsistencyPlan::Ready(proof) => Ok(proof),
+            super::proof::ConsistencyPlan::Fetch {
+                indexes,
+                peak_count,
+            } => {
+                // One batched read: the earlier peaks, then the bridge
+                // nodes — split positionally.
+                let loaded = self.load_nodes(&indexes)?;
+                super::proof::consistency_from_loaded(prev_size, current, &loaded, peak_count)
+                    .map_err(MmrError::Corrupted)
+            }
         }
-        // The degenerate sizes need no history: the trivial prefix uses the
-        // cached peaks, and the empty prefix's root is a public constant.
-        if prev_size == current {
-            return Ok(super::proof::ConsistencyProof {
-                prev_size,
-                size: current,
-                prev_peaks: Vec::clone(&self.state.peaks),
-                path: Vec::new(),
-            });
-        }
-        if prev_size == MmrSize::ZERO {
-            return Ok(super::proof::ConsistencyProof {
-                prev_size,
-                size: current,
-                prev_peaks: Vec::new(),
-                path: Vec::clone(&self.state.peaks),
-            });
-        }
-        if prev_size < floor {
-            return Err(MmrError::InvalidPrevSize {
-                prev_size,
-                provable_from: floor,
-                current,
-            });
-        }
-
-        // One batched read: the earlier peaks, then the bridge nodes —
-        // split positionally.
-        let bridge_nodes = super::proof::consistency_bridge_nodes(prev_size, current);
-        let mut indexes = peaks_of(prev_size);
-        let peak_count = indexes.len();
-        indexes.extend_from_slice(&bridge_nodes);
-        let loaded = self.load_nodes(&indexes)?;
-        let (peaks_loaded, bridge_loaded) = loaded.split_at(peak_count);
-        let missing = || {
-            MmrError::Corrupted(Corrupted::MissingRecord {
-                table: Table::Nodes,
-            })
-        };
-
-        Ok(super::proof::ConsistencyProof {
-            prev_size,
-            size: current,
-            prev_peaks: peaks_loaded
-                .iter()
-                .copied()
-                .map(|value| value.ok_or_else(missing))
-                .collect::<Result<Vec<_>, _>>()?,
-            path: bridge_loaded
-                .iter()
-                .copied()
-                .map(|value| value.ok_or_else(missing))
-                .collect::<Result<Vec<_>, _>>()?,
-        })
     }
 
     /// Verifies a proof against this MMR's *current* root.
