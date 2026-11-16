@@ -98,11 +98,11 @@ read/write of 1 000 keys, no MMR logic. 10k build per-leaf:
 
 | backend | build 10k | →/leaf | batch 1k | →/leaf | proof | multiproof k=100 |
 |---|---|---|---|---|---|---|
-| memory | 26.1 ms ⚠ | 2.61 µs | 858 µs ⚠ | 0.86 µs | 2.48 µs | 128 µs |
+| memory | **26.1 ms** ⚠ | **2.61 µs** | 858 µs ⚠ | 0.86 µs | **2.48 µs** | **128 µs** |
 | heapless | 27.7 ms | 2.77 µs | 756 µs | 0.76 µs | 3.83 µs | 224 µs |
 | sled | 38.4 ms | 3.84 µs | 1.14 ms | 1.14 µs | 8.20 µs ⚠ | 510 µs |
 | fjall | 57.5 ms ⚠ | 5.75 µs | 1.43 ms ⚠ | 1.43 µs | 6.45 µs | 475 µs |
-| rocksdb | 57.9 ms | 5.79 µs | 747 µs | 0.75 µs | 9.27 µs | 674 µs |
+| rocksdb | 57.9 ms | 5.79 µs | **747 µs** | **0.75 µs** | 9.27 µs | 674 µs |
 | redb | 149 ms | 14.9 µs | 3.69 ms ⚠ | 3.69 µs | 4.25 µs | 282 µs |
 | sqlite | 568 ms | 56.8 µs | 2.06 ms | 2.06 µs | 48.6 µs | 2.00 ms |
 
@@ -110,7 +110,7 @@ Raw store latency (1 000 keys, no accumulator work):
 
 | backend | read | write |
 |---|---|---|
-| memory | 36 µs | 61 µs ⚠ |
+| memory | **36 µs** | **61 µs** |
 | heapless | 76 µs | 75 µs |
 | redb | 127 µs | 276 µs |
 | fjall | 294 µs | 717 µs ⚠ |
@@ -125,7 +125,7 @@ write and read latency only.
 ⚠ = CV above 10% in this run (memory 75–150% on the build/batch legs,
 fjall 23–30%, redb batch 63%, sled proof 13%) — allocator and filesystem
 noise. Rankings that depend on ⚠ cells are indicative; the clean cells
-(heapless, rocksdb batch, redb read, sqlite) are solid.
+(heapless, rocksdb, redb read, sqlite, memory raw ops) are solid.
 
 Reads vs writes split the file engines: redb reads fastest (127 µs) but
 writes slowest (3.7 ms batch); rocksdb is the reverse (best batch write,
