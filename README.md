@@ -106,14 +106,20 @@ handles over one pure state core, batched I/O (an append is one atomic write,
 a proof one batched read), self-contained proofs with standalone verification,
 stacking/branching (`stacked_mmr`), in-memory drafts with commit/discard
 (`draft_mmr`), and shallow/deep nullification. Layout math lives in
-`src/mmr/layout.rs`.
+`src/mmr/layout.rs` — peak counts, peak heights, path lengths, and
+child/parent index algebra are public `const fn`s — and the pure planners
+behind the shells (append engine, consistency planning, metadata validation)
+are public for custom stores.
 
 ### - Incremental Merkle Tree — `features = ["incremental_merkle_tree"]`
 
 An incremental Merkle tree accumulator with sparse storage and a zero-hash
-ladder; proofs are self-contained (each carries its root, so they verify
-anywhere with just the hasher — structural tampering is a typed error).
-ladder (proofs for every index within capacity). `src/merkle.rs`.
+ladder (proofs for every index within capacity). Proofs are self-contained
+(each carries its root, so they verify anywhere with just the hasher —
+structural tampering is a typed error). The heap-index math (`leaf_heap`,
+`heap_level_and_index`) and the pure write/proof planners are public, so a
+custom store shell runs the exact code paths of the built-in one.
+`src/merkle.rs`.
 
 ## Utils
 

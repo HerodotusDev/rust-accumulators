@@ -93,6 +93,21 @@ carries over, and persisted v0.5 data is not migratable.
 - An incremental Merkle tree accumulator (`merkle_tree`): fixed capacity
   `2^depth`, sparse storage, and a zero-hash ladder so every index within
   capacity has a proof. Metadata (root, depth) persists across reopen.
+  `IncrementalMerkleTree::depth()` / `AsyncIncrementalMerkleTree::depth()`
+  accessors expose the persisted depth.
+- Public layout math for capacity planning and custom verifiers: `peak_count`,
+  `max_peak_height`, `path_length`, and `largest_mountain` as allocation-free
+  `const fn`s, `NodeIndex::left_child`/`right_child` as the checked inverse of
+  `parent`, and `peak_position` (which peak a leaf's path terminates against).
+- A custom-shell seam for both accumulators: the pure planners, validators, and
+  persisted-format codecs are public — the MMR's `apply_append_many`,
+  `consistency_plan`/`consistency_from_loaded`, `checked_counters`/
+  `validate_metadata`, provenance encode/parse, and `build_sibling_pool`; the
+  tree's `create_batch`/`validate_metadata`/`set_read_heaps`/`plan_set`/
+  `proof_read_heaps`/`plan_multiproof`/`build_proof`/`build_multiproof` family,
+  plus the heap-index math (`leaf_heap`, `heap_level_and_index`) and the
+  deterministic `multiproof_walk` behind the `TreeNode` wire spec. Custom shells
+  run the same code paths as the built-in ones.
 - `no_std` support: the core runs on `alloc` alone and compiles for
   `wasm32-unknown-unknown` and `thumbv7em-none-eabihf`. Store backends are
   `std` consumers behind features — except `heapless`, whose fixed-capacity
