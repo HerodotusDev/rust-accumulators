@@ -1,4 +1,5 @@
-//! Incremental Merkle tree: sparse storage, zero-hash ladder, fixed proofs.
+//! Incremental Merkle tree: sparse storage, zero-hash ladder,
+//! self-contained proofs, and an async twin.
 //!
 //! The tree is a *sparse* incremental tree of fixed capacity `2^depth`:
 //! leaves are set in place (the usual usage in proving systems), the
@@ -18,18 +19,37 @@
 //! `1`. Unoccupied nodes are never written — reads fall back to the
 //! zero-hash ladder.
 //!
-//! # Proofs are not self-contained (unlike MMR proofs)
+//! # Proofs are self-contained (like MMR proofs)
 //!
-//! A single-leaf [`IncrementalMerkleTree::proof`](crate::merkle::IncrementalMerkleTree::proof) returns the bare sibling
-//! list: the tree has one fixed root and the caller already holds it (see
-//! [`IncrementalMerkleTree::root`](crate::merkle::IncrementalMerkleTree::root)); the proof's commitment is the root
-//! passed to [`IncrementalMerkleTree::verify`](crate::merkle::IncrementalMerkleTree::verify). MMR proofs are
-//! self-contained because an MMR's root moves with every append.
+//! A single-leaf [`IncrementalMerkleTree::proof`](crate::merkle::IncrementalMerkleTree::proof) returns a
+//! [`TreeProof`](crate::merkle::TreeProof) — the sibling path, the depth that shapes it, and the root
+//! it commits to. Verification needs no tree and no store:
+//! [`verify_proof`](crate::merkle::verify_proof) folds the path with a hasher
+//! alone, so a proof travels and verifies
+//! anywhere. The handle-level [`IncrementalMerkleTree::verify`](crate::merkle::IncrementalMerkleTree::verify)
+//! additionally pins the proof to the tree's *current* root — a proof taken
+//! before later writes no longer verifies there; use the standalone
+//! verifier for historical checks. Structural truncation is a typed error
+//! ([`TreeVerifyError::Inconsistent`](crate::merkle::TreeVerifyError::Inconsistent)); a tampered path simply folds to
+//! something other than the proof's own root — `Ok(false)`, never a panic.
+//!
+//! # Sync core, async shell
+//!
+//! All state math (metadata validation, the set/proof walks) lives in the
+//! pure functions of this module;
+//! [`AsyncIncrementalMerkleTree`](crate::merkle::AsyncIncrementalMerkleTree)
+//! is the same tree over an [`AsyncStore`](crate::store::AsyncStore),
+//! differing only in fetch/commit plumbing — one batched read and one
+//! atomic batch write per operation, exactly like the sync shell.
+
+mod async_tree;
+
+pub use async_tree::AsyncIncrementalMerkleTree;
 
 use crate::hashers::HasherError;
 use crate::ids::{AccumulatorId, TreeId};
 use crate::primitives::{HashValue, LeafIndex};
-use crate::store::{Storage, Store, keys, keys::Table, record};
+use crate::store::{Batch, Storage, Store, keys, keys::Table, record};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -151,6 +171,10 @@ pub enum TreeError<S: Storage> {
     #[error("tree metadata is missing or inconsistent: {0}")]
     Corrupted(#[source] TreeCorrupted),
 
+    /// Proof verification could not be attempted.
+    #[error("could not verify proof: {0}")]
+    Proof(#[from] TreeVerifyError),
+
     /// The caller-supplied hasher's identity/config cannot be represented in
     /// the persisted metadata (an over-long hasher name/config) — rejected
     /// at creation instead of persisting a record that would brick every
@@ -186,10 +210,342 @@ pub enum TreeCorrupted {
     MalformedNode,
 }
 
+// ------------------------------------------------------------- pure core
+
 /// Heap index of leaf `i` in a tree of `depth` levels.
-const fn leaf_heap(depth: u8, index: LeafIndex) -> u64 {
+pub(crate) const fn leaf_heap(depth: u8, index: LeafIndex) -> u64 {
     (1_u64 << depth) + index.get()
 }
+
+/// Validates a caller-supplied tree depth (valid: 1..=63).
+pub(crate) fn check_depth<S: Storage>(depth: u8) -> Result<(), TreeError<S>> {
+    if depth == 0 || depth > 63 {
+        return Err(TreeError::InvalidDepth { depth });
+    }
+    Ok(())
+}
+
+/// Rejects a leaf index at or beyond `capacity`.
+pub(crate) fn check_index<S: Storage>(capacity: u64, index: LeafIndex) -> Result<(), TreeError<S>> {
+    if index.get() >= capacity {
+        return Err(TreeError::IndexOutOfRange { index, capacity });
+    }
+    Ok(())
+}
+
+/// Builds the genesis batch: hasher identity, depth/null-leaf metadata, and
+/// the empty root (the ladder's top, persisted as heap node 1). Returns the
+/// batch and the ladder it was built from. Pure — the shells only write it.
+///
+/// # Errors
+///
+/// [`TreeError::UnrepresentableHasher`] when the hasher's identity/config
+/// cannot be represented in the persisted metadata.
+pub(crate) fn create_batch<S: Storage, H: crate::hashers::Hasher, Id: TreeId>(
+    hasher: &H,
+    tree_id: &Id,
+    depth: u8,
+    null_leaf: H::Output,
+) -> Result<(Batch<'static>, ZeroLadder<H::Output>), TreeError<S>> {
+    let ladder = ZeroLadder::new(hasher, depth, null_leaf);
+
+    let mut batch = Batch::new();
+    batch.put_owned(
+        keys::encode(tree_id, Table::HasherInfo, 0),
+        record::hasher_info(hasher).ok_or(TreeError::UnrepresentableHasher)?,
+    );
+    batch.put_owned(keys::encode(tree_id, Table::TreeMeta, 0), {
+        let mut meta = Vec::with_capacity(1 + H::Output::LEN);
+        meta.push(depth);
+        meta.extend_from_slice(null_leaf.to_vec().as_slice());
+        meta
+    });
+    // The empty root: heap node 1 = the top of the ladder.
+    batch.put_owned(
+        keys::encode(tree_id, Table::TreeNode, 1),
+        record::hash_value(&ladder.at(depth)),
+    );
+    Ok((batch, ladder))
+}
+
+/// The persisted-metadata keys, in read order: hasher info, tree meta, root.
+pub(crate) fn metadata_keys<Id: TreeId>(id: &Id) -> Vec<Vec<u8>> {
+    vec![
+        keys::encode(id, Table::HasherInfo, 0),
+        keys::encode(id, Table::TreeMeta, 0),
+        keys::encode(id, Table::TreeNode, 1),
+    ]
+}
+
+/// Validates the persisted metadata triple against the supplied hasher:
+/// hasher identity/config byte-for-byte, depth in 1..=63, null leaf and
+/// root parsing as hash values. Returns the tree's shape and cached root.
+///
+/// # Errors
+///
+/// [`TreeCorrupted::HasherMismatch`] or [`TreeCorrupted::MalformedMetadata`].
+pub(crate) fn validate_metadata<H: crate::hashers::Hasher>(
+    hasher: &H,
+    hasher_info: &[u8],
+    tree_meta: &[u8],
+    root: &[u8],
+) -> Result<(u8, H::Output, H::Output), TreeCorrupted> {
+    let malformed = || TreeCorrupted::MalformedMetadata;
+    let (stored_id, stored_config) =
+        record::parse_hasher_info(hasher_info).ok_or_else(malformed)?;
+    if stored_id != hasher.id() || stored_config != hasher.config() {
+        return Err(TreeCorrupted::HasherMismatch {
+            stored: alloc::format!("{stored_id} ({stored_config})"),
+            supplied: alloc::format!("{} ({})", hasher.id(), hasher.config()),
+        });
+    }
+
+    let depth = *tree_meta.first().ok_or_else(malformed)?;
+    if depth == 0 || depth > 63 {
+        return Err(malformed());
+    }
+    // `from_bytes` validates the exact length.
+    let Some(null_bytes) = tree_meta.get(1..) else {
+        return Err(malformed());
+    };
+    let null_leaf = H::Output::from_bytes(null_bytes).ok_or_else(malformed)?;
+
+    // The root is whatever the last write left; its shape is validated
+    // by the HashValue parse.
+    let root = H::Output::from_bytes(root).ok_or_else(malformed)?;
+    Ok((depth, null_leaf, root))
+}
+
+/// Parses one loaded node record: `None` for unoccupied, the hash value for
+/// a present record, [`TreeCorrupted::MalformedNode`] for a present-but-
+/// unparsable one — it must never read as unoccupied (the caller would
+/// silently substitute the ladder's zero hash, producing a wrong proof and
+/// a corrupted root on the next write).
+pub(crate) fn parse_node_value<O: HashValue>(
+    value: Option<Vec<u8>>,
+) -> Result<Option<O>, TreeCorrupted> {
+    match value {
+        None => Ok(None),
+        Some(bytes) => O::from_bytes(&bytes)
+            .map(Some)
+            .ok_or(TreeCorrupted::MalformedNode),
+    }
+}
+
+/// The pure result of planning a leaf write from the loaded nodes:
+/// everything the one batch write commits, plus the gate's `previous` value.
+pub(crate) struct SetPlan<O: HashValue> {
+    /// Previous hash at the leaf: the leaf's stored value, or the ladder's
+    /// null leaf when the leaf was unoccupied.
+    pub previous: O,
+    /// Every changed `(heap index, value)` pair, leaf → root.
+    pub changed: Vec<(u64, O)>,
+    /// The new root (heap node 1).
+    pub root: O,
+}
+
+/// The heap indexes a `set_leaf` must read: the leaf plus every sibling on
+/// its path to the root.
+pub(crate) fn set_read_heaps(depth: u8, index: LeafIndex) -> Vec<u64> {
+    let mut needed: Vec<u64> = Vec::with_capacity(depth as usize + 1);
+    let mut heap = leaf_heap(depth, index);
+    needed.push(heap);
+    for _ in 0..depth {
+        needed.push(heap ^ 1);
+        heap >>= 1;
+    }
+    needed
+}
+
+/// Plans a leaf write from the loaded nodes ([`set_read_heaps`] order):
+/// the `expected_current` gate, then the walk up collecting every changed
+/// node; unoccupied siblings come from the ladder. Pure — the shells gate,
+/// then commit [`SetPlan::changed`] as one atomic batch.
+///
+/// # Errors
+///
+/// [`TreeError::UpdateMismatch`] when the gate rejects.
+pub(crate) fn plan_set<S: Storage, H: crate::hashers::Hasher>(
+    hasher: &H,
+    depth: u8,
+    index: LeafIndex,
+    ladder: &ZeroLadder<H::Output>,
+    loaded: &[Option<H::Output>],
+    new_hash: H::Output,
+    expected_current: Option<H::Output>,
+) -> Result<SetPlan<H::Output>, TreeError<S>> {
+    // Occupied → stored value; unoccupied → the zero-ladder null leaf
+    // (see `SetOutcome::previous`).
+    let previous = loaded[0].unwrap_or_else(|| ladder.at(0));
+    if let Some(expected) = expected_current
+        && previous != expected
+    {
+        return Err(TreeError::UpdateMismatch { index });
+    }
+
+    // Walk up: sibling from the batched read or the ladder; collect
+    // every changed node for the one batch write.
+    let mut hash = new_hash;
+    let mut heap = leaf_heap(depth, index);
+    let mut changed = vec![(heap, hash)];
+    for (level, sibling) in loaded[1..].iter().enumerate() {
+        // `level < siblings.len() == depth`, and depth <= 63 is
+        // validated at create/open, so it always fits in u8.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "level < depth <= 63 (validated at create/open)"
+        )]
+        let level = level as u8;
+        let sibling = sibling.unwrap_or_else(|| ladder.at(level));
+        hash = if heap & 1 == 1 {
+            // Node is the right child: sibling sits on the left.
+            hasher.hash_pair(sibling, hash)
+        } else {
+            hasher.hash_pair(hash, sibling)
+        };
+        heap >>= 1;
+        changed.push((heap, hash));
+    }
+
+    Ok(SetPlan {
+        previous,
+        changed,
+        root: hash,
+    })
+}
+
+/// The sibling heap indexes of a leaf's proof path, bottom-up.
+pub(crate) fn proof_read_heaps(depth: u8, index: LeafIndex) -> Vec<u64> {
+    let mut heap = leaf_heap(depth, index);
+    (0..depth)
+        .map(|_| {
+            let sibling = heap ^ 1;
+            heap >>= 1;
+            sibling
+        })
+        .collect()
+}
+
+/// Materializes a proof from the loaded sibling records (in
+/// [`proof_read_heaps`] order): unoccupied siblings are substituted from
+/// the ladder. Pure.
+pub(crate) fn build_proof<O: HashValue>(
+    depth: u8,
+    index: LeafIndex,
+    loaded: Vec<Option<O>>,
+    ladder: &ZeroLadder<O>,
+    root: O,
+) -> TreeProof<O> {
+    let siblings = loaded
+        .into_iter()
+        .enumerate()
+        .map(|(level, value)| {
+            // `level < siblings.len() == depth`, and depth <= 63 is
+            // validated at create/open, so it always fits in u8.
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "level < depth <= 63 (validated at create/open)"
+            )]
+            let level = level as u8;
+            value.unwrap_or_else(|| ladder.at(level))
+        })
+        .collect();
+    TreeProof {
+        index,
+        siblings,
+        root,
+        depth,
+    }
+}
+
+/// Normalizes the requested indexes (ascending, unique, in range) and
+/// collects the heap indexes of the minimal sibling set covering all of
+/// them. Pure; the shells load exactly these nodes.
+///
+/// # Errors
+///
+/// [`TreeError::EmptyProof`] for an empty index set,
+/// [`TreeError::IndexOutOfRange`] for any index at or beyond `capacity`.
+pub(crate) fn plan_multiproof<S: Storage>(
+    depth: u8,
+    capacity: u64,
+    indexes: impl IntoIterator<Item = LeafIndex>,
+) -> Result<(Vec<LeafIndex>, Vec<u64>), TreeError<S>> {
+    let mut indexes: Vec<LeafIndex> = indexes.into_iter().collect();
+    if indexes.is_empty() {
+        return Err(TreeError::EmptyProof);
+    }
+    indexes.sort_unstable();
+    indexes.dedup();
+    for &index in &indexes {
+        check_index::<S>(capacity, index)?;
+    }
+    let needed = multiproof_walk(depth, &indexes);
+    Ok((indexes, needed))
+}
+
+/// The pure multiproof walk: the minimal sibling-set heap indexes covering
+/// `indexes`, bottom-up, level by level, left to right within a level.
+/// Siblings already in the claimed set are merged, not proven. The walk is
+/// deterministic in `depth` and the indexes alone — the verifier replays it
+/// to check the proof's sibling budget.
+pub(crate) fn multiproof_walk(depth: u8, indexes: &[LeafIndex]) -> Vec<u64> {
+    let mut current: Vec<u64> = indexes.iter().map(|i| leaf_heap(depth, *i)).collect();
+    let mut needed: Vec<u64> = Vec::new();
+    for _ in 0..depth {
+        let mut next = Vec::with_capacity(current.len());
+        for &node in &current {
+            let sibling = node ^ 1;
+            if current.binary_search(&sibling).is_err() {
+                needed.push(sibling);
+            }
+            let parent = node >> 1;
+            if next.last() != Some(&parent) {
+                next.push(parent);
+            }
+        }
+        current = next;
+    }
+    needed
+}
+
+/// Materializes the multiproof from the loaded records (in
+/// [`multiproof_walk`] order): unoccupied nodes come from the ladder at
+/// `depth − ilog2(heap)`. Pure.
+pub(crate) fn build_multiproof<O: HashValue>(
+    depth: u8,
+    indexes: Vec<LeafIndex>,
+    needed: Vec<u64>,
+    loaded: Vec<Option<O>>,
+    ladder: &ZeroLadder<O>,
+    root: O,
+) -> TreeMultiProof<O> {
+    let siblings = needed
+        .into_iter()
+        .zip(loaded)
+        .map(|(heap, value)| {
+            // The ladder is indexed from the leaf: a node at heap index
+            // `h` covers a subtree of height `depth − ilog2(h)`, so its
+            // unoccupied hash is `ladder[depth − ilog2(h)]`. Every heap
+            // node here is >= 1, so ilog2() <= depth <= 63.
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "heap >= 1 so ilog2() <= depth <= 63, which fits in u8"
+            )]
+            let level = depth - heap.ilog2() as u8;
+            value.unwrap_or_else(|| ladder.at(level))
+        })
+        .collect();
+
+    TreeMultiProof {
+        indexes,
+        siblings,
+        depth,
+        root,
+    }
+}
+
+// ------------------------------------------------------- the sync shell
 
 impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S, Id> {
     /// Creates a new tree and persists its metadata (a constant number of
@@ -206,27 +562,8 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
         depth: u8,
         null_leaf: H::Output,
     ) -> Result<Self, TreeError<S>> {
-        if depth == 0 || depth > 63 {
-            return Err(TreeError::InvalidDepth { depth });
-        }
-        let ladder = ZeroLadder::new(&hasher, depth, null_leaf);
-
-        let mut batch = crate::store::Batch::new();
-        batch.put_owned(
-            keys::encode(&id, Table::HasherInfo, 0),
-            record::hasher_info(&hasher).ok_or(TreeError::UnrepresentableHasher)?,
-        );
-        batch.put_owned(keys::encode(&id, Table::TreeMeta, 0), {
-            let mut meta = Vec::with_capacity(1 + H::Output::LEN);
-            meta.push(depth);
-            meta.extend_from_slice(null_leaf.to_vec().as_slice());
-            meta
-        });
-        // The empty root: heap node 1 = the top of the ladder.
-        batch.put_owned(
-            keys::encode(&id, Table::TreeNode, 1),
-            record::hash_value(&ladder.at(depth)),
-        );
+        check_depth::<S>(depth)?;
+        let (batch, ladder) = create_batch::<S, H, Id>(&hasher, &id, depth, null_leaf)?;
         store.write(batch).map_err(TreeError::Store)?;
 
         let root = ladder.at(depth);
@@ -248,16 +585,11 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
     ///
     /// [`TreeError::Corrupted`] or store failures.
     pub fn open(hasher: H, store: S, id: Id) -> Result<Self, TreeError<S>> {
-        let metadata_keys: Vec<Vec<u8>> = vec![
-            keys::encode(&id, Table::HasherInfo, 0),
-            keys::encode(&id, Table::TreeMeta, 0),
-            keys::encode(&id, Table::TreeNode, 1),
-        ];
-        let refs: Vec<&[u8]> = metadata_keys.iter().map(Vec::as_slice).collect();
+        let encoded = metadata_keys(&id);
+        let refs: Vec<&[u8]> = encoded.iter().map(Vec::as_slice).collect();
         let values = store.read(&refs).map_err(TreeError::Store)?;
 
         let missing = || TreeError::Corrupted(TreeCorrupted::MissingMetadata);
-        let malformed = || TreeError::Corrupted(TreeCorrupted::MalformedMetadata);
         let value = |index: usize| -> Result<&[u8], TreeError<S>> {
             values
                 .get(index)
@@ -265,29 +597,8 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
                 .ok_or_else(missing)
         };
 
-        let (stored_id, stored_config) =
-            record::parse_hasher_info(value(0)?).ok_or_else(malformed)?;
-        if stored_id != hasher.id() || stored_config != hasher.config() {
-            return Err(TreeError::Corrupted(TreeCorrupted::HasherMismatch {
-                stored: alloc::format!("{stored_id} ({stored_config})"),
-                supplied: alloc::format!("{} ({})", hasher.id(), hasher.config()),
-            }));
-        }
-
-        let meta = value(1)?;
-        let depth = *meta.first().ok_or_else(malformed)?;
-        if depth == 0 || depth > 63 {
-            return Err(malformed());
-        }
-        // `from_bytes` validates the exact length.
-        let Some(null_bytes) = meta.get(1..) else {
-            return Err(malformed());
-        };
-        let null_leaf = H::Output::from_bytes(null_bytes).ok_or_else(malformed)?;
-
-        // The root is whatever the last write left; its shape is validated
-        // by the HashValue parse.
-        let root = H::Output::from_bytes(value(2)?).ok_or_else(malformed)?;
+        let (depth, null_leaf, root) = validate_metadata(&hasher, value(0)?, value(1)?, value(2)?)
+            .map_err(TreeError::Corrupted)?;
 
         let ladder = ZeroLadder::new(&hasher, depth, null_leaf);
         Ok(Self {
@@ -330,12 +641,7 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
     /// [`TreeError::IndexOutOfRange`] beyond capacity, a malformed node
     /// record, or store failures.
     pub fn leaf_hash(&self, index: LeafIndex) -> Result<Option<H::Output>, TreeError<S>> {
-        if index.get() >= self.capacity() {
-            return Err(TreeError::IndexOutOfRange {
-                index,
-                capacity: self.capacity(),
-            });
-        }
+        check_index::<S>(self.capacity(), index)?;
         Ok(self
             .load_nodes(&[leaf_heap(self.depth, index)])?
             .pop()
@@ -368,155 +674,84 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
         element: &[u8],
         expected_current: Option<H::Output>,
     ) -> Result<SetOutcome<H::Output>, TreeError<S>> {
-        if index.get() >= self.capacity() {
-            return Err(TreeError::IndexOutOfRange {
-                index,
-                capacity: self.capacity(),
-            });
-        }
+        check_index::<S>(self.capacity(), index)?;
         let new_hash = self.hasher.hash_leaf(element)?;
 
         // One batched read for the leaf and all its siblings; unoccupied
         // nodes fall back to the zero ladder.
-        let leaf_heap_index = leaf_heap(self.depth, index);
-        let mut needed: Vec<u64> = Vec::with_capacity(self.depth as usize + 1);
-        needed.push(leaf_heap_index);
-        let mut heap = leaf_heap_index;
-        for _ in 0..self.depth {
-            needed.push(heap ^ 1);
-            heap >>= 1;
-        }
-        let loaded = self.load_nodes(&needed)?;
-        // Occupied → stored value; unoccupied → the zero-ladder null leaf
-        // (see [`SetOutcome::previous`]).
-        let previous = loaded[0].unwrap_or(self.null_leaf);
-        if let Some(expected) = expected_current
-            && previous != expected
-        {
-            return Err(TreeError::UpdateMismatch { index });
-        }
+        let loaded = self.load_nodes(&set_read_heaps(self.depth, index))?;
+        let plan = plan_set(
+            &self.hasher,
+            self.depth,
+            index,
+            &self.ladder,
+            &loaded,
+            new_hash,
+            expected_current,
+        )?;
 
-        // Walk up: sibling from the batched read or the ladder; collect
-        // every changed node for the one batch write.
-        let mut hash = new_hash;
-        let mut heap = leaf_heap_index;
-        let mut changed = vec![(heap, hash)];
-        for (level, sibling) in loaded[1..].iter().enumerate() {
-            // `level < siblings.len() == depth`, and depth <= 63 is
-            // validated at create/open, so it always fits in u8.
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "level < depth <= 63 (validated at create/open)"
-            )]
-            let level = level as u8;
-            let sibling = sibling.unwrap_or_else(|| self.ladder.at(level));
-            hash = if heap & 1 == 1 {
-                // Node is the right child: sibling sits on the left.
-                self.hasher.hash_pair(sibling, hash)
-            } else {
-                self.hasher.hash_pair(hash, sibling)
-            };
-            heap >>= 1;
-            changed.push((heap, hash));
-        }
-
-        let mut batch = crate::store::Batch::new();
-        for (node, value) in &changed {
+        let mut batch = Batch::new();
+        for (node, value) in &plan.changed {
             batch.put_owned(
                 keys::encode(&self.id, Table::TreeNode, *node),
                 record::hash_value(value),
             );
         }
         self.store.write(batch).map_err(TreeError::Store)?;
-        self.root = hash;
+        self.root = plan.root;
 
         Ok(SetOutcome {
             index,
-            previous,
-            root: hash,
+            previous: plan.previous,
+            root: plan.root,
         })
     }
 
     /// Inclusion proof for a leaf: sibling hashes leaf→root, virtual
     /// siblings materialized from the ladder. Always succeeds within
-    /// capacity. The proof commits against [`Self::root`] (see the module
-    /// note on why this is not self-contained like MMR proofs).
+    /// capacity. The proof is self-contained — it carries the root it
+    /// commits to (see the module note) and verifies with no store.
     ///
     /// # Errors
     ///
     /// [`TreeError::IndexOutOfRange`] or store failures.
-    pub fn proof(&self, index: LeafIndex) -> Result<Vec<H::Output>, TreeError<S>> {
-        if index.get() >= self.capacity() {
-            return Err(TreeError::IndexOutOfRange {
-                index,
-                capacity: self.capacity(),
-            });
-        }
-
-        let mut heap = leaf_heap(self.depth, index);
-        let siblings: Vec<u64> = (0..self.depth)
-            .map(|_| {
-                let sibling = heap ^ 1;
-                heap >>= 1;
-                sibling
-            })
-            .collect();
-        let loaded = self.load_nodes(&siblings)?;
-
-        Ok(loaded
-            .into_iter()
-            .enumerate()
-            .map(|(level, value)| {
-                // `level < siblings.len() == depth`, and depth <= 63 is
-                // validated at create/open, so it always fits in u8.
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "level < depth <= 63 (validated at create/open)"
-                )]
-                let level = level as u8;
-                value.unwrap_or_else(|| self.ladder.at(level))
-            })
-            .collect())
+    pub fn proof(&self, index: LeafIndex) -> Result<TreeProof<H::Output>, TreeError<S>> {
+        check_index::<S>(self.capacity(), index)?;
+        let loaded = self.load_nodes(&proof_read_heaps(self.depth, index))?;
+        Ok(build_proof(
+            self.depth,
+            index,
+            loaded,
+            &self.ladder,
+            self.root,
+        ))
     }
 
-    /// Verifies a leaf against an expected root. No store access.
+    /// Verifies a proof against this tree's *current* root. No store access.
+    ///
+    /// The proof's own commitment is validated standalone (see
+    /// [`verify_proof`]) and its root must equal the current one — a proof
+    /// taken before later writes no longer verifies here; use
+    /// [`verify_proof`] for historical checks.
     ///
     /// # Errors
     ///
-    /// Hasher failures.
+    /// [`TreeError::Proof`] when the proof is structurally inconsistent
+    /// (truncation is a typed error, not a negative result); hasher
+    /// failures.
     #[must_use = "a verification result is only meaningful when checked"]
     pub fn verify(
         &self,
-        index: LeafIndex,
+        proof: &TreeProof<H::Output>,
         element: &[u8],
-        proof: &[H::Output],
-        root: H::Output,
     ) -> Result<bool, TreeError<S>> {
-        if index.get() >= self.capacity() {
-            return Err(TreeError::IndexOutOfRange {
-                index,
-                capacity: self.capacity(),
-            });
-        }
-        if proof.len() != self.depth as usize {
-            return Ok(false);
-        }
-
-        let mut hash = self.hasher.hash_leaf(element)?;
-        let mut heap = leaf_heap(self.depth, index);
-        for sibling in proof {
-            hash = if heap & 1 == 1 {
-                self.hasher.hash_pair(*sibling, hash)
-            } else {
-                self.hasher.hash_pair(hash, *sibling)
-            };
-            heap >>= 1;
-        }
-        Ok(hash == root)
+        let valid = verify_proof(&self.hasher, proof, element)?;
+        Ok(valid && proof.root == self.root)
     }
 
     /// Multi-leaf proof: minimal sibling set covering all requested leaves,
-    /// returned as an explicit structure.
+    /// returned as an explicit structure. Self-contained like [`TreeProof`]:
+    /// the proof carries the root its replayed paths must reproduce.
     ///
     /// An empty index set is rejected: a proof of zero leaves carries no
     /// commitment, and letting the producer accept it while the verifier
@@ -531,172 +766,50 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
     where
         I: IntoIterator<Item = LeafIndex>,
     {
-        let mut indexes: Vec<LeafIndex> = indexes.into_iter().collect();
-        if indexes.is_empty() {
-            return Err(TreeError::EmptyProof);
-        }
-        indexes.sort_unstable();
-        indexes.dedup();
-        for &index in &indexes {
-            if index.get() >= self.capacity() {
-                return Err(TreeError::IndexOutOfRange {
-                    index,
-                    capacity: self.capacity(),
-                });
-            }
-        }
-
-        // Level walk: the set of needed nodes, bottom-up. Siblings already
-        // in the set are merged, not proven.
-        let mut current: Vec<u64> = indexes.iter().map(|i| leaf_heap(self.depth, *i)).collect();
-        let mut needed: Vec<u64> = Vec::new();
-        for _ in 0..self.depth {
-            let mut next = Vec::with_capacity(current.len());
-            let mut level_needed: Vec<u64> = Vec::new();
-            for &node in &current {
-                let sibling = node ^ 1;
-                if current.binary_search(&sibling).is_err() {
-                    level_needed.push(sibling);
-                }
-                let parent = node >> 1;
-                if next.last() != Some(&parent) {
-                    next.push(parent);
-                }
-            }
-            needed.extend(level_needed);
-            current = next;
-        }
-
+        let (indexes, needed) = plan_multiproof::<S>(self.depth, self.capacity(), indexes)?;
         let loaded = self.load_nodes(&needed)?;
-        let siblings = needed
-            .into_iter()
-            .zip(loaded)
-            .map(|(heap, value)| {
-                // The ladder is indexed from the leaf: a node at heap index
-                // `h` covers a subtree of height `depth − ilog2(h)`, so its
-                // unoccupied hash is `ladder[depth − ilog2(h)]`. Every heap
-                // node here is >= 1, so ilog2() <= depth <= 63.
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "heap >= 1 so ilog2() <= depth <= 63, which fits in u8"
-                )]
-                let level = self.depth - heap.ilog2() as u8;
-                value.unwrap_or_else(|| self.ladder.at(level))
-            })
-            .collect();
-
-        Ok(TreeMultiProof {
+        Ok(build_multiproof(
+            self.depth,
             indexes,
-            siblings,
-            depth: self.depth,
-        })
+            needed,
+            loaded,
+            &self.ladder,
+            self.root,
+        ))
     }
 
-    /// Verifies a multi-leaf proof against the given root — consuming the
-    /// proof's structural contract (see [`TreeMultiProof`]'s ordering
-    /// documentation). No store access.
+    /// Verifies a multi-leaf proof against this tree's *current* root —
+    /// consuming the proof's structural contract (see [`TreeMultiProof`]'s
+    /// ordering documentation). No store access.
     ///
-    /// The root is a parameter (mirroring [`Self::verify`], which also takes
-    /// one): a captured multiproof can be verified against any trusted root
-    /// — including historical ones — not only the tree's current root.
-    /// Pass [`Self::root`] for the current-root check. An empty proof
-    /// (zero indexes — hand-built; [`Self::multiproof`] rejects producing
-    /// one) never verifies: `Ok(false)`.
+    /// The standalone check (see [`verify_multi_proof`]) is validated first;
+    /// the proof's root must then equal the current one. A captured
+    /// multiproof verifies against historical roots through
+    /// [`verify_multi_proof`]. An empty proof (zero indexes — hand-built;
+    /// [`Self::multiproof`] rejects producing one) never verifies.
     ///
     /// `elements` must align positionally with the proof's indexes.
     ///
     /// # Errors
     ///
-    /// Hasher failures.
+    /// [`TreeError::Proof`] when the proof is structurally inconsistent;
+    /// hasher failures.
     #[must_use = "a verification result is only meaningful when checked"]
     pub fn verify_multi<I>(
         &self,
         proof: &TreeMultiProof<H::Output>,
         elements: I,
-        root: H::Output,
     ) -> Result<bool, TreeError<S>>
     where
         I: IntoIterator,
         I::Item: AsRef<[u8]>,
     {
-        let elements: Vec<H::Output> = elements
-            .into_iter()
-            .map(|element| self.hasher.hash_leaf(element.as_ref()))
-            .collect::<Result<_, _>>()?;
-        if elements.len() != proof.indexes.len() || proof.depth != self.depth {
-            return Ok(false);
-        }
-        for &index in &proof.indexes {
-            if index.get() >= self.capacity() {
-                return Ok(false);
-            }
-        }
-        for pair in proof.indexes.windows(2) {
-            if pair[0] >= pair[1] {
-                return Ok(false);
-            }
-        }
-
-        // Replay the level walk: values per level for the needed nodes.
-        let mut values: Vec<(u64, H::Output)> = proof
-            .indexes
-            .iter()
-            .zip(elements)
-            .map(|(index, hash)| (leaf_heap(self.depth, *index), hash))
-            .collect();
-        let mut siblings = proof.siblings.iter().copied();
-
-        for _ in 0..self.depth {
-            let mut next: Vec<(u64, H::Output)> = Vec::with_capacity(values.len());
-            let mut index_into_values = 0;
-            while index_into_values < values.len() {
-                let (node, hash) = values[index_into_values];
-                let sibling = node ^ 1;
-                // The set is sorted; a merge partner sits next to it.
-                if index_into_values + 1 < values.len()
-                    && values[index_into_values + 1].0 == sibling
-                {
-                    let (sibling_node, sibling_hash) = values[index_into_values + 1];
-                    let parent = node >> 1;
-                    let parent_hash = if node & 1 == 1 {
-                        self.hasher.hash_pair(sibling_hash, hash)
-                    } else {
-                        self.hasher.hash_pair(hash, sibling_hash)
-                    };
-                    next.push((parent, parent_hash));
-                    index_into_values += 2;
-                    let _ = sibling_node;
-                    continue;
-                }
-                // Needs a proof sibling: they appear left-to-right within the
-                // level, matching this walk's order.
-                let Some(proof_sibling) = siblings.next() else {
-                    return Ok(false);
-                };
-                let parent_hash = if node & 1 == 1 {
-                    self.hasher.hash_pair(proof_sibling, hash)
-                } else {
-                    self.hasher.hash_pair(hash, proof_sibling)
-                };
-                next.push((node >> 1, parent_hash));
-                index_into_values += 1;
-            }
-            values = next;
-        }
-
-        // Every proof sibling must be consumed, and the final single value
-        // (heap node 1) is the root.
-        if siblings.next().is_some() {
-            return Ok(false);
-        }
-        Ok(values.len() == 1 && values[0].1 == root)
+        let valid = verify_multi_proof(&self.hasher, proof, elements)?;
+        Ok(valid && proof.root == self.root)
     }
 
-    /// Batched heap-node read from the store. A present-but-unparsable
-    /// value is [`TreeCorrupted::MalformedNode`] — it must never read as an
-    /// unoccupied node (the caller would silently substitute the ladder's
-    /// zero hash, producing a wrong proof and a corrupted root on the next
-    /// write).
+    /// Batched heap-node read from the store; the sync twin of the async
+    /// shell's loader. Parsing goes through [`parse_node_value`].
     fn load_nodes(&self, heaps: &[u64]) -> Result<Vec<Option<H::Output>>, TreeError<S>> {
         let encoded: Vec<Vec<u8>> = heaps
             .iter()
@@ -707,25 +820,48 @@ impl<H: crate::hashers::Hasher, S: Store, Id: TreeId> IncrementalMerkleTree<H, S
             .read(&refs)
             .map_err(TreeError::Store)?
             .into_iter()
-            .map(|value| match value {
-                None => Ok(None),
-                Some(bytes) => H::Output::from_bytes(&bytes)
-                    .map(Some)
-                    .ok_or(TreeError::Corrupted(TreeCorrupted::MalformedNode)),
-            })
-            .collect()
+            .map(parse_node_value)
+            .collect::<Result<_, _>>()
+            .map_err(TreeError::Corrupted)
     }
+}
+
+// ------------------------------------------------- self-contained proofs
+
+/// An inclusion proof for one leaf: a complete, standalone commitment.
+///
+/// Carries the root it was taken at and the depth that shapes its path, so
+/// verification needs no tree and no store — mirroring the MMR's
+/// [`crate::mmr::Proof`]. [`verify_proof`] folds the path with a hasher
+/// alone; the handle-level [`IncrementalMerkleTree::verify`] additionally
+/// pins the proof to the tree's *current* root.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeProof<O: HashValue> {
+    /// The proven leaf.
+    pub index: LeafIndex,
+    /// Sibling hashes bottom-up, leaf → root; exactly `depth` of them.
+    /// Unoccupied siblings are materialized from the zero ladder at
+    /// generation time — the verifier never needs the ladder.
+    pub siblings: Vec<O>,
+    /// The root at proof time: the commitment this path terminates against.
+    pub root: O,
+    /// Tree depth the proof was built at (path length and capacity bound:
+    /// `index` must be below `2^depth`).
+    pub depth: u8,
 }
 
 /// Multi-leaf proof with explicit structure.
 ///
 /// # Ordering (part of this type's contract)
 ///
-/// - `indexes` ascending, `values` (from the verified elements) positionally
+/// - `indexes` ascending, `elements` (supplied to the verifier) positionally
 ///   paired with them,
 /// - `siblings` emitted bottom-up, level by level, left to right within a
 ///   level; the verifier walks levels front-to-back, pairing each merge with
 ///   the next sibling it needs from the front of the list.
+///
+/// Self-contained like [`TreeProof`]: `root` is the commitment the replayed
+/// paths must reproduce.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreeMultiProof<O: HashValue> {
     /// Proven leaf indexes, ascending.
@@ -735,4 +871,285 @@ pub struct TreeMultiProof<O: HashValue> {
     pub siblings: Vec<O>,
     /// Tree depth the proof was built at.
     pub depth: u8,
+    /// The root at proof time: the commitment the replay must reproduce.
+    pub root: O,
+}
+
+/// Proof verification failures that are *not* negative results.
+///
+/// A path that folds somewhere other than the proof's own root is
+/// `Ok(false)` — tamper, not error. Errors here mean "verification could
+/// not be attempted": the proof contradicts its own structure.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum TreeVerifyError {
+    /// The proof is internally inconsistent (see [`TreeProofInconsistent`]).
+    #[error("proof is internally inconsistent: {0}")]
+    Inconsistent(#[source] TreeProofInconsistent),
+
+    /// Hasher rejected an input while re-deriving hashes.
+    #[error("hasher rejected proof data")]
+    Hasher(#[from] HasherError),
+}
+
+/// Ways a tree proof can be structurally invalid before any hashing.
+///
+/// Exhaustive over the structural contract of [`TreeProof`] and
+/// [`TreeMultiProof`]. A standalone `Ok(true)` means the proof is
+/// *self-consistent* — its path(s) reproduce its own root; it authenticates
+/// nothing by itself. Authentication is the root comparison: the
+/// handle-level `verify`/`verify_multi` pin the proof to the tree's current
+/// root, and standalone users compare `proof.root` against a root they
+/// trust from elsewhere. Verification re-derives every conclusion and never
+/// trusts the proof's own claims, so a fabricated proof can at worst
+/// produce `Ok(false)` — never a panic and never a false `Ok(true)` relative
+/// to the compared roots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum TreeProofInconsistent {
+    /// Proof depth outside the valid range 1..=63 — no real tree can have
+    /// produced it.
+    #[error("proof depth {depth} is outside the valid range 1..=63")]
+    InvalidDepth {
+        /// The rejected depth.
+        depth: u8,
+    },
+    /// Sibling count does not match the path length implied by the proof's
+    /// depth (a truncated or over-long sibling list).
+    #[error(
+        "sibling count {siblings} does not match the path length {expected} implied by depth {depth}"
+    )]
+    PathLengthMismatch {
+        /// Actual sibling count.
+        siblings: usize,
+        /// Expected path length (`depth`).
+        expected: usize,
+        /// The proof's claimed depth.
+        depth: u8,
+    },
+    /// The proven leaf is at or beyond the capacity `2^depth` its depth
+    /// implies.
+    #[error("leaf {index} is beyond the proof's capacity {capacity}")]
+    LeafOutOfRange {
+        /// The out-of-range leaf.
+        index: LeafIndex,
+        /// Capacity implied by the proof depth.
+        capacity: u64,
+    },
+    /// The supplied element set does not align with the proof's indexes.
+    #[error("{leaves} proven leaves but {elements} elements supplied")]
+    ElementCountMismatch {
+        /// Number of leaves in the proof.
+        leaves: usize,
+        /// Number of elements supplied for verification.
+        elements: usize,
+    },
+    /// A multiproof lists the same leaf twice.
+    #[error("leaf {index} appears more than once in the multiproof")]
+    DuplicateLeaf {
+        /// The duplicated leaf.
+        index: LeafIndex,
+    },
+    /// A multiproof's leaves are not ascending (the canonical order
+    /// [`TreeMultiProof::indexes`] documents).
+    #[error("multiproof leaves must be ascending: {first} then {second}")]
+    UnsortedLeaves {
+        /// The earlier, larger leaf.
+        first: LeafIndex,
+        /// The later, smaller leaf.
+        second: LeafIndex,
+    },
+    /// A multiproof's sibling count does not match the minimal set the
+    /// claimed leaves need. The count is derivable from the indexes alone,
+    /// so a disagreement is structural (truncation), not tamper.
+    #[error("sibling count {siblings} does not match the {expected} the claimed leaves need")]
+    SiblingCountMismatch {
+        /// Actual sibling count.
+        siblings: usize,
+        /// Minimal sibling count for the claimed indexes.
+        expected: usize,
+    },
+}
+
+/// Verifies a single-leaf proof against its own commitment — no tree, no
+/// store.
+///
+/// Recomputes the leaf hash, folds the sibling path (each step's side is
+/// re-derived from the heap layout, never trusted from the proof), and
+/// compares to the proof's root. `Ok(false)` means the proof is validly
+/// structured but does not commit to `element`.
+///
+/// Trust model: `Ok(true)` certifies the proof is **self-consistent** —
+/// internally coherent, authentic only relative to a root the verifier
+/// trusts. The handle-level [`IncrementalMerkleTree::verify`] compares
+/// against the tree's current root; standalone users compare `proof.root`
+/// against a root obtained from a source they trust. A fabricated
+/// self-consistent proof is not detected by this function alone.
+///
+/// # Errors
+///
+/// Structural inconsistency (see [`TreeVerifyError`]) or hasher failure.
+pub fn verify_proof<H: crate::hashers::Hasher>(
+    hasher: &H,
+    proof: &TreeProof<H::Output>,
+    element: &[u8],
+) -> Result<bool, TreeVerifyError> {
+    let inconsistent = |error| TreeVerifyError::Inconsistent(error);
+    if !(1..=63).contains(&proof.depth) {
+        return Err(inconsistent(TreeProofInconsistent::InvalidDepth {
+            depth: proof.depth,
+        }));
+    }
+    if proof.siblings.len() != usize::from(proof.depth) {
+        return Err(inconsistent(TreeProofInconsistent::PathLengthMismatch {
+            siblings: proof.siblings.len(),
+            expected: usize::from(proof.depth),
+            depth: proof.depth,
+        }));
+    }
+    if proof.index.get() >= 1_u64 << proof.depth {
+        return Err(inconsistent(TreeProofInconsistent::LeafOutOfRange {
+            index: proof.index,
+            capacity: 1_u64 << proof.depth,
+        }));
+    }
+
+    let mut hash = hasher.hash_leaf(element)?;
+    let mut heap = leaf_heap(proof.depth, proof.index);
+    for sibling in &proof.siblings {
+        hash = if heap & 1 == 1 {
+            hasher.hash_pair(*sibling, hash)
+        } else {
+            hasher.hash_pair(hash, *sibling)
+        };
+        heap >>= 1;
+    }
+    Ok(hash == proof.root)
+}
+
+/// Verifies a multi-leaf proof against its own commitment — no tree, no
+/// store. Consumes the proof's structural contract (see
+/// [`TreeMultiProof`]'s ordering documentation).
+///
+/// `elements` must align positionally with the proof's indexes. The
+/// multiproof's sibling budget is checked structurally before the replay:
+/// the minimal sibling set for the claimed indexes is derivable from the
+/// indexes alone, so a truncated sibling list is a typed error, while a
+/// wrong sibling *value* simply folds to something other than the proof's
+/// root (`Ok(false)`).
+///
+/// # Errors
+///
+/// Structural inconsistency (see [`TreeVerifyError`]) or hasher failure.
+pub fn verify_multi_proof<H, I>(
+    hasher: &H,
+    proof: &TreeMultiProof<H::Output>,
+    elements: I,
+) -> Result<bool, TreeVerifyError>
+where
+    H: crate::hashers::Hasher,
+    I: IntoIterator,
+    I::Item: AsRef<[u8]>,
+{
+    // Element-count alignment first (before hashing — wasted work on a
+    // misaligned call), then the structural contract, then the sibling
+    // budget, and only then the hashed replay.
+    let elements: Vec<I::Item> = elements.into_iter().collect();
+    let inconsistent = |error| TreeVerifyError::Inconsistent(error);
+    if elements.len() != proof.indexes.len() {
+        return Err(inconsistent(TreeProofInconsistent::ElementCountMismatch {
+            leaves: proof.indexes.len(),
+            elements: elements.len(),
+        }));
+    }
+    if !(1..=63).contains(&proof.depth) {
+        return Err(inconsistent(TreeProofInconsistent::InvalidDepth {
+            depth: proof.depth,
+        }));
+    }
+    for pair in proof.indexes.windows(2) {
+        if pair[0] == pair[1] {
+            return Err(inconsistent(TreeProofInconsistent::DuplicateLeaf {
+                index: pair[0],
+            }));
+        }
+        if pair[0] > pair[1] {
+            return Err(inconsistent(TreeProofInconsistent::UnsortedLeaves {
+                first: pair[0],
+                second: pair[1],
+            }));
+        }
+    }
+    for &index in &proof.indexes {
+        if index.get() >= 1_u64 << proof.depth {
+            return Err(inconsistent(TreeProofInconsistent::LeafOutOfRange {
+                index,
+                capacity: 1_u64 << proof.depth,
+            }));
+        }
+    }
+
+    // The sibling budget is validated before the replay: a malformed count
+    // is an `Err` even when a replayed prefix would already fail to commit.
+    let expected = multiproof_walk(proof.depth, &proof.indexes).len();
+    if proof.siblings.len() != expected {
+        return Err(inconsistent(TreeProofInconsistent::SiblingCountMismatch {
+            siblings: proof.siblings.len(),
+            expected,
+        }));
+    }
+
+    // Replay the level walk: values per level for the claimed nodes. The
+    // walk mirrors proof generation exactly, so with the budget enforced
+    // above every needed sibling is consumed from the front of the list.
+    let mut values: Vec<(u64, H::Output)> = Vec::with_capacity(proof.indexes.len());
+    for (index, element) in proof.indexes.iter().zip(elements) {
+        values.push((
+            leaf_heap(proof.depth, *index),
+            hasher.hash_leaf(element.as_ref())?,
+        ));
+    }
+    let mut siblings = proof.siblings.iter().copied();
+
+    for _ in 0..proof.depth {
+        let mut next: Vec<(u64, H::Output)> = Vec::with_capacity(values.len());
+        let mut index_into_values = 0;
+        while index_into_values < values.len() {
+            let (node, hash) = values[index_into_values];
+            let sibling = node ^ 1;
+            // The set is sorted; a merge partner sits next to it.
+            if index_into_values + 1 < values.len() && values[index_into_values + 1].0 == sibling {
+                let (_, sibling_hash) = values[index_into_values + 1];
+                let parent_hash = if node & 1 == 1 {
+                    hasher.hash_pair(sibling_hash, hash)
+                } else {
+                    hasher.hash_pair(hash, sibling_hash)
+                };
+                next.push((node >> 1, parent_hash));
+                index_into_values += 2;
+                continue;
+            }
+            // Needs a proof sibling: they appear left-to-right within the
+            // level, matching this walk's order. Unreachable with the
+            // budget enforced above — a defensive no-panic guard.
+            let Some(proof_sibling) = siblings.next() else {
+                return Ok(false);
+            };
+            let parent_hash = if node & 1 == 1 {
+                hasher.hash_pair(proof_sibling, hash)
+            } else {
+                hasher.hash_pair(hash, proof_sibling)
+            };
+            next.push((node >> 1, parent_hash));
+            index_into_values += 1;
+        }
+        values = next;
+    }
+
+    // Every proof sibling must be consumed, and the final single value
+    // (heap node 1) is the proof's own root.
+    if siblings.next().is_some() {
+        return Ok(false);
+    }
+    Ok(values.len() == 1 && values[0].1 == proof.root)
 }

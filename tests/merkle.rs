@@ -6,13 +6,14 @@
 //! - proving *every* leaf of a scattered (non-power-of-2 occupancy) tree —
 //!   unoccupied siblings come from the zero ladder, never a missing store
 //!   record,
+//! - self-contained proofs: verification against the proof's own root with
+//!   no tree and no store, truncation as a typed error, tamper as `false`,
 //! - multiproof dedup and standalone verification,
 //! - persistence across reopen, and index bounds.
 //!
-//! Roots used for verification come from [`SetOutcome::root`](accumulators::merkle::SetOutcome)
-//! wherever the assertion is about *proof correctness*; assertions about the
-//! tree's own `root()` tracking live in
-//! [`root_reflects_writes_and_reopens`].
+//! Handle-level `verify`/`verify_multi` pin proofs to the tree's *current*
+//! root; historical checks go through the standalone verifiers, which need
+//! only the hasher.
 
 #![expect(
     clippy::expect_used,
@@ -21,7 +22,10 @@
 use accumulators::{
     hashers::{Blake2sStarkHasher, Hasher, KeccakSolHasher},
     ids::AccumulatorId,
-    merkle::{IncrementalMerkleTree, TreeCorrupted, TreeError},
+    merkle::{
+        IncrementalMerkleTree, TreeCorrupted, TreeError, TreeMultiProof, TreeProof,
+        TreeProofInconsistent, TreeVerifyError, verify_multi_proof, verify_proof,
+    },
     primitives::{Hash, LeafIndex},
     store::memory::InMemoryStore,
 };
@@ -190,7 +194,7 @@ fn root_reflects_writes_and_reopens() {
 /// A scattered (non-power-of-2 occupancy) tree must prove *every* leaf:
 /// sibling paths crossing unoccupied sub-trees resolve through the zero
 /// ladder, never a missing store record. Occupied leaves verify against the
-/// current root.
+/// tree's current root (the proofs carry it — see `proof.root`).
 #[test]
 fn proofs_for_every_leaf_of_a_scattered_depth_10_tree() {
     let mut tree = tree(10);
@@ -215,19 +219,31 @@ fn proofs_for_every_leaf_of_a_scattered_depth_10_tree() {
         let proof = tree
             .proof(index)
             .expect("proof succeeds for every index within capacity");
-        assert_eq!(proof.len(), 10, "proof is exactly `depth` siblings");
+        assert_eq!(
+            proof.siblings.len(),
+            10,
+            "proof is exactly `depth` siblings"
+        );
+        assert_eq!(proof.root, root, "the proof carries the root it commits to");
+        assert_eq!(proof.depth, 10);
+        assert_eq!(proof.index, index);
 
         if occupied.binary_search(&leaf).is_ok() {
             assert!(
-                tree.verify(index, &element(leaf), &proof, root)
+                tree.verify(&proof, &element(leaf))
                     .expect("verify succeeds"),
-                "occupied leaf {leaf} must verify against the root"
+                "occupied leaf {leaf} must verify against the current root"
             );
             assert!(
                 !tree
-                    .verify(index, &element(leaf + 4096), &proof, root)
+                    .verify(&proof, &element(leaf + 4096))
                     .expect("verify succeeds"),
                 "a different element must not verify for leaf {leaf}"
+            );
+            // The standalone verifier reaches the same verdict with no tree.
+            assert!(
+                verify_proof(&KeccakSolHasher, &proof, &element(leaf)).expect("verify succeeds"),
+                "the self-contained proof must verify standalone for leaf {leaf}"
             );
         }
     }
@@ -241,41 +257,133 @@ fn verify_rejects_bad_proofs() {
         .expect("leaf write succeeds")
         .root;
     let proof = tree.proof(LeafIndex::new(3)).expect("proof succeeds");
+    assert_eq!(proof.root, root);
 
-    // Structural failures are `Ok(false)`, not errors: a truncated proof…
-    assert!(
-        !tree
-            .verify(
-                LeafIndex::new(3),
-                &element(3),
-                &proof[..proof.len() - 1],
-                root
-            )
-            .expect("verify succeeds"),
-        "a truncated proof must not verify"
-    );
+    // Structural failures are typed errors, not negative results: a truncated proof…
+    let truncated = TreeProof {
+        siblings: proof.siblings[..proof.siblings.len() - 1].to_vec(),
+        ..proof.clone()
+    };
+    match verify_proof(&KeccakSolHasher, &truncated, &element(3)) {
+        Err(TreeVerifyError::Inconsistent(TreeProofInconsistent::PathLengthMismatch {
+            siblings,
+            expected,
+            ..
+        })) => {
+            assert_eq!(siblings, 7);
+            assert_eq!(expected, 8);
+        }
+        other => panic!("expected PathLengthMismatch, got {other:?}"),
+    }
     // …an over-long proof…
     let mut extended = proof.clone();
-    extended.push(Hash::ZERO);
+    extended.siblings.push(Hash::ZERO);
     assert!(
-        !tree
-            .verify(LeafIndex::new(3), &element(3), &extended, root)
-            .expect("verify succeeds"),
-        "an over-long proof must not verify"
+        matches!(
+            verify_proof(&KeccakSolHasher, &extended, &element(3)),
+            Err(TreeVerifyError::Inconsistent(
+                TreeProofInconsistent::PathLengthMismatch { .. }
+            ))
+        ),
+        "an over-long proof must be a typed structural error"
     );
-    // …the right proof against the wrong root…
+    // …a leaf beyond the proof's own capacity…
+    let mut out_of_range = proof.clone();
+    out_of_range.index = LeafIndex::new(256);
     assert!(
-        !tree
-            .verify(LeafIndex::new(3), &element(3), &proof, Hash::ZERO)
-            .expect("verify succeeds"),
-        "a wrong root must not verify"
+        matches!(
+            verify_proof(&KeccakSolHasher, &out_of_range, &element(3)),
+            Err(TreeVerifyError::Inconsistent(
+                TreeProofInconsistent::LeafOutOfRange { .. }
+            ))
+        ),
+        "a leaf beyond 2^depth must be a typed structural error"
     );
-    // …and the right proof at the wrong index.
+    // …and a depth no real tree can have.
+    let phantom = TreeProof {
+        depth: 64,
+        ..proof.clone()
+    };
     assert!(
-        !tree
-            .verify(LeafIndex::new(2), &element(3), &proof, root)
-            .expect("verify succeeds"),
+        matches!(
+            verify_proof(&KeccakSolHasher, &phantom, &element(3)),
+            Err(TreeVerifyError::Inconsistent(
+                TreeProofInconsistent::InvalidDepth { .. }
+            ))
+        ),
+        "an out-of-range proof depth must be a typed structural error"
+    );
+
+    // Tamper is a negative result, never an error or a panic: a flipped
+    // sibling folds somewhere other than the proof's own root…
+    let mut tampered = proof.clone();
+    tampered.siblings[1] = Hash::ZERO;
+    assert!(
+        !verify_proof(&KeccakSolHasher, &tampered, &element(3)).expect("verify succeeds"),
+        "a tampered sibling must not verify"
+    );
+    // …the right proof against the wrong element…
+    assert!(
+        !verify_proof(&KeccakSolHasher, &proof, &element(4)).expect("verify succeeds"),
+        "a wrong element must not verify"
+    );
+    // …and the right proof at the wrong index (still within capacity — the
+    // fold lands on a different root, so it is tamper, not a structural
+    // error).
+    let wrong_index = TreeProof {
+        index: LeafIndex::new(2),
+        ..proof.clone()
+    };
+    assert!(
+        !verify_proof(&KeccakSolHasher, &wrong_index, &element(3)).expect("verify succeeds"),
         "a wrong index must not verify"
+    );
+
+    // The handle-level verify pins the proof to the tree's *current* root:
+    // it holds while the tree is unchanged, and stops once it moves on —
+    // the standalone verifier still accepts the captured commitment.
+    assert!(tree.verify(&proof, &element(3)).expect("verify succeeds"));
+    tree.set_leaf(LeafIndex::new(5), &element(5), None)
+        .expect("write succeeds");
+    assert!(
+        !tree.verify(&proof, &element(3)).expect("verify succeeds"),
+        "a stale proof must not verify against the new current root"
+    );
+    assert!(
+        verify_proof(&KeccakSolHasher, &proof, &element(3)).expect("verify succeeds"),
+        "the captured proof remains a standalone commitment to its own root"
+    );
+}
+
+/// The point of self-containment: a proof verifies with no tree and no
+/// store — the hasher and the proof are the whole verifier input.
+#[test]
+fn proofs_verify_without_the_tree_or_the_store() {
+    let store = InMemoryStore::new();
+    let mut tree = IncrementalMerkleTree::create(
+        KeccakSolHasher,
+        store.clone(),
+        AccumulatorId::ZERO,
+        8,
+        Hash::ZERO,
+    )
+    .expect("create succeeds");
+    let root = tree
+        .set_leaf(LeafIndex::new(42), &element(42), None)
+        .expect("write succeeds")
+        .root;
+    let proof = tree.proof(LeafIndex::new(42)).expect("proof succeeds");
+    drop(tree);
+    drop(store);
+
+    assert_eq!(proof.root, root);
+    assert!(
+        verify_proof(&KeccakSolHasher, &proof, &element(42)).expect("verify succeeds"),
+        "the proof verifies against its own root with nothing else alive"
+    );
+    assert!(
+        !verify_proof(&KeccakSolHasher, &proof, &element(43)).expect("verify succeeds"),
+        "a foreign element must not verify standalone"
     );
 }
 
@@ -303,7 +411,7 @@ fn multiproof_over_a_shared_parent_set_dedups_siblings() {
     );
     let individual: usize = indexes
         .iter()
-        .map(|&index| full.proof(index).expect("proof succeeds").len())
+        .map(|&index| full.proof(index).expect("proof succeeds").siblings.len())
         .sum();
     assert!(
         multi.siblings.len() < individual,
@@ -337,6 +445,7 @@ fn multiproof_over_a_shared_parent_set_dedups_siblings() {
         .map(|leaf| {
             tree.proof(LeafIndex::new(leaf))
                 .expect("proof succeeds")
+                .siblings
                 .len()
         })
         .sum();
@@ -376,9 +485,14 @@ fn multiproof_over_a_scattered_set_round_trips() {
 
     let elements: Vec<[u8; 32]> = leaves.iter().map(|&leaf| element(leaf)).collect();
     assert!(
-        tree.verify_multi(&multi, &elements, tree.root())
+        tree.verify_multi(&multi, &elements)
             .expect("verification is infallible here"),
         "the scattered multiproof must verify against the current root"
+    );
+    // And standalone against the proof's own root — no tree, no store.
+    assert!(
+        verify_multi_proof(&KeccakSolHasher, &multi, &elements).expect("verify succeeds"),
+        "the self-contained multiproof must verify standalone"
     );
 
     // Positional alignment is enforced: shuffled elements fail.
@@ -386,7 +500,7 @@ fn multiproof_over_a_scattered_set_round_trips() {
     shuffled.reverse();
     assert!(
         !tree
-            .verify_multi(&multi, &shuffled, tree.root())
+            .verify_multi(&multi, &shuffled)
             .expect("verification is infallible here"),
         "shuffled elements must not verify"
     );
@@ -395,17 +509,80 @@ fn multiproof_over_a_scattered_set_round_trips() {
     wrong[0] = element(2);
     assert!(
         !tree
-            .verify_multi(&multi, &wrong, tree.root())
+            .verify_multi(&multi, &wrong)
             .expect("verification is infallible here"),
         "one wrong element must not verify"
     );
-    // A wrong element count fails structurally, not with an error.
+    // A wrong element count is structural — a typed error, not a negative
+    // result (a shorter list would let a truncated proof "verify" against
+    // fewer commitments than it claims leaves).
     assert!(
-        !tree
-            .verify_multi(&multi, &elements[..elements.len() - 1], tree.root())
-            .expect("verification is infallible here"),
-        "a mismatched element count must not verify"
+        matches!(
+            tree.verify_multi(&multi, &elements[..elements.len() - 1]),
+            Err(TreeError::Proof(TreeVerifyError::Inconsistent(
+                TreeProofInconsistent::ElementCountMismatch { .. }
+            )))
+        ),
+        "a mismatched element count must be a typed structural error"
     );
+}
+
+/// A multiproof with a truncated sibling list is a typed structural error —
+/// the minimal sibling set for the claimed indexes is derivable from the
+/// indexes alone, so the budget mismatch is detectable before any hashing.
+/// Tampering a sibling *value* (budget intact) stays a negative result.
+#[test]
+fn multiproof_truncation_is_a_typed_error_and_tamper_is_false() {
+    let mut tree = tree(6);
+    for leaf in [1_u64, 5, 9] {
+        tree.set_leaf(LeafIndex::new(leaf), &element(leaf), None)
+            .expect("write succeeds");
+    }
+    let multi = tree
+        .multiproof([LeafIndex::new(1), LeafIndex::new(5), LeafIndex::new(9)])
+        .expect("multiproof succeeds");
+    let elements: Vec<[u8; 32]> = [1, 5, 9].iter().map(|&leaf| element(leaf)).collect();
+
+    let truncated = TreeMultiProof {
+        siblings: multi.siblings[..multi.siblings.len() - 1].to_vec(),
+        ..multi.clone()
+    };
+    match verify_multi_proof(&KeccakSolHasher, &truncated, &elements) {
+        Err(TreeVerifyError::Inconsistent(TreeProofInconsistent::SiblingCountMismatch {
+            siblings,
+            expected,
+        })) => {
+            assert_eq!(siblings + 1, expected);
+        }
+        other => panic!("expected SiblingCountMismatch, got {other:?}"),
+    }
+
+    let mut tampered = multi.clone();
+    let last = tampered.siblings.len() - 1;
+    tampered.siblings[last] = Hash::ZERO;
+    assert!(
+        !verify_multi_proof(&KeccakSolHasher, &tampered, &elements).expect("verify succeeds"),
+        "a tampered sibling value must fold to something other than the proof's root"
+    );
+
+    // Unsorted or duplicated indexes are structural, and the producer never
+    // emits them (it normalizes) — only hand-built proofs can.
+    let mut unsorted = multi.clone();
+    unsorted.indexes.reverse();
+    assert!(matches!(
+        verify_multi_proof(&KeccakSolHasher, &unsorted, &elements),
+        Err(TreeVerifyError::Inconsistent(
+            TreeProofInconsistent::UnsortedLeaves { .. }
+        ))
+    ));
+    let mut duplicated = multi;
+    duplicated.indexes[1] = duplicated.indexes[0];
+    assert!(matches!(
+        verify_multi_proof(&KeccakSolHasher, &duplicated, &elements),
+        Err(TreeVerifyError::Inconsistent(
+            TreeProofInconsistent::DuplicateLeaf { .. }
+        ))
+    ));
 }
 
 #[test]
@@ -432,12 +609,18 @@ fn index_beyond_capacity_is_rejected() {
         matches!(tree.proof(index), Err(TreeError::IndexOutOfRange { .. })),
         "proof beyond capacity is rejected"
     );
+    // The verifier side enforces the same bound against the proof's own
+    // depth: an index at capacity cannot be folded into a valid proof.
+    let proof = tree.proof(LeafIndex::new(0)).expect("proof succeeds");
+    let beyond = TreeProof { index, ..proof };
     assert!(
         matches!(
-            tree.verify(index, &element(0), &[], Hash::ZERO),
-            Err(TreeError::IndexOutOfRange { .. })
+            verify_proof(&KeccakSolHasher, &beyond, &element(0)),
+            Err(TreeVerifyError::Inconsistent(
+                TreeProofInconsistent::LeafOutOfRange { .. }
+            ))
         ),
-        "verify beyond capacity is rejected"
+        "a proof claiming a leaf beyond its own capacity is rejected"
     );
     assert!(
         matches!(
@@ -473,21 +656,26 @@ fn tree_persists_across_reopen() {
     let proof = reopened.proof(LeafIndex::new(17)).expect("proof succeeds");
     assert!(
         reopened
-            .verify(LeafIndex::new(17), &element(17), &proof, root)
+            .verify(&proof, &element(17))
             .expect("verify succeeds"),
         "a proof taken after the reopen must verify"
     );
 
     // Writes continue from the restored state, and earlier proofs stay
-    // verifiable against the root they were taken at.
+    // verifiable standalone — they are commitments to the root they were
+    // taken at, not to whatever root the tree has now.
     reopened
         .set_leaf(LeafIndex::new(200), &element(200), None)
         .expect("post-reopen write succeeds");
     assert_ne!(reopened.root(), root);
     assert!(
-        reopened
-            .verify(LeafIndex::new(17), &element(17), &proof, root)
+        !reopened
+            .verify(&proof, &element(17))
             .expect("verify succeeds"),
+        "the stale proof no longer matches the tree's current root"
+    );
+    assert!(
+        verify_proof(&KeccakSolHasher, &proof, &element(17)).expect("verify succeeds"),
         "the captured proof is a standalone commitment to the captured root"
     );
 }
@@ -622,8 +810,9 @@ fn empty_multiproofs_are_rejected() {
     }
 }
 
-/// `verify_multi` takes the root as a parameter, so a captured multiproof
-/// verifies against a historical root — not only the tree's current one.
+/// A captured multiproof is a commitment to the root it was taken at: the
+/// standalone verifier accepts it against its own root forever; the
+/// handle-level `verify_multi` pins it to the tree's *current* root.
 #[test]
 fn verify_multi_against_a_historical_root() {
     let mut tree = tree(6);
@@ -634,12 +823,12 @@ fn verify_multi_against_a_historical_root() {
     let multi = tree
         .multiproof([LeafIndex::new(1)])
         .expect("multiproof succeeds");
+    assert_eq!(multi.root, historical);
     let elements = [element(1)];
 
-    // Against the historical root: authentic.
+    // Against the proof's own (historical) root: authentic.
     assert!(
-        tree.verify_multi(&multi, elements, historical)
-            .expect("verification is infallible here"),
+        verify_multi_proof(&KeccakSolHasher, &multi, elements).expect("verify succeeds"),
         "the captured multiproof verifies against the root it was taken at"
     );
     // Against the current root: not — the tree has moved on since the proof
@@ -648,13 +837,12 @@ fn verify_multi_against_a_historical_root() {
         .expect("write succeeds");
     assert!(
         !tree
-            .verify_multi(&multi, elements, tree.root())
+            .verify_multi(&multi, elements)
             .expect("verification is infallible here"),
         "the multiproof does not verify against the new root"
     );
     assert!(
-        tree.verify_multi(&multi, elements, historical)
-            .expect("verification is infallible here"),
+        verify_multi_proof(&KeccakSolHasher, &multi, elements).expect("verify succeeds"),
         "it still verifies against the historical root"
     );
 }
@@ -745,16 +933,22 @@ fn tampered_metadata_is_malformed_metadata() {
 fn depth_one_trees_prove_and_verify() {
     let mut tree = tree(1);
     assert_eq!(tree.capacity(), 2);
-    let root = tree
-        .set_leaf(LeafIndex::FIRST, &element(0), None)
-        .expect("write succeeds")
-        .root;
+    tree.set_leaf(LeafIndex::FIRST, &element(0), None)
+        .expect("write succeeds");
     let proof = tree.proof(LeafIndex::FIRST).expect("proof succeeds");
-    assert_eq!(proof.len(), 1, "a depth-1 proof is exactly one sibling");
+    assert_eq!(
+        proof.siblings.len(),
+        1,
+        "a depth-1 proof is exactly one sibling"
+    );
+    assert_eq!(proof.depth, 1);
     assert!(
-        tree.verify(LeafIndex::FIRST, &element(0), &proof, root)
-            .expect("verify succeeds"),
+        tree.verify(&proof, &element(0)).expect("verify succeeds"),
         "the depth-1 proof verifies"
+    );
+    assert!(
+        verify_proof(&KeccakSolHasher, &proof, &element(0)).expect("verify succeeds"),
+        "the depth-1 proof verifies standalone"
     );
 }
 
@@ -767,15 +961,12 @@ fn depth_sixty_three_is_accepted_and_extreme_indexes_hold() {
     let mut tree = tree(63);
     assert_eq!(tree.capacity(), 1_u64 << 63);
 
-    let root = tree
-        .set_leaf(LeafIndex::FIRST, &element(0), None)
-        .expect("write succeeds")
-        .root;
+    tree.set_leaf(LeafIndex::FIRST, &element(0), None)
+        .expect("write succeeds");
     let proof = tree.proof(LeafIndex::FIRST).expect("proof succeeds");
-    assert_eq!(proof.len(), 63);
+    assert_eq!(proof.siblings.len(), 63);
     assert!(
-        tree.verify(LeafIndex::FIRST, &element(0), &proof, root)
-            .expect("verify succeeds"),
+        tree.verify(&proof, &element(0)).expect("verify succeeds"),
         "the depth-63 proof verifies"
     );
 
@@ -784,10 +975,10 @@ fn depth_sixty_three_is_accepted_and_extreme_indexes_hold() {
     // foreign element does not verify at the tail index.
     let last = LeafIndex::new((1_u64 << 63) - 1);
     let tail_proof = tree.proof(last).expect("proof at the u64::MAX heap index");
-    assert_eq!(tail_proof.len(), 63);
+    assert_eq!(tail_proof.siblings.len(), 63);
     assert!(
         !tree
-            .verify(last, &element(1), &tail_proof, root)
+            .verify(&tail_proof, &element(1))
             .expect("verify succeeds"),
         "a foreign element must not verify at the tail index"
     );
@@ -841,7 +1032,7 @@ fn multiproof_sibling_order_is_bottom_up_level_by_level_left_to_right() {
         .map(|&leaf| element(leaf))
         .collect();
     assert!(
-        tree.verify_multi(&multi, elements, tree.root())
+        tree.verify_multi(&multi, &elements)
             .expect("verification is infallible here"),
         "the ordered multiproof verifies"
     );

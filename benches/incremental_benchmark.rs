@@ -12,7 +12,7 @@
 //!   leaf, batched 10 per iteration, against a fully occupied tree (every
 //!   sibling hash is a store read, not a zero-ladder lookup).
 //! - `IncrementalMerkleTree verify_proof` - proof verification (pure path
-//!   hashing, no store access).
+//!   hashing against the proof's own root, no store access).
 //! - `IncrementalMerkleTree multiproof` - minimal sibling set for k scattered
 //!   leaves in one store pass.
 //! - `IncrementalMerkleTree verify_multi` - multiproof verification.
@@ -82,26 +82,20 @@ fn build_tree(depth: u8) -> IncrementalMerkleTree<KeccakSolHasher, InMemoryStore
     .expect("tree creation succeeds")
 }
 
-/// Occupies `count` leaves of `tree`, scattered by stride over the capacity,
-/// and returns the root after the last write (the authoritative current root
-/// — see [`IncrementalMerkleTree::set_leaf`]).
+/// Occupies `count` leaves of `tree`, scattered by stride over the capacity.
 ///
 /// Proof benches run against an occupied tree so sibling reads hit the store
 /// instead of collapsing to zero-ladder lookups.
 fn occupy_scattered(
     tree: &mut IncrementalMerkleTree<KeccakSolHasher, InMemoryStore>,
     count: usize,
-) -> Hash {
+) {
     let capacity = usize::try_from(tree.capacity()).expect("capacity fits usize");
     let stride = (capacity / count).max(1);
-    let mut root = tree.root();
     for leaf in (0..capacity).step_by(stride).take(count) {
-        root = tree
-            .set_leaf(LeafIndex::new(leaf as u64), &element(leaf), None)
-            .expect("leaf write succeeds")
-            .root;
+        tree.set_leaf(LeafIndex::new(leaf as u64), &element(leaf), None)
+            .expect("leaf write succeeds");
     }
-    root
 }
 
 fn bench(c: &mut Criterion) {
@@ -148,8 +142,8 @@ fn bench(c: &mut Criterion) {
     let mut tree = build_tree(TREE_DEPTH);
     // Fully occupy: every leaf gets a materialized sibling path, so the
     // proof legs measure store reads, not zero-ladder lookups.
-    let root = occupy_scattered(&mut tree, TREE_SIZE);
-    bench_proof_legs(c, &tree, root);
+    occupy_scattered(&mut tree, TREE_SIZE);
+    bench_proof_legs(c, &tree);
 
     for (group_name, verify) in [
         ("IncrementalMerkleTree multiproof", false),
@@ -170,11 +164,11 @@ fn bench(c: &mut Criterion) {
 }
 
 /// The single-leaf proof legs against the fully occupied depth-14 tree:
-/// `get_inclusion_proof` (batched 10/iter) and `verify_proof` (pure hashing).
+/// `get_inclusion_proof` (batched 10/iter) and `verify_proof` (pure hashing
+/// against the proof's own root — self-contained, no external root).
 fn bench_proof_legs(
     c: &mut Criterion,
     tree: &IncrementalMerkleTree<KeccakSolHasher, InMemoryStore>,
-    root: Hash,
 ) {
     let mut group = c.benchmark_group("IncrementalMerkleTree get_inclusion_proof");
     group.throughput(Throughput::Elements(PROOF_BATCH as u64));
@@ -199,13 +193,8 @@ fn bench_proof_legs(
         .proof(LeafIndex::new(proof_leaf as u64))
         .expect("proof succeeds");
     assert!(
-        tree.verify(
-            LeafIndex::new(proof_leaf as u64),
-            &element(proof_leaf),
-            &proof,
-            root,
-        )
-        .expect("verify succeeds"),
+        tree.verify(&proof, &element(proof_leaf))
+            .expect("verify succeeds"),
         "sanity: the proof for leaf {proof_leaf} must verify"
     );
     let mut group = c.benchmark_group("IncrementalMerkleTree verify_proof");
@@ -215,12 +204,7 @@ fn bench_proof_legs(
     group.bench_function("memory/16384", |b| {
         b.iter(|| {
             let valid = tree
-                .verify(
-                    LeafIndex::new(proof_leaf as u64),
-                    &element(proof_leaf),
-                    &proof,
-                    root,
-                )
+                .verify(&proof, &element(proof_leaf))
                 .expect("verify succeeds");
             black_box(valid)
         });
@@ -258,7 +242,7 @@ fn bench_multiproof_leg(
             |b| {
                 b.iter(|| {
                     let valid = tree
-                        .verify_multi(&multi, &elements, tree.root())
+                        .verify_multi(&multi, &elements)
                         .expect("verify succeeds");
                     black_box(valid)
                 });
