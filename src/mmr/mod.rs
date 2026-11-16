@@ -15,6 +15,14 @@
     feature = "draft_mmr",
     doc = "- [`draft`](crate::mmr::draft) — the in-memory draft overlay (`draft_mmr` feature).\n"
 )]
+#![cfg_attr(
+    feature = "draft_mmr",
+    doc = "- [`async_draft`](crate::mmr::async_draft) — the async draft over\n"
+)]
+#![cfg_attr(
+    feature = "draft_mmr",
+    doc = "  [`AsyncMmr`](crate::mmr::async_mmr::AsyncMmr) (`draft_mmr` feature).\n"
+)]
 //!
 //! # Layout and terminology
 //!
@@ -89,6 +97,7 @@
 
 pub mod aliases;
 pub mod async_mmr;
+mod fanout;
 pub mod handle;
 pub mod kinds;
 pub mod layout;
@@ -101,13 +110,22 @@ pub mod state;
 #[cfg(feature = "draft_mmr")]
 pub mod draft;
 
+#[cfg(feature = "draft_mmr")]
+pub mod async_draft;
+
 pub use aliases::{
     AsyncPlainAppendMmr, AsyncPlainEditableMmr, AsyncPlainNullifyingMmr, AsyncWithPeaksAppendMmr,
     AsyncWithPeaksEditableMmr, AsyncWithPeaksNullifyingMmr, PlainAppendMmr, PlainEditableMmr,
     PlainNullifyingMmr, WithPeaksAppendMmr, WithPeaksEditableMmr, WithPeaksNullifyingMmr,
 };
 #[cfg(feature = "stacked_mmr")]
-pub use aliases::{StackedAppendMmr, StackedNullifyingMmr};
+pub use aliases::{
+    AsyncStackedAppendMmr, AsyncStackedNullifyingMmr, StackedAppendMmr, StackedNullifyingMmr,
+};
+#[cfg(feature = "draft_mmr")]
+pub use async_draft::{
+    AsyncCommitFailure, AsyncCommitResult, AsyncDraft, AsyncStackedCommitResult,
+};
 pub use async_mmr::AsyncMmr;
 #[cfg(feature = "draft_mmr")]
 pub use draft::{CommitFailure, CommitReport, CommitResult, Draft, Optimise, StackedCommitResult};
@@ -121,7 +139,7 @@ pub use layout::{
     bag_peaks, merges_on_append, peak_heights, peaks_of, root_from, sibling_path, size_of,
 };
 pub use mode::{AppendOnly, Editable, Mode, Nullifying, Stackable};
-pub use nullifiers::{NullifierError, NullifierRecord, NullifierSet};
+pub use nullifiers::{AsyncNullifierSet, NullifierError, NullifierRecord, NullifierSet};
 pub use proof::encoding::{
     EncodedMultiProof, EncodedProof, EncodingError, FixedWidth, ProofEncoding,
 };

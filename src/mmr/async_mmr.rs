@@ -8,10 +8,39 @@
 //! itself (the metadata load/validate sequence), kept parallel to the sync
 //! loader because the store contracts differ.
 //!
-//! Sync-only surface (not yet on this shell): the draft overlay
-//! (`start_draft`/`commit_as_stacked`), `pin`/`stack` construction of
-//! `Stacked` handles, `open_stacked`, and a `NullifierSet` accessor exist
-//! on the sync [`Mmr`](super::Mmr) only.
+#![cfg_attr(
+    feature = "draft_mmr",
+    doc = "Full surface parity with the sync shell: the stacked machinery\n"
+)]
+#![cfg_attr(
+    feature = "draft_mmr",
+    doc = "(`pin`/`stack`/`open_stacked` — re-open through\n"
+)]
+#![cfg_attr(
+    feature = "draft_mmr",
+    doc = "[`AsyncRetrievable`]), the draft overlay\n"
+)]
+#![cfg_attr(
+    feature = "draft_mmr",
+    doc = "([`AsyncDraft`](super::async_draft::AsyncDraft) over the same op-log core\n"
+)]
+#![cfg_attr(
+    feature = "draft_mmr",
+    doc = "as the sync [`Draft`](super::Draft)), and the\n"
+)]
+#![cfg_attr(
+    feature = "draft_mmr",
+    doc = "[`AsyncNullifierSet`] accessor all exist here. The async `pin` is\n"
+)]
+#![cfg_attr(
+    feature = "draft_mmr",
+    doc = "synchronous like the sync one (no store access — it clones the backend\n"
+)]
+#![cfg_attr(
+    feature = "draft_mmr",
+    doc = "handle and captures the locator); `stack` and `open_stacked` await\n"
+)]
+#![cfg_attr(feature = "draft_mmr", doc = "their store reads/writes.\n")]
 //!
 //! Errors are unified with the sync shell: [`MmrError`] is generic over
 //! [`Storage`](crate::store::Storage), which both
@@ -25,7 +54,7 @@
 //! `S: Sync`, `H: Sync` and `Id: Sync` on top of each parameter's `Send`;
 //! the `&mut self` methods (appends, edits, nullifications) additionally
 //! require the values they move — `H::Output` — to be `Send`/`Sync`
-//! (the [`HashValue`](crate::primitives::HashValue) trait carries no
+//! (the [`HashValue`] trait carries no
 //! Send/Sync supertraits, so they must be required explicitly). The full
 //! per-method set — `S: AsyncStore + Send + Sync + 'static`,
 //! `H: Hasher + Send + Sync` with `H::Output: Send + Sync`,
@@ -36,26 +65,43 @@
 //! Note on runtimes: the trait uses native async-fn-in-trait; no
 //! `async-trait` boxing anywhere. `no_std` targets use the sync
 //! [`Mmr`](super::Mmr) with a sync store instead. Distinct stores in a
-//! stacked MMR are read sequentially for now (same grouping as the sync
-//! shell); a parallel fan-out is future work.
+//! stacked MMR are read concurrently: the per-store batches (same grouping
+//! as the sync shell) run as joined plain futures with the sequential error
+//! identity — see the crate-internal fan-out helper.
 
+#[cfg(feature = "stacked_mmr")]
+use super::kinds::SingleLayerKind;
 use super::kinds::{DeepNullifiable, EditableKind};
 use super::layout::{
     LeafCount, MmrSize, NodeIndex, PathStep, Side, bag_peaks, peaks_of, root_from, sibling_path,
 };
+#[cfg(feature = "stacked_mmr")]
+use super::mode::Stackable;
 use super::mode::{Editable, Mode, Nullifying};
-use super::nullifiers::{NullifierDepth, nullify_record_async, read_records_async};
+use super::nullifiers::{
+    AsyncNullifierSet, NullifierDepth, NullifierError, NullifierRecord, nullify_record_async,
+    read_records_async,
+};
 use super::proof::{MultiProof, Proof};
 use super::stacked::parse_node_value;
+#[cfg(feature = "stacked_mmr")]
+use super::stacked::{
+    InvalidSubViews, LayerView, SubView, first_layer_hasher_mismatch_async, validate_sub_views,
+};
 use super::state::Provenance;
 use super::{
     AppendBatchOutcome, AppendOutcome, Kind, MmrError, NullifyOutcome, ReplaceOutcome,
-    UpdateOutcome,
+    UpdateOutcome, fanout,
 };
 use crate::hashers::Hasher;
 use crate::ids::{AccumulatorId, TreeId};
-use crate::primitives::LeafIndex;
+use crate::primitives::{HashValue, LeafIndex};
+#[cfg(feature = "stacked_mmr")]
+use crate::store::AsyncRetrievable;
 use crate::store::{AsyncStore, Batch, keys, keys::Table, record};
+use alloc::boxed::Box;
+#[cfg(feature = "draft_mmr")]
+use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -66,6 +112,48 @@ struct AsyncLayerRead<'a, S> {
     store: &'a S,
     keys: Vec<Vec<u8>>,
     targets: Vec<(usize, u64)>,
+}
+
+/// One batched nullifier write for one target store: pre-encoded keys and
+/// the records to write under them. Only the async draft replay's batched
+/// commit uses it.
+#[cfg(feature = "draft_mmr")]
+struct AsyncRecordTarget<'a, S> {
+    store: &'a S,
+    keys: Vec<Vec<u8>>,
+    records: Vec<NullifierRecord>,
+}
+
+/// One routed group's batched node read, parsed positionally — the single
+/// fan-out branch of [`AsyncMmr::load_nodes`](super::async_mmr::AsyncMmr).
+async fn read_group<S: AsyncStore, O: HashValue>(
+    group: &super::stacked::RouteGroup<'_, S>,
+) -> Result<Vec<Option<O>>, MmrError<S>> {
+    let refs: Vec<&[u8]> = group.keys.iter().map(Vec::as_slice).collect();
+    group
+        .store
+        .read(&refs)
+        .await
+        .map_err(MmrError::Store)?
+        .into_iter()
+        .map(parse_node_value)
+        .collect()
+}
+
+/// Parses one store's raw nullifier values positionally; a present-but-
+/// unparsable record is corruption, never "not nullified" (fail-open).
+fn parse_nullifier_values<S: crate::store::Storage>(
+    values: Vec<Option<Vec<u8>>>,
+) -> Result<Vec<Option<NullifierRecord>>, MmrError<S>> {
+    values
+        .into_iter()
+        .map(|value| match value {
+            None => Ok(None),
+            Some(bytes) => NullifierRecord::parse(&bytes)
+                .map(Some)
+                .ok_or(MmrError::Nullifier(NullifierError::MalformedRecord)),
+        })
+        .collect()
 }
 
 /// An async MMR handle. Semantics identical to [`Mmr`](super::Mmr) — see that
@@ -178,18 +266,35 @@ impl<H: Hasher, S: AsyncStore, K: Kind, M: Mode, Id: TreeId> AsyncMmr<H, S, K, M
         }
 
         let first_leaf = self.state.leaf_count.next_leaf();
-        let delta = super::state::apply_append_batch(&self.hasher, &self.state, &element_hashes);
+        let root = self.append_hashed_batch(&element_hashes).await?;
+
+        Ok(AppendBatchOutcome {
+            first_leaf,
+            appended: LeafCount::new(element_hashes.len() as u64),
+            root,
+        })
+    }
+
+    /// Batch-append engine for already-hashed elements: one
+    /// [`apply_append_batch`](super::state::apply_append_batch) pass and one
+    /// batch write, returning the root after the batch. Crate-internal: the
+    /// async draft's commit replay coalesces buffered appends through it
+    /// (the async twin of the sync shell's engine of the same name).
+    pub(crate) async fn append_hashed_batch(
+        &mut self,
+        element_hashes: &[H::Output],
+    ) -> Result<H::Output, MmrError<S>> {
+        if element_hashes.is_empty() {
+            return Ok(self.state.root(&self.hasher));
+        }
+        let delta = super::state::apply_append_batch(&self.hasher, &self.state, element_hashes);
 
         let mut batch = Batch::new();
         self.push_delta(&mut batch, &delta);
         self.store.write(batch).await.map_err(MmrError::Store)?;
         self.state = delta.state;
 
-        Ok(AppendBatchOutcome {
-            first_leaf,
-            appended: LeafCount::new(element_hashes.len() as u64),
-            root: delta.root,
-        })
+        Ok(delta.root)
     }
 
     /// Builds an inclusion proof. See [`Mmr::proof`](super::Mmr::proof).
@@ -309,67 +414,19 @@ impl<H: Hasher, S: AsyncStore, K: Kind, M: Mode, Id: TreeId> AsyncMmr<H, S, K, M
             Provenance::Full => MmrSize::ZERO,
             Provenance::FromPeaks { size_at_creation } => size_at_creation,
         };
-        if prev_size.leaf_count().is_none() || prev_size > current {
-            return Err(MmrError::InvalidPrevSize {
-                prev_size,
-                provable_from: floor,
-                current,
-            });
+        match super::proof::consistency_plan(prev_size, current, floor, &self.state.peaks)? {
+            super::proof::ConsistencyPlan::Ready(proof) => Ok(proof),
+            super::proof::ConsistencyPlan::Fetch {
+                indexes,
+                peak_count,
+            } => {
+                // One batched read: the earlier peaks, then the bridge
+                // nodes — split positionally.
+                let loaded = self.load_nodes(&indexes).await?;
+                super::proof::consistency_from_loaded(prev_size, current, &loaded, peak_count)
+                    .map_err(MmrError::Corrupted)
+            }
         }
-        // The degenerate sizes need no history: the trivial prefix uses the
-        // cached peaks, and the empty prefix's root is a public constant.
-        if prev_size == current {
-            return Ok(super::proof::ConsistencyProof {
-                prev_size,
-                size: current,
-                prev_peaks: Vec::clone(&self.state.peaks),
-                path: Vec::new(),
-            });
-        }
-        if prev_size == MmrSize::ZERO {
-            return Ok(super::proof::ConsistencyProof {
-                prev_size,
-                size: current,
-                prev_peaks: Vec::new(),
-                path: Vec::clone(&self.state.peaks),
-            });
-        }
-        if prev_size < floor {
-            return Err(MmrError::InvalidPrevSize {
-                prev_size,
-                provable_from: floor,
-                current,
-            });
-        }
-
-        // One batched read: the earlier peaks, then the bridge nodes —
-        // split positionally.
-        let bridge_nodes = super::proof::consistency_bridge_nodes(prev_size, current);
-        let mut indexes = peaks_of(prev_size);
-        let peak_count = indexes.len();
-        indexes.extend_from_slice(&bridge_nodes);
-        let loaded = self.load_nodes(&indexes).await?;
-        let (peaks_loaded, bridge_loaded) = loaded.split_at(peak_count);
-        let missing = || {
-            MmrError::Corrupted(super::Corrupted::MissingRecord {
-                table: Table::Nodes,
-            })
-        };
-
-        Ok(super::proof::ConsistencyProof {
-            prev_size,
-            size: current,
-            prev_peaks: peaks_loaded
-                .iter()
-                .copied()
-                .map(|value| value.ok_or_else(missing))
-                .collect::<Result<Vec<_>, _>>()?,
-            path: bridge_loaded
-                .iter()
-                .copied()
-                .map(|value| value.ok_or_else(missing))
-                .collect::<Result<Vec<_>, _>>()?,
-        })
     }
 
     /// Verifies a proof against this MMR's *current* root. Synchronous: the
@@ -439,9 +496,9 @@ impl<H: Hasher, S: AsyncStore, K: Kind, M: Mode, Id: TreeId> AsyncMmr<H, S, K, M
 
     /// Persists one already-hashed element: the pure append delta computed
     /// from cached state, applied as a single batch write. Shared by
-    /// `append` and `replace` (the draft replays its buffered appends
-    /// through the sync twin of this method).
-    async fn append_hashed(
+    /// `append` and `replace` (the async draft replays its buffered appends
+    /// through the batch engine below).
+    pub(crate) async fn append_hashed(
         &mut self,
         element_hash: H::Output,
     ) -> Result<AppendOutcome<H::Output>, MmrError<S>> {
@@ -463,7 +520,7 @@ impl<H: Hasher, S: AsyncStore, K: Kind, M: Mode, Id: TreeId> AsyncMmr<H, S, K, M
 
     /// Resolves the nullifier record for `leaf` across layers; see the sync
     /// shell for the rules.
-    async fn resolve_nullifier(
+    pub(crate) async fn resolve_nullifier(
         &self,
         leaf: LeafIndex,
     ) -> Result<Option<super::nullifiers::NullifierRecord>, MmrError<S>> {
@@ -482,19 +539,15 @@ impl<H: Hasher, S: AsyncStore, K: Kind, M: Mode, Id: TreeId> AsyncMmr<H, S, K, M
     /// a leaf's node is consulted and the strongest resolution wins (deep
     /// overrides shallow; among shallows the smaller — more restrictive —
     /// size wins). That merge is a max over a totally-ordered record set, so
-    /// grouped batched reads yield exactly the sequential walk's result.
-    async fn resolve_nullifiers(
+    /// grouped batched reads yield exactly the sequential walk's result; the
+    /// per-store reads run concurrently and merge in group order.
+    pub(crate) async fn resolve_nullifiers(
         &self,
         leaves: &[LeafIndex],
-    ) -> Result<Vec<Option<super::nullifiers::NullifierRecord>>, MmrError<S>> {
+    ) -> Result<Vec<Option<NullifierRecord>>, MmrError<S>> {
         if leaves.is_empty() {
             return Ok(Vec::new());
         }
-
-        // Own (topmost) records always resolve — no pin gates them.
-        let mut resolved = read_records_async(&self.store, self.id, leaves)
-            .await
-            .map_err(MmrError::Nullifier)?;
 
         // Sub records resolve through each view's layer chain (own records
         // of the sub always; deeper layers under the pin-size rule). With
@@ -529,20 +582,55 @@ impl<H: Hasher, S: AsyncStore, K: Kind, M: Mode, Id: TreeId> AsyncMmr<H, S, K, M
                 }
             }
         }
-        for read in reads {
-            let refs: Vec<&[u8]> = read.keys.iter().map(Vec::as_slice).collect();
-            let values = read.store.read(&refs).await.map_err(MmrError::Store)?;
-            for (value, (position, pin)) in values.into_iter().zip(&read.targets) {
-                let record = match value {
-                    None => continue,
-                    Some(bytes) => super::nullifiers::NullifierRecord::parse(&bytes).ok_or(
-                        MmrError::Nullifier(super::nullifiers::NullifierError::MalformedRecord),
-                    )?,
-                };
+
+        // The own-store read joins the fan-out as group 0, so its error —
+        // mapped to the `Nullifier` variant like the sequential path — wins
+        // over every group error. Parsing happens inside each future (the
+        // trait's own `Send` future is boxed, so no `Sync` bound on the
+        // store is needed) and results merge in fan-out order.
+        let own_keys: Vec<Vec<u8>> = leaves
+            .iter()
+            .map(|leaf| keys::encode(&self.id, Table::Nullifiers, leaf.get()))
+            .collect();
+        let own_refs: Vec<&[u8]> = own_keys.iter().map(Vec::as_slice).collect();
+        let group_refs: Vec<Vec<&[u8]>> = reads
+            .iter()
+            .map(|read| read.keys.iter().map(Vec::as_slice).collect())
+            .collect();
+
+        let mut futures: Vec<fanout::BatchFuture<'_, Vec<Option<NullifierRecord>>, MmrError<S>>> =
+            Vec::with_capacity(reads.len() + 1);
+        {
+            let own_read = self.store.read(&own_refs);
+            futures.push(Box::pin(async move {
+                let values = own_read
+                    .await
+                    .map_err(|error| MmrError::Nullifier(NullifierError::Store(error)))?;
+                parse_nullifier_values(values)
+            }));
+        }
+        for (read, refs) in reads.iter().zip(&group_refs) {
+            let store_read = read.store.read(refs);
+            futures.push(Box::pin(async move {
+                let values = store_read.await.map_err(MmrError::Store)?;
+                parse_nullifier_values(values)
+            }));
+        }
+        let loaded = fanout::join_ordered(futures).await?;
+
+        // Own records resolve unconditionally; group records under their
+        // pin gate. Strongest wins per leaf.
+        let mut resolved: Vec<Option<NullifierRecord>> = Vec::with_capacity(leaves.len());
+        for record in &loaded[0] {
+            resolved.push(*record);
+        }
+        for (values, read) in loaded[1..].iter().zip(&reads) {
+            for (record, (position, pin)) in values.iter().zip(&read.targets) {
+                let Some(record) = record else { continue };
                 if record.resolves_at(*pin) {
                     resolved[*position] = Some(match resolved[*position] {
-                        Some(existing) => existing.stronger(record),
-                        None => record,
+                        Some(existing) => existing.stronger(*record),
+                        None => *record,
                     });
                 }
             }
@@ -550,8 +638,13 @@ impl<H: Hasher, S: AsyncStore, K: Kind, M: Mode, Id: TreeId> AsyncMmr<H, S, K, M
         Ok(resolved)
     }
 
-    /// Reads node hashes with layer routing; see the sync shell.
-    async fn load_nodes(&self, nodes: &[NodeIndex]) -> Result<Vec<Option<H::Output>>, MmrError<S>> {
+    /// Reads node hashes with layer routing; see the sync shell. One batched
+    /// read per distinct store; stores beyond the first are read
+    /// concurrently and the parsed results are assembled in group order.
+    pub(crate) async fn load_nodes(
+        &self,
+        nodes: &[NodeIndex],
+    ) -> Result<Vec<Option<H::Output>>, MmrError<S>> {
         if self.subs.is_empty() {
             return Self::read_nodes(&self.store, self.id, nodes).await;
         }
@@ -561,11 +654,42 @@ impl<H: Hasher, S: AsyncStore, K: Kind, M: Mode, Id: TreeId> AsyncMmr<H, S, K, M
             });
 
         let mut results: Vec<Option<H::Output>> = vec![None; nodes.len()];
-        for group in &groups {
-            let refs: Vec<&[u8]> = group.keys.iter().map(Vec::as_slice).collect();
-            let values = group.store.read(&refs).await.map_err(MmrError::Store)?;
-            for (value, slots) in values.into_iter().zip(&group.slots) {
-                let parsed = parse_node_value(value)?;
+        if groups.is_empty() {
+            return Ok(results);
+        }
+        let loaded: Vec<Vec<Option<H::Output>>> = if groups.len() == 1 {
+            // One store (the whole stack on a shared backend): the plain
+            // batched read, no fan-out machinery.
+            vec![read_group::<S, H::Output>(&groups[0]).await?]
+        } else {
+            // Distinct stores: the read-and-parse runs inside each future —
+            // the trait's own `Send` future is boxed, so no `Sync` bound on
+            // the store is needed — and the first group's error wins.
+            let key_refs: Vec<Vec<&[u8]>> = groups
+                .iter()
+                .map(|group| group.keys.iter().map(Vec::as_slice).collect())
+                .collect();
+            #[expect(
+                clippy::type_complexity,
+                reason = "the boxed per-store batch type is named once at use"
+            )]
+            let mut futures: Vec<
+                fanout::BatchFuture<'_, Vec<Option<H::Output>>, MmrError<S>>,
+            > = Vec::with_capacity(groups.len());
+            for (group, refs) in groups.iter().zip(&key_refs) {
+                let read = group.store.read(refs);
+                futures.push(Box::pin(async move {
+                    read.await
+                        .map_err(MmrError::Store)?
+                        .into_iter()
+                        .map(parse_node_value::<S, H::Output>)
+                        .collect()
+                }));
+            }
+            fanout::join_ordered(futures).await?
+        };
+        for (group, values) in groups.iter().zip(loaded) {
+            for (parsed, slots) in values.into_iter().zip(&group.slots) {
                 for &position in slots {
                     results[position] = parsed;
                 }
@@ -592,6 +716,167 @@ impl<H: Hasher, S: AsyncStore, K: Kind, M: Mode, Id: TreeId> AsyncMmr<H, S, K, M
             .into_iter()
             .map(parse_node_value)
             .collect()
+    }
+
+    /// The shared edit engine; see the sync shell. Kind-generic: the
+    /// draft replay uses it directly (the public surface gates it on
+    /// [`Editable`] + [`EditableKind`]).
+    pub(crate) async fn update_hashed(
+        &mut self,
+        leaf: LeafIndex,
+        new_hash: H::Output,
+        expected_current: Option<H::Output>,
+    ) -> Result<UpdateOutcome<H::Output>, MmrError<S>> {
+        self.check_provable(leaf)?;
+
+        // One batched read for the leaf and all its siblings.
+        let path = sibling_path(leaf, self.state.node_count);
+        let mut indexes: Vec<NodeIndex> = Vec::with_capacity(path.len() + 1);
+        indexes.push(leaf.node());
+        indexes.extend(path.iter().map(|step| step.sibling));
+        let mut loaded = self.load_nodes(&indexes).await?;
+        let current = loaded.first().copied().flatten();
+        let siblings = loaded.split_off(1);
+        // An edit onto an absent leaf node is corruption (the structure is
+        // dense), not a gate mismatch: it must fail as a missing record
+        // regardless of the gate, never "repair" the state by writing over
+        // nothing.
+        let Some(current) = current else {
+            return Err(MmrError::Corrupted(super::Corrupted::MissingRecord {
+                table: Table::Nodes,
+            }));
+        };
+        if let Some(expected) = expected_current
+            && current != expected
+        {
+            return Err(MmrError::UpdateMismatch { leaf });
+        }
+        let missing = || {
+            MmrError::Corrupted(super::Corrupted::MissingRecord {
+                table: Table::Nodes,
+            })
+        };
+
+        let mut hash = new_hash;
+        let mut changed = vec![(leaf.node(), new_hash)];
+        let mut node = leaf.node();
+        for (step, sibling) in path.iter().zip(&siblings) {
+            let sibling = sibling.ok_or_else(missing)?;
+            hash = match step.side {
+                Side::Left => self.hasher.hash_pair(sibling, hash),
+                Side::Right => self.hasher.hash_pair(hash, sibling),
+            };
+            node = node.parent().ok_or_else(missing)?;
+            changed.push((node, hash));
+        }
+        let peaks_nodes = peaks_of(self.state.node_count);
+        let peak_index = peaks_nodes
+            .iter()
+            .position(|peak| peak.get() == node.get())
+            .ok_or_else(missing)?;
+        let new_peak = hash;
+
+        let mut peaks = Vec::clone(&self.state.peaks);
+        peaks[peak_index] = new_peak;
+        let mut batch = Batch::new();
+        for (changed_node, changed_hash) in &changed {
+            batch.put_owned(
+                keys::encode(&self.id, Table::Nodes, changed_node.get()),
+                record::hash_value(changed_hash),
+            );
+        }
+        batch.put_owned(
+            keys::encode(&self.id, Table::Root, 0),
+            record::hash_value(&root_from(
+                &self.hasher,
+                bag_peaks(&self.hasher, &peaks),
+                self.state.node_count,
+            )),
+        );
+        self.store.write(batch).await.map_err(MmrError::Store)?;
+
+        self.state.peaks[peak_index] = new_peak;
+        Ok(UpdateOutcome {
+            leaf,
+            previous: Some(current),
+            root: self.state.root(&self.hasher),
+        })
+    }
+
+    /// Resolves the store + id that own a deep record for `leaf`, or `None`
+    /// when this MMR's own layer owns it; see the sync shell.
+    fn deep_owner(&self, leaf: LeafIndex) -> Option<(&S, Id)> {
+        let node = leaf.node().get();
+        for sub in &self.subs {
+            if node <= sub.pinned_size().get() {
+                if let Some(layer) = sub.route(node) {
+                    return Some((layer.store_ref(), layer.id_ref()));
+                }
+                break;
+            }
+        }
+        None
+    }
+
+    /// One batched write for a run of nullifier requests: existing records
+    /// are read in one batched call per distinct target store, requests for
+    /// the same leaf merge (strongest wins), and every store group commits
+    /// in one atomic batch. Crate-internal: the async draft's commit replay
+    /// uses it so a run of nullifications costs one read + one write per
+    /// store, not one round trip per record (the async twin of the sync
+    /// shell's engine of the same name).
+    #[cfg(feature = "draft_mmr")]
+    pub(crate) async fn record_nullifiers(
+        &self,
+        requests: &[(LeafIndex, NullifierDepth)],
+    ) -> Result<(), MmrError<S>> {
+        if requests.is_empty() {
+            return Ok(());
+        }
+
+        // Resolve each request's target (store, id) and wire record; group
+        // by store so every distinct store sees one batched read + one
+        // batched write.
+        let at = self.state.node_count;
+        let mut groups: Vec<AsyncRecordTarget<'_, S>> = Vec::new();
+        for &(leaf, depth) in requests {
+            if leaf.get() >= self.state.leaf_count.get() {
+                return Err(MmrError::LeafOutOfRange {
+                    leaf,
+                    leaf_count: self.state.leaf_count,
+                });
+            }
+            let record = match depth {
+                NullifierDepth::Shallow => NullifierRecord::Shallow { at },
+                NullifierDepth::Deep => NullifierRecord::Deep,
+            };
+            let (store, id) = match depth {
+                NullifierDepth::Shallow => (&self.store, self.id),
+                NullifierDepth::Deep => self.deep_owner(leaf).unwrap_or((&self.store, self.id)),
+            };
+            let key = keys::encode(&id, Table::Nullifiers, leaf.get());
+            match groups
+                .iter_mut()
+                .find(|group| AsyncStore::same_store(group.store, store))
+            {
+                Some(group) => {
+                    group.keys.push(key);
+                    group.records.push(record);
+                }
+                None => groups.push(AsyncRecordTarget {
+                    store,
+                    keys: vec![key],
+                    records: vec![record],
+                }),
+            }
+        }
+
+        for group in groups {
+            super::nullifiers::write_records_async(group.store, group.keys, group.records)
+                .await
+                .map_err(MmrError::Nullifier)?;
+        }
+        Ok(())
     }
 
     /// Pushes an append delta's nodes and counters onto a batch.
@@ -744,15 +1029,18 @@ impl<H: Hasher, S: AsyncStore, K: Kind, M: Mode, Id: TreeId> AsyncMmr<H, S, K, M
         })
     }
 
-    /// Shared loader; see the sync shell — one shared validation helper
-    /// (`state::validate_metadata`), then the peaks and the root. Kind-
-    /// generic: both kind-specific `open`s use it.
-    pub(crate) async fn load(
-        hasher: H,
-        store: S,
+    /// Reads the persisted metadata block (hasher, mode, counters,
+    /// provenance) and validates it through the one shared validation helper
+    /// (`state::validate_metadata`); returns the parsed metadata plus the raw
+    /// root record for the caller's post-peaks root check. Shared by
+    /// [`Self::load`] and `open_stack` (the async twin of the sync shell's
+    /// helper of the same name).
+    async fn read_metadata(
+        hasher: &H,
+        store: &S,
         id: Id,
         declared_mode: &'static str,
-    ) -> Result<(H, S, Id, super::state::MmrState<H>), MmrError<S>> {
+    ) -> Result<(super::state::Metadata, Vec<u8>), MmrError<S>> {
         let metadata_keys: Vec<Vec<u8>> = [
             Table::HasherInfo,
             Table::Mode,
@@ -786,18 +1074,41 @@ impl<H: Hasher, S: AsyncStore, K: Kind, M: Mode, Id: TreeId> AsyncMmr<H, S, K, M
         for (slot, (index, table)) in metadata.iter_mut().zip(tables.iter().enumerate()) {
             *slot = value(index, *table)?;
         }
-        let super::state::Metadata {
-            leaf_count,
-            node_count,
-            provenance,
-        } = super::state::validate_metadata(&hasher, metadata, declared_mode)
+        let parsed = super::state::validate_metadata(hasher, metadata, declared_mode)
             .map_err(MmrError::Corrupted)?;
+
+        Ok((parsed, value(5, Table::Root)?.to_vec()))
+    }
+
+    /// Shared loader; see the sync shell — one shared validation helper
+    /// (`state::validate_metadata`), then the peaks and the root. Kind-
+    /// generic: both kind-specific `open`s use it.
+    pub(crate) async fn load(
+        hasher: H,
+        store: S,
+        id: Id,
+        declared_mode: &'static str,
+    ) -> Result<(H, S, Id, super::state::MmrState<H>), MmrError<S>> {
+        let (
+            super::state::Metadata {
+                leaf_count,
+                node_count,
+                provenance,
+            },
+            root_record,
+        ) = Self::read_metadata(&hasher, &store, id, declared_mode).await?;
 
         let peak_nodes = peaks_of(node_count);
         let peak_values = Self::read_nodes(&store, id, &peak_nodes).await?;
         let peaks: Vec<H::Output> = peak_values
             .into_iter()
-            .map(|value| value.ok_or_else(|| missing(Table::Nodes)))
+            .map(|value| {
+                value.ok_or_else(|| {
+                    MmrError::Corrupted(super::Corrupted::MissingRecord {
+                        table: Table::Nodes,
+                    })
+                })
+            })
             .collect::<Result<_, _>>()?;
 
         let state = super::state::MmrState {
@@ -806,7 +1117,7 @@ impl<H: Hasher, S: AsyncStore, K: Kind, M: Mode, Id: TreeId> AsyncMmr<H, S, K, M
             peaks,
             provenance,
         };
-        if record::hash_value(&state.root(&hasher)).as_slice() != value(5, Table::Root)? {
+        if record::hash_value(&state.root(&hasher)).as_slice() != root_record.as_slice() {
             return Err(MmrError::Corrupted(super::Corrupted::RootMismatch));
         }
 
@@ -942,89 +1253,6 @@ impl<H: Hasher, S: AsyncStore, K: EditableKind, Id: TreeId> AsyncMmr<H, S, K, Ed
         self.update_hashed(leaf, self.hasher.genesis(), expected_current)
             .await
     }
-
-    /// The shared edit engine; see the sync shell.
-    async fn update_hashed(
-        &mut self,
-        leaf: LeafIndex,
-        new_hash: H::Output,
-        expected_current: Option<H::Output>,
-    ) -> Result<UpdateOutcome<H::Output>, MmrError<S>> {
-        self.check_provable(leaf)?;
-
-        // One batched read for the leaf and all its siblings.
-        let path = sibling_path(leaf, self.state.node_count);
-        let mut indexes: Vec<NodeIndex> = Vec::with_capacity(path.len() + 1);
-        indexes.push(leaf.node());
-        indexes.extend(path.iter().map(|step| step.sibling));
-        let mut loaded = self.load_nodes(&indexes).await?;
-        let current = loaded.first().copied().flatten();
-        let siblings = loaded.split_off(1);
-        // An edit onto an absent leaf node is corruption (the structure is
-        // dense), not a gate mismatch: it must fail as a missing record
-        // regardless of the gate, never "repair" the state by writing over
-        // nothing.
-        let Some(current) = current else {
-            return Err(MmrError::Corrupted(super::Corrupted::MissingRecord {
-                table: Table::Nodes,
-            }));
-        };
-        if let Some(expected) = expected_current
-            && current != expected
-        {
-            return Err(MmrError::UpdateMismatch { leaf });
-        }
-        let missing = || {
-            MmrError::Corrupted(super::Corrupted::MissingRecord {
-                table: Table::Nodes,
-            })
-        };
-
-        let mut hash = new_hash;
-        let mut changed = vec![(leaf.node(), new_hash)];
-        let mut node = leaf.node();
-        for (step, sibling) in path.iter().zip(&siblings) {
-            let sibling = sibling.ok_or_else(missing)?;
-            hash = match step.side {
-                Side::Left => self.hasher.hash_pair(sibling, hash),
-                Side::Right => self.hasher.hash_pair(hash, sibling),
-            };
-            node = node.parent().ok_or_else(missing)?;
-            changed.push((node, hash));
-        }
-        let peaks_nodes = peaks_of(self.state.node_count);
-        let peak_index = peaks_nodes
-            .iter()
-            .position(|peak| peak.get() == node.get())
-            .ok_or_else(missing)?;
-        let new_peak = hash;
-
-        let mut peaks = Vec::clone(&self.state.peaks);
-        peaks[peak_index] = new_peak;
-        let mut batch = Batch::new();
-        for (changed_node, changed_hash) in &changed {
-            batch.put_owned(
-                keys::encode(&self.id, Table::Nodes, changed_node.get()),
-                record::hash_value(changed_hash),
-            );
-        }
-        batch.put_owned(
-            keys::encode(&self.id, Table::Root, 0),
-            record::hash_value(&root_from(
-                &self.hasher,
-                bag_peaks(&self.hasher, &peaks),
-                self.state.node_count,
-            )),
-        );
-        self.store.write(batch).await.map_err(MmrError::Store)?;
-
-        self.state.peaks[peak_index] = new_peak;
-        Ok(UpdateOutcome {
-            leaf,
-            previous: Some(current),
-            root: self.state.root(&self.hasher),
-        })
-    }
 }
 
 impl<H: Hasher, S: AsyncStore, K: Kind, Id: TreeId> AsyncMmr<H, S, K, Nullifying, Id> {
@@ -1060,8 +1288,18 @@ impl<H: Hasher, S: AsyncStore, K: Kind, Id: TreeId> AsyncMmr<H, S, K, Nullifying
             .await
     }
 
+    /// Borrowed view of this MMR's own nullifier records. See
+    /// [`Mmr::nullifier_set`](super::Mmr::nullifier_set).
+    #[must_use]
+    pub fn nullifier_set(&self) -> AsyncNullifierSet<'_, S, Id> {
+        AsyncNullifierSet {
+            store: &self.store,
+            id: self.id,
+        }
+    }
+
     /// The shared nullifier writer; see the sync shell.
-    async fn record_nullifier(
+    pub(crate) async fn record_nullifier(
         &mut self,
         leaf: LeafIndex,
         depth: NullifierDepth,
@@ -1096,21 +1334,6 @@ impl<H: Hasher, S: AsyncStore, K: Kind, Id: TreeId> AsyncMmr<H, S, K, Nullifying
                 Ok(super::nullifiers::NullifierRecord::Deep)
             }
         }
-    }
-
-    /// Resolves the store + id that own a deep record for `leaf`, or `None`
-    /// when this MMR's own layer owns it; see the sync shell.
-    fn deep_owner(&self, leaf: LeafIndex) -> Option<(&S, Id)> {
-        let node = leaf.node().get();
-        for sub in &self.subs {
-            if node <= sub.pinned_size().get() {
-                if let Some(layer) = sub.route(node) {
-                    return Some((layer.store_ref(), layer.id_ref()));
-                }
-                break;
-            }
-        }
-        None
     }
 
     /// The shared replace engine; see the sync shell — hash-first, and the
@@ -1223,5 +1446,483 @@ impl<H: Hasher, S: AsyncStore, K: DeepNullifiable, Id: TreeId> AsyncMmr<H, S, K,
         let element_hash = self.hasher.hash_leaf(element)?;
         self.replace_hashed(leaf, element_hash, NullifierDepth::Deep)
             .await
+    }
+}
+
+#[cfg(feature = "stacked_mmr")]
+impl<H: Hasher, S: AsyncStore + Clone, K: SingleLayerKind, M: Mode + Stackable, Id: TreeId>
+    AsyncMmr<H, S, K, M, Id>
+{
+    /// Pinned, read-only view of this MMR at its current size, for use as a
+    /// stacking layer. The view does not follow later growth of this MMR.
+    /// See [`Mmr::pin`](super::Mmr::pin) — the async twin is synchronous
+    /// too: it clones the backend handle and captures the locator, touching
+    /// no storage.
+    ///
+    /// Only exists for [`Stackable`] modes: an [`Editable`]
+    /// MMR cannot be pinned or stacked upon (compile-time).
+    #[must_use]
+    pub fn pin(&self) -> SubView<S, Id, H::Output> {
+        SubView {
+            layers: vec![LayerView {
+                id: self.id,
+                store: S::clone(&self.store),
+                pinned_size: self.state.node_count,
+                locator: AsyncStore::locator(&self.store),
+                _output: core::marker::PhantomData,
+            }],
+            pinned_size: self.state.node_count,
+            _output: core::marker::PhantomData,
+        }
+    }
+}
+
+#[cfg(feature = "stacked_mmr")]
+impl<H: Hasher, S: AsyncStore + Clone, M: Stackable, Id: TreeId>
+    AsyncMmr<H, S, super::Stacked, M, Id>
+{
+    /// Pinned, read-only view of this stacked MMR at its current size,
+    /// carrying the whole flattened layer chain. See
+    /// [`Mmr::pin`](super::Mmr::pin) on the sync [`Stacked`](super::Stacked)
+    /// kind — the async twin is synchronous too.
+    #[must_use]
+    pub fn pin(&self) -> SubView<S, Id, H::Output> {
+        let mut layers: Vec<LayerView<S, Id, H::Output>> = self
+            .subs
+            .iter()
+            .flat_map(|sub| {
+                sub.layers
+                    .iter()
+                    .map(|layer| LayerView {
+                        id: layer.id,
+                        store: S::clone(layer.store_ref()),
+                        pinned_size: layer.pinned_size,
+                        locator: layer.locator.clone(),
+                        _output: core::marker::PhantomData,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        layers.push(LayerView {
+            id: self.id,
+            store: S::clone(&self.store),
+            pinned_size: self.state.node_count,
+            locator: AsyncStore::locator(&self.store),
+            _output: core::marker::PhantomData,
+        });
+        SubView {
+            layers,
+            pinned_size: self.state.node_count,
+            _output: core::marker::PhantomData,
+        }
+    }
+
+    /// Builds a stacked MMR over validated sub-views. See
+    /// [`Mmr::stack`](super::Mmr::stack) — the async twin persists the same
+    /// genesis metadata and sub-view record in one batch write.
+    ///
+    /// # Errors
+    ///
+    /// As [`Mmr::stack`](super::Mmr::stack).
+    pub async fn stack<I>(
+        hasher: H,
+        store: S,
+        id: Id,
+        subs: I,
+    ) -> Result<Self, super::stacked::StackingError<S>>
+    where
+        I: IntoIterator<Item = SubView<S, Id, H::Output>>,
+    {
+        let subs: Vec<_> = subs.into_iter().collect();
+        validate_sub_views(&subs).map_err(super::stacked::StackingError::SubViews)?;
+
+        let mut handle = Self {
+            hasher,
+            store,
+            id,
+            state: super::state::MmrState::empty(),
+            subs: Vec::new(),
+            _kind: core::marker::PhantomData,
+            _mode: core::marker::PhantomData,
+        };
+        handle.init_stack(subs).await.map(|()| handle)
+    }
+
+    /// Shared stack bootstrap: reads routed peaks, persists genesis metadata
+    /// and the sub-view record. Used by [`Self::stack`] (the async twin of
+    /// the sync shell's engine of the same name).
+    ///
+    /// Errors are [`StackingError`]s because every failure here is either a
+    /// store failure or a sub-view whose content does not back its pin.
+    pub(crate) async fn init_stack(
+        &mut self,
+        subs: Vec<SubView<S, Id, H::Output>>,
+    ) -> Result<(), super::stacked::StackingError<S>> {
+        let top_start = subs.last().map_or(0, |sub| sub.pinned_size.get());
+
+        // Install the sub-views first: the routed peak read below needs the
+        // layer routing to find the pinned nodes.
+        self.subs = subs;
+
+        // Routed peak read across the layers. A missing or unparsable
+        // pinned peak is sub-view content corruption, not a generic store
+        // failure.
+        let peak_nodes = peaks_of(MmrSize::new_unchecked(top_start));
+        let peaks: Vec<H::Output> = self
+            .load_nodes(&peak_nodes)
+            .await
+            .map_err(|error| match error {
+                MmrError::Store(err) => super::stacked::StackingError::Store(err),
+                // `load_nodes` reports corruption only through the node
+                // table (a present-but-unparsable value), so a peak read's
+                // corruption findings are pinned peaks the sub-view cannot
+                // back; its other variants are unreachable from a read.
+                // Fail closed either way — typed error, never a panic.
+                _ => super::stacked::StackingError::SubViews(InvalidSubViews::MissingPeakNodes),
+            })?
+            .into_iter()
+            .map(|value| {
+                value.ok_or(super::stacked::StackingError::SubViews(
+                    InvalidSubViews::MissingPeakNodes,
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+
+        // Cross-layer hasher validation: a stack whose layers hash
+        // with a different identity/config would not reproduce the reference
+        // root. Runs after the peak read so a layer that cannot even back
+        // its pin is diagnosed as missing peak nodes first.
+        if let Some(stored) = first_layer_hasher_mismatch_async(&self.subs, &self.hasher).await {
+            return Err(super::stacked::StackingError::LayerHasherMismatch { stored });
+        }
+
+        self.state = super::state::MmrState {
+            leaf_count: MmrSize::new_unchecked(top_start)
+                .leaf_count()
+                .unwrap_or(LeafCount::ZERO),
+            node_count: MmrSize::new_unchecked(top_start),
+            peaks,
+            provenance: Provenance::Full,
+        };
+
+        // Persist genesis metadata + the sub-view record: every layer of
+        // every sub-view, flattened bottom → top. Layers without a locator
+        // (session-local backends) persist an empty one — such stacks cannot
+        // be re-opened.
+        let layers: Vec<super::stacked::PersistedLayer<Id>> = self
+            .subs
+            .iter()
+            .flat_map(super::stacked::SubView::persisted_layers)
+            .collect();
+
+        let mut batch = Batch::new();
+        batch.put_owned(
+            keys::encode(&self.id, Table::HasherInfo, 0),
+            record::hasher_info(&self.hasher)
+                .ok_or_else(|| super::stacked::StackingError::UnrepresentableHasher)?,
+        );
+        batch.put_owned(
+            keys::encode(&self.id, Table::Mode, 0),
+            record::text(M::NAME),
+        );
+        batch.put_owned(
+            keys::encode(&self.id, Table::LeafCount, 0),
+            record::counter(self.state.leaf_count.get()),
+        );
+        batch.put_owned(
+            keys::encode(&self.id, Table::NodeCount, 0),
+            record::counter(self.state.node_count.get()),
+        );
+        batch.put_owned(
+            keys::encode(&self.id, Table::Provenance, 0),
+            super::state::encode_provenance(self.state.provenance),
+        );
+        batch.put_owned(
+            keys::encode(&self.id, Table::Root, 0),
+            record::hash_value(&self.state.root(&self.hasher)),
+        );
+        batch.put_owned(
+            keys::encode(&self.id, Table::Subviews, 0),
+            super::stacked::encode_subviews(&layers).ok_or_else(|| {
+                super::stacked::StackingError::SubViews(InvalidSubViews::Unrepresentable)
+            })?,
+        );
+        self.store
+            .write(batch)
+            .await
+            .map_err(super::stacked::StackingError::Store)
+    }
+}
+
+#[cfg(feature = "stacked_mmr")]
+impl<H: Hasher, S: AsyncStore, M: Stackable, Id: TreeId> AsyncMmr<H, S, super::Stacked, M, Id> {
+    /// Re-open path shared with [`open_stacked`]: validates the sub-view
+    /// list, the persisted metadata (through the shared
+    /// `state::validate_metadata` helper), every layer's hasher, then loads
+    /// routed peaks for the reconstructed sub-views (the async twin of the
+    /// sync shell's engine of the same name).
+    pub(crate) async fn open_stack(
+        hasher: H,
+        store: S,
+        id: Id,
+        subs: Vec<SubView<S, Id, H::Output>>,
+    ) -> Result<Self, MmrError<S>> {
+        let mut handle = Self {
+            hasher,
+            store,
+            id,
+            state: super::state::MmrState::empty(),
+            subs: Vec::new(),
+            _kind: core::marker::PhantomData,
+            _mode: core::marker::PhantomData,
+        };
+
+        // The sub-view list is validated exactly like at construction
+        // ([`AsyncMmr::stack`]): it is persisted data, so unsorted or
+        // duplicate pins must not route reads to the wrong layer.
+        validate_sub_views(&subs).map_err(MmrError::Stacking)?;
+
+        // Cross-layer hasher validation — same gate as
+        // [`AsyncMmr::stack`].
+        if let Some(stored) = first_layer_hasher_mismatch_async(&subs, &handle.hasher).await {
+            return Err(MmrError::Corrupted(super::Corrupted::HasherMismatch {
+                stored,
+                supplied: alloc::format!("{} ({})", handle.hasher.id(), handle.hasher.config()),
+            }));
+        }
+
+        // Metadata validation (the routed peaks need the subs, so they are
+        // loaded after the sub-views are installed).
+        let (
+            super::state::Metadata {
+                leaf_count,
+                node_count,
+                provenance,
+            },
+            root_record,
+        ) = Self::read_metadata(&handle.hasher, &handle.store, handle.id, M::NAME).await?;
+        // A stacked layer's own provenance is always full history (stacks
+        // start empty above their pins).
+        if provenance != Provenance::Full {
+            return Err(MmrError::Corrupted(super::Corrupted::MalformedRecord {
+                table: Table::Provenance,
+            }));
+        }
+
+        handle.subs = subs;
+        let peak_nodes = peaks_of(node_count);
+        let peaks: Vec<H::Output> = handle
+            .load_nodes(&peak_nodes)
+            .await?
+            .into_iter()
+            .map(|value| {
+                value.ok_or_else(|| {
+                    MmrError::Corrupted(super::Corrupted::MissingRecord {
+                        table: Table::Nodes,
+                    })
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        handle.state = super::state::MmrState {
+            leaf_count,
+            node_count,
+            peaks,
+            provenance,
+        };
+
+        if record::hash_value(&handle.state.root(&handle.hasher)).as_slice()
+            != root_record.as_slice()
+        {
+            return Err(MmrError::Corrupted(super::Corrupted::RootMismatch));
+        }
+        Ok(handle)
+    }
+}
+
+/// Re-opens a stacked async MMR from its persisted sub-view metadata
+/// ([`Table::Subviews`]): each layer's id, pin size, and store locator.
+///
+/// `store` is the **top layer's store** — the one holding the `Subviews`
+/// record under the stacked MMR's own id. Every sub-layer is re-opened via
+/// [`AsyncRetrievable::open`] with the same `S` — persistent stacks
+/// therefore require a concrete retrievable async store type (erased stacks
+/// are session-local). The declared mode `M` and the hasher identity/config
+/// are validated against the persisted metadata, and pin sizes are
+/// cross-checked against each layer's own counters.
+///
+/// # Errors
+///
+/// Store re-open failures or missing/corrupt metadata
+/// ([`MmrError::Corrupted`]).
+#[cfg(feature = "stacked_mmr")]
+pub async fn open_stacked<H: Hasher, S: AsyncRetrievable, M: Stackable, Id: TreeId>(
+    hasher: H,
+    store: S,
+    id: Id,
+) -> Result<AsyncMmr<H, S, super::Stacked, M, Id>, MmrError<S>> {
+    use crate::store::record::parse_counter;
+
+    // Layer list first: it tells us where every counter lives.
+    let subviews_key = keys::encode(&id, Table::Subviews, 0);
+    let mut values = store
+        .read(&[&subviews_key])
+        .await
+        .map_err(MmrError::Store)?;
+    let Some(raw) = values.pop().flatten() else {
+        return Err(MmrError::Corrupted(super::Corrupted::MissingRecord {
+            table: Table::Subviews,
+        }));
+    };
+    let layers = super::stacked::parse_subviews(&raw).ok_or(MmrError::Corrupted(
+        super::Corrupted::MalformedRecord {
+            table: Table::Subviews,
+        },
+    ))?;
+
+    // Reconstruct the sub-views exactly as `pin()` had them: distinct pin
+    // sizes (ascending) are the view boundaries, and a view with pin P
+    // carries every flattened layer whose pin is ≤ P, in bottom → top order
+    // (a view's pin is always its top layer's pinned size). Rebuilding one
+    // single-layer view per record instead would produce duplicate pins —
+    // which `validate_sub_views` (run by `open_stack`) rightly rejects.
+    let mut pins: Vec<u64> = layers.iter().map(|layer| layer.pinned_size).collect();
+    pins.sort_unstable();
+    pins.dedup();
+
+    let mut subs = Vec::with_capacity(pins.len());
+    for &pin in &pins {
+        let mut chain: Vec<LayerView<S, Id, H::Output>> = Vec::new();
+        // Opens stay sequential (each materializes a fresh store handle);
+        // the chain's counters then read concurrently, one future per
+        // layer, results validated in layer order.
+        let mut opened: Vec<(S, &super::stacked::PersistedLayer<Id>)> = Vec::new();
+        for layer in &layers {
+            if layer.pinned_size > pin {
+                continue;
+            }
+            let layer_store = S::open(&layer.locator).await.map_err(MmrError::Store)?;
+            opened.push((layer_store, layer));
+        }
+
+        let count_keys: Vec<Vec<u8>> = opened
+            .iter()
+            .map(|(_, layer)| keys::encode(&layer.id, Table::NodeCount, 0))
+            .collect();
+        let key_refs: Vec<[&[u8]; 1]> = count_keys.iter().map(|key| [key.as_slice()]).collect();
+        let stored: Vec<Option<Vec<u8>>> = if opened.len() <= 1 {
+            let mut stored = Vec::with_capacity(opened.len());
+            for ((layer_store, _), refs) in opened.iter().zip(&key_refs) {
+                stored.push(
+                    layer_store
+                        .read(refs)
+                        .await
+                        .map_err(MmrError::Store)?
+                        .into_iter()
+                        .next()
+                        .flatten(),
+                );
+            }
+            stored
+        } else {
+            #[expect(
+                clippy::type_complexity,
+                reason = "the boxed per-store batch type is named once at use"
+            )]
+            let mut futures: Vec<
+                fanout::BatchFuture<'_, Vec<Option<Vec<u8>>>, S::Error>,
+            > = Vec::with_capacity(opened.len());
+            for ((layer_store, _), refs) in opened.iter().zip(&key_refs) {
+                futures.push(Box::pin(layer_store.read(refs)));
+            }
+            fanout::join_ordered(futures)
+                .await
+                .map_err(MmrError::Store)?
+                .into_iter()
+                .map(|values| values.into_iter().next().flatten())
+                .collect()
+        };
+
+        for ((layer_store, layer), count) in opened.into_iter().zip(stored) {
+            // Cross-check: the layer must actually hold at least the pinned
+            // size.
+            let node_count =
+                count
+                    .as_deref()
+                    .and_then(parse_counter)
+                    .ok_or(MmrError::Corrupted(super::Corrupted::MissingRecord {
+                        table: Table::NodeCount,
+                    }))?;
+            if node_count < layer.pinned_size {
+                return Err(MmrError::Corrupted(super::Corrupted::PinSizeMismatch {
+                    pinned: MmrSize::new_unchecked(layer.pinned_size),
+                    layer_size: MmrSize::new_unchecked(node_count),
+                }));
+            }
+            chain.push(LayerView {
+                id: layer.id,
+                store: layer_store,
+                pinned_size: MmrSize::new_unchecked(layer.pinned_size),
+                locator: Some(layer.locator.clone()),
+                _output: core::marker::PhantomData,
+            });
+        }
+        subs.push(SubView {
+            layers: chain,
+            pinned_size: MmrSize::new_unchecked(pin),
+            _output: core::marker::PhantomData,
+        });
+    }
+
+    AsyncMmr::open_stack(hasher, store, id, subs).await
+}
+
+/// Re-opens a stacked async MMR whose top layer is
+/// [`AppendOnly`](super::AppendOnly) — the
+/// named alternative to the four-parameter [`open_stacked`] turbofish.
+///
+/// # Errors
+///
+/// As [`open_stacked`].
+#[cfg(feature = "stacked_mmr")]
+pub async fn open_stacked_append_only<H: Hasher, S: AsyncRetrievable, Id: TreeId>(
+    hasher: H,
+    store: S,
+    id: Id,
+) -> Result<AsyncMmr<H, S, super::Stacked, super::AppendOnly, Id>, MmrError<S>> {
+    open_stacked::<H, S, super::AppendOnly, Id>(hasher, store, id).await
+}
+
+/// Re-opens a stacked async MMR whose top layer is [`Nullifying`] — the
+/// named alternative to the four-parameter [`open_stacked`] turbofish.
+///
+/// # Errors
+///
+/// As [`open_stacked`].
+#[cfg(feature = "stacked_mmr")]
+pub async fn open_stacked_nullifying<H: Hasher, S: AsyncRetrievable, Id: TreeId>(
+    hasher: H,
+    store: S,
+    id: Id,
+) -> Result<AsyncMmr<H, S, super::Stacked, super::Nullifying, Id>, MmrError<S>> {
+    open_stacked::<H, S, super::Nullifying, Id>(hasher, store, id).await
+}
+
+#[cfg(feature = "draft_mmr")]
+impl<H: Hasher, S: AsyncStore, K: Kind, M: Mode, Id: TreeId> AsyncMmr<H, S, K, M, Id> {
+    /// Opens an in-memory draft over this MMR. See
+    /// [`Mmr::start_draft`](super::Mmr::start_draft) — the async draft
+    /// offers the same operations per this MMR's [`Mode`] and shares the
+    /// sync draft's op-log/overlay machinery; only the fetch/commit
+    /// plumbing is async.
+    #[must_use]
+    pub fn start_draft(&mut self) -> super::async_draft::AsyncDraft<'_, H, S, K, M, Id> {
+        let state = self.state.clone();
+        super::async_draft::AsyncDraft {
+            base: self,
+            ops: Vec::new(),
+            state,
+            overlay: BTreeMap::new(),
+            buffered_nullified: BTreeMap::new(),
+        }
     }
 }

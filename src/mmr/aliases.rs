@@ -6,8 +6,8 @@
 //! mirrors what the type-states can construct: every mode for
 //! [`Plain`](super::Plain) and [`WithPeaks`](super::WithPeaks),
 //! [`Stackable`](super::Stackable) modes only for
-//! [`Stacked`](super::Stacked), and no stacked alias for the async shell
-//! (its pin/stack construction is sync-only).
+//! [`Stacked`](super::Stacked) — on the sync handle and the async shell
+//! alike.
 
 use super::AsyncMmr;
 use super::Mmr;
@@ -85,3 +85,15 @@ pub type AsyncWithPeaksEditableMmr<H, S, Id = AccumulatorId> =
 /// [`WithPeaksNullifyingMmr`].
 pub type AsyncWithPeaksNullifyingMmr<H, S, Id = AccumulatorId> =
     AsyncMmr<H, S, super::WithPeaks, super::Nullifying, Id>;
+
+/// An async [`Stacked`](super::Stacked) + [`AppendOnly`](super::AppendOnly)
+/// MMR — the async twin of [`StackedAppendMmr`].
+#[cfg(feature = "stacked_mmr")]
+pub type AsyncStackedAppendMmr<H, S, Id = AccumulatorId> =
+    AsyncMmr<H, S, super::Stacked, super::AppendOnly, Id>;
+
+/// An async [`Stacked`](super::Stacked) + [`Nullifying`](super::Nullifying)
+/// MMR — the async twin of [`StackedNullifyingMmr`].
+#[cfg(feature = "stacked_mmr")]
+pub type AsyncStackedNullifyingMmr<H, S, Id = AccumulatorId> =
+    AsyncMmr<H, S, super::Stacked, super::Nullifying, Id>;

@@ -499,8 +499,8 @@ mod provenance {
 
 /// Async twins of the sync suites' editable-gate cases (the sync draft gate
 /// suite's semantics, expressed through the async shell's direct
-/// `update`/`delete` ops — the async shell has no draft overlay,
-/// see `src/mmr/async_mmr.rs` "sync-only surface").
+/// `update`/`delete` ops; the full async draft overlay lives in
+/// `tests/async_draft.rs`).
 mod editable_gates {
     use super::*;
 

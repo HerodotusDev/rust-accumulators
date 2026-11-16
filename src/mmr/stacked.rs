@@ -12,9 +12,11 @@
 //! Reads and writes are grouped **by store** — layers whose stores are
 //! [`same_store`](crate::store::Store::same_store) join one batched call —
 //! so a whole stack on one shared store costs exactly one I/O call per
-//! operation, and distinct stores cost one call each, taken sequentially.
-//! The grouping runs per operation over a layer list that never changes
-//! after construction.
+//! operation, and distinct stores cost one call each: concurrently in the
+//! async shells (a shared fan-out helper joins the per-store batches, with
+//! the sequential error identity), sequentially in the sync shell, whose
+//! store contract carries no cross-thread guarantee. The grouping runs per
+//! operation over a layer list that never changes after construction.
 //!
 //! # Stores across layers
 //!
@@ -44,7 +46,11 @@ use crate::ids::TreeId;
 use crate::primitives::HashValue;
 #[cfg(feature = "stacked_mmr")]
 use crate::store::Retrievable;
-use crate::store::{ErasedStore, Storage, Store, StoreLocator, keys, keys::Table};
+use crate::store::{
+    AsyncStore, ErasedAsyncStore, ErasedStore, Storage, Store, StoreLocator, keys, keys::Table,
+};
+#[cfg(feature = "stacked_mmr")]
+use alloc::boxed::Box;
 
 /// A frozen, read-only view of a sub-MMR at a pinned size.
 ///
@@ -148,6 +154,30 @@ impl<S, Id: Copy, O: HashValue> SubView<S, Id, O> {
         S: Store,
     {
         let locator = Store::locator(&store);
+        Self {
+            layers: vec![LayerView {
+                id,
+                store,
+                pinned_size,
+                locator,
+                _output: core::marker::PhantomData,
+            }],
+            pinned_size,
+            _output: core::marker::PhantomData,
+        }
+    }
+
+    /// Async-shell twin of [`SubView::single`]: a single-layer view over an
+    /// [`AsyncStore`], with the layer's locator derived exactly as the async
+    /// `AsyncMmr::pin` derives it (from [`AsyncStore::locator`] — `None`
+    /// for session-local backends). Same trust model: forgeable shape, the
+    /// content is checked at read/stack time.
+    #[must_use]
+    pub fn single_async(id: Id, store: S, pinned_size: MmrSize) -> Self
+    where
+        S: AsyncStore,
+    {
+        let locator = AsyncStore::locator(&store);
         Self {
             layers: vec![LayerView {
                 id,
@@ -333,6 +363,33 @@ impl<S: Store, Id: TreeId, O: HashValue> SubView<S, Id, O> {
     }
 }
 
+impl<S: AsyncStore, Id: TreeId, O: HashValue> SubView<S, Id, O> {
+    /// Async-shell twin of [`SubView::erased`]: erases the view's store
+    /// into [`ErasedAsyncStore`] for building mixed-type async stacks
+    /// (every layer wrapped). Session-local by nature.
+    #[must_use]
+    pub fn erased_async(self) -> SubView<ErasedAsyncStore, Id, O>
+    where
+        S: AsyncStore + Send + Sync + 'static,
+    {
+        SubView {
+            layers: self
+                .layers
+                .into_iter()
+                .map(|layer| LayerView {
+                    id: layer.id,
+                    store: ErasedAsyncStore::new(layer.store),
+                    pinned_size: layer.pinned_size,
+                    locator: layer.locator,
+                    _output: core::marker::PhantomData,
+                })
+                .collect(),
+            pinned_size: self.pinned_size,
+            _output: core::marker::PhantomData,
+        }
+    }
+}
+
 /// Validates that every layer of every sub-view persists a hasher identity +
 /// config matching the stack's hasher. A stack whose layers hash with a
 /// different identity or configuration does not reproduce the reference root
@@ -370,6 +427,60 @@ pub(crate) fn first_layer_hasher_mismatch<H: Hasher, S: Store, Id: TreeId, O: Ha
             if stored_id != hasher.id() || stored_config != hasher.config() {
                 return Some(alloc::format!("{stored_id} ({stored_config})"));
             }
+        }
+    }
+    None
+}
+
+/// Async-shell twin of [`first_layer_hasher_mismatch`] over
+/// [`AsyncStore`] layers; same contract, awaited reads. The per-layer
+/// reads run concurrently and the findings are evaluated in layer order,
+/// so the reported mismatch is exactly the sequential walk's first one.
+#[cfg(feature = "stacked_mmr")]
+pub(crate) async fn first_layer_hasher_mismatch_async<
+    H: Hasher,
+    S: AsyncStore,
+    Id: TreeId,
+    O: HashValue,
+>(
+    subs: &[SubView<S, Id, O>],
+    hasher: &H,
+) -> Option<alloc::string::String> {
+    let record_keys: Vec<Vec<u8>> = subs
+        .iter()
+        .flat_map(|sub| sub.layers.iter())
+        .map(|layer| keys::encode(&layer.id_ref(), Table::HasherInfo, 0))
+        .collect();
+    let key_refs: Vec<[&[u8]; 1]> = record_keys.iter().map(|key| [key.as_slice()]).collect();
+
+    #[expect(
+        clippy::type_complexity,
+        reason = "the boxed per-store batch type is named once at use"
+    )]
+    let mut futures: Vec<super::fanout::BatchFuture<'_, Vec<Option<Vec<u8>>>, S::Error>> =
+        Vec::with_capacity(key_refs.len());
+    for (layer, refs) in subs.iter().flat_map(|sub| sub.layers.iter()).zip(&key_refs) {
+        futures.push(Box::pin(layer.store_ref().read(refs)));
+    }
+    let Ok(loaded) = super::fanout::join_ordered(futures).await else {
+        // Unreadable store: the identity cannot be confirmed — report a
+        // mismatch rather than swallowing the finding (the first error in
+        // layer order wins, as in the sequential walk).
+        return Some(alloc::format!("{} ({})", hasher.id(), hasher.config()));
+    };
+
+    for values in loaded {
+        let Some(stored) = values.into_iter().next().flatten() else {
+            return Some(alloc::string::ToString::to_string("missing hasher record"));
+        };
+        let Some((stored_id, stored_config)) = crate::store::record::parse_hasher_info(&stored)
+        else {
+            return Some(alloc::string::ToString::to_string(
+                "unreadable hasher record",
+            ));
+        };
+        if stored_id != hasher.id() || stored_config != hasher.config() {
+            return Some(alloc::format!("{stored_id} ({stored_config})"));
         }
     }
     None
@@ -577,13 +688,15 @@ pub(crate) fn parse_subviews<Id: TreeId>(raw: &[u8]) -> Option<Vec<PersistedLaye
 /// - every view's range is well-formed for an MMR (valid node count).
 ///
 /// Called by [`super::Mmr::stack`]; public so callers can
-/// pre-validate a view set before committing to construction.
+/// pre-validate a view set before committing to construction. Store-trait
+/// agnostic: it reads only the views' pin sizes, so it serves the sync and
+/// async shells alike.
 ///
 /// # Errors
 ///
 /// See above; the error names the offending pair of pin sizes.
 #[cfg(feature = "stacked_mmr")]
-pub fn validate_sub_views<S: Store, Id: TreeId, O: HashValue>(
+pub fn validate_sub_views<S, Id: TreeId, O: HashValue>(
     views: &[SubView<S, Id, O>],
 ) -> Result<(), InvalidSubViews> {
     let Some(first) = views.first() else {

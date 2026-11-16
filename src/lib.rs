@@ -144,7 +144,11 @@
 )]
 #![cfg_attr(
     feature = "merkle_tree",
-    doc = "  ladder (proofs for every index within capacity), persisted metadata.\n"
+    doc = "  ladder (proofs for every index within capacity), self-contained proofs\n"
+)]
+#![cfg_attr(
+    feature = "merkle_tree",
+    doc = "  with a pure core shared by sync and async shells, persisted metadata.\n"
 )]
 #![cfg_attr(
     feature = "serde",
