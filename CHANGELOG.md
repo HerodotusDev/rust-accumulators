@@ -28,6 +28,27 @@ carries over, and persisted v0.5 data is not migratable.
 - Sync `Mmr` and async `AsyncMmr` handles over one shared pure state core;
   the two shells differ only in how they fetch and commit, with one generic
   error enum.
+- Async shell parity with the sync surface: the stacked machinery on
+  `AsyncMmr` (`pin` — synchronous, like the sync twin — the chain-carrying
+  stacked `pin`, `stack`, and `open_stacked` with named
+  `open_stacked_append_only` / `open_stacked_nullifying` variants,
+  re-opening through the new `AsyncRetrievable` store contract, implemented
+  by the SQLite store), the async draft overlay (`AsyncDraft` with
+  `commit` / `discard` / `commit_as_stacked`, sharing the sync `Draft`'s
+  op-log machinery and `Optimise` fold, committing through
+  `AsyncStore::write` atomically), and the async `NullifierSet` accessor
+  (`AsyncNullifierSet`, plus `nullifier_record` on the async draft).
+  Async stacked type aliases (`AsyncStackedAppendMmr`,
+  `AsyncStackedNullifyingMmr`) and async `SubView` constructors
+  (`single_async`, `erased_async`) complete the surface.
+- `AsyncStore` (and `AsyncRetrievable`) implementations for every built-in
+  backend: the four file engines (sled, fjall, redb, rocksdb) offload each
+  engine call to tokio's blocking pool — one open store serves both the sync
+  and async contracts, and batch atomicity is the engine's own
+  transaction/batch boundary — while the in-RAM `memory` and `heapless`
+  stores delegate to their sync paths directly (`heapless` stays `no_std`).
+  The file backends' async surface requires a live tokio runtime; spawn
+  failures surface as a typed `Runtime` error variant.
 - Self-contained `Proof` and `MultiProof`: each carries its own peaks, root,
   and size, so verification needs only the proof and a trusted root — no
   store, no shared state with the producer. `verify_proof_hashed` accepts
@@ -40,6 +61,21 @@ carries over, and persisted v0.5 data is not migratable.
   `ProofInconsistency` errors, serde impls, and an exhaustive test suite
   (every prefix pair up to 600 leaves, 183,015 pairs, against a brute-force
   reference) are included.
+- Draft consistency proofs: `consistency_proof(prev_size)` /
+  `verify_consistency` on `Draft` and `AsyncDraft` — prefix proofs over the
+  composed (base + buffered log) view, with the draft's overlay-over-base
+  resolver standing in for the store. Same planner, degenerate pairs, and
+  provenance floor as the handles; nullifiers do not participate.
+- Concurrent stacked reads in the async shell: layer reads across distinct
+  stores (grouped by `same_store`) run as one joined future per store and
+  merge in deterministic group order with sequential error identity. The
+  sync shell and nullifier write commits stay sequential — `Store` carries
+  no `Send`/`Sync` bound, and the strengthen-only write rule depends on
+  read-before-write per store.
+- `AsyncIncrementalMerkleTree`: the async twin of the incremental tree over
+  `AsyncStore`, with full method parity (`expected_current` gate included),
+  sharing the sync tree's pure state core — closing the sync+async shell gap
+  for the tree.
 - Nullification as a first-class axis: dual-depth nullifier sets with shallow
   records that deepen in place. Records only ever strengthen, nullifiers
   compose through stacked layers, and nullifier resolution is batched — one
@@ -105,6 +141,13 @@ carries over, and persisted v0.5 data is not migratable.
 
 ### Changed
 
+- **Breaking:** tree proofs are self-contained. `IncrementalMerkleTree::proof`
+  returns a `TreeProof` (index, siblings, root, depth) and `multiproof`
+  attaches its root; the handle-level `verify`/`verify_multi` take the proof
+  alone and pin it to the tree's current root, while standalone
+  `merkle::verify_proof` / `verify_multi_proof` (with `TreeVerifyError`)
+  verify any captured commitment with no store. Truncated proofs are now
+  typed errors, not `Ok(false)`.
 - **Breaking:** the hashing pipeline moved from hex strings to raw bytes end
   to end. Hash outputs (`Hash` is `[u8; 32]` behind a newtype), keys, and
   persisted records are all binary now. Roots and proofs computed by 1.0.0
@@ -176,6 +219,11 @@ carries over, and persisted v0.5 data is not migratable.
   | module `hashers::stark_poseidon` | module `hashers::poseidon_stark` |
 
 ### Fixed
+
+- Memory leak on `open`/`create` with custom hashers: repeated decodes of
+  the same custom hasher name now intern one `&'static str` per distinct
+  name on `std` builds (`hashers::custom_names`) instead of leaking per
+  open. `no_std` builds keep the historical per-open allocation.
 
 - Proof sets for non-power-of-two leaf counts: the tree's zero-hash ladder
   resolves virtual siblings correctly, where v0.5's proofs for such sets were

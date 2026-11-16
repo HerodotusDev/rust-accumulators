@@ -74,8 +74,8 @@ Default: `["mmr", "memory", "keccak_sol", "uuid_v4"]`. `all` enables everything.
 | Feature | Adds |
 | --- | --- |
 | `mmr` | The MMR accumulator: sync `Mmr` / async `AsyncMmr` handles, layout math, self-contained `Proof`/`MultiProof`/`ConsistencyProof` with standalone verification |
-| `stacked_mmr` | Stacking on top of the MMR: `pin`/`stack`/`open_stacked`, validated sub-views |
-| `draft_mmr` | In-memory `Draft` overlays with `commit` / `discard` / `commit_as_stacked` |
+| `stacked_mmr` | Stacking on top of the MMR: `pin`/`stack`/`open_stacked` on the sync and async handles, validated sub-views |
+| `draft_mmr` | In-memory draft overlays (`Draft` sync, `AsyncDraft` async) with `commit` / `discard` / `commit_as_stacked` and composed-view `consistency_proof` |
 | `merkle_tree` | The incremental Merkle tree accumulator (sparse storage, zero-hash ladder) |
 | `incremental_merkle_tree` | Compatibility alias of `merkle_tree` |
 | `hasher` | Grouping flag for the hasher axis (implied by every hasher feature) |
@@ -87,10 +87,10 @@ Default: `["mmr", "memory", "keccak_sol", "uuid_v4"]`. `all` enables everything.
 | `memory` | In-memory store, concurrent shared-lock reads (std; implies `store`) |
 | `heapless` | Fixed-capacity in-memory store, allocation-free inline map (no_std + alloc, works without an allocator; implies `store`) |
 | `sqlite` | SQLite store, async-only, atomic transactions (native targets; implies `store`) |
-| `sled` | Sled store, atomic `apply_batch` batches, background flusher (native targets; implies `store`) |
-| `fjall` | Fjall store, atomic write-batch commits over an LSM-tree (native targets; implies `store`) |
-| `redb` | Redb store, one ACID write transaction per batch, process-crash safe default (`Durability::None`), fsync opt-in per config (native targets; implies `store`) |
-| `rocksdb` | RocksDB store, one `WriteBatch` per write (native targets; implies `store`) |
+| `sled` | Sled store, atomic `apply_batch` batches, background flusher; async surface offloads to tokio's blocking pool (native targets; implies `store`) |
+| `fjall` | Fjall store, atomic write-batch commits over an LSM-tree; async surface offloads to tokio's blocking pool (native targets; implies `store`) |
+| `redb` | Redb store, one ACID write transaction per batch, process-crash safe default (`Durability::None`), fsync opt-in per config; async surface offloads to tokio's blocking pool (native targets; implies `store`) |
+| `rocksdb` | RocksDB store, one `WriteBatch` per write; async surface offloads to tokio's blocking pool (native targets; implies `store`) |
 | `uuid_v4` | Random uuid v4 accumulator ids |
 | `uuid_v7` | Time-ordered uuid v7 ids (`now_v7` additionally needs `std`) |
 | `ulid` | ULID ids (`generate_ulid` additionally needs `std`) |
@@ -111,6 +111,8 @@ stacking/branching (`stacked_mmr`), in-memory drafts with commit/discard
 ### - Incremental Merkle Tree — `features = ["incremental_merkle_tree"]`
 
 An incremental Merkle tree accumulator with sparse storage and a zero-hash
+ladder; proofs are self-contained (each carries its root, so they verify
+anywhere with just the hasher — structural tampering is a typed error).
 ladder (proofs for every index within capacity). `src/merkle.rs`.
 
 ## Utils
