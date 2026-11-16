@@ -45,8 +45,6 @@
 
 use crate::primitives::HashValue;
 use alloc::borrow::Cow;
-#[cfg(any(feature = "mmr", feature = "merkle_tree"))]
-use alloc::string::ToString;
 use core::fmt;
 
 /// The shared genesis seed of the `keccak_sol`, `pedersen_stark`, and
@@ -130,14 +128,105 @@ impl HasherId {
             (1, _) => Some(Self::PoseidonStark),
             (2, _) => Some(Self::PedersenStark),
             (3, _) => Some(Self::Blake2sStark),
-            (4, Some(name)) => Some(Self::Custom(
-                // The name was `&'static str` when persisted; leaking it back
-                // is the price of a zero-alloc id. Custom hasher names are
-                // static in practice (see [`Hasher::id`]).
-                alloc::boxed::Box::leak(name.to_string().into_boxed_str()),
-            )),
+            (4, Some(name)) => Some(Self::Custom(custom_names::intern(name))),
             _ => None,
         }
+    }
+}
+
+/// Deduplication of decoded custom-hasher names, keyed by exact string
+/// equality.
+///
+/// On `std` builds the table is process-global, so re-decoding a name
+/// (every `open` of a custom-hashed accumulator does) reuses the original
+/// allocation instead of leaking a fresh copy per open. The table only
+/// grows — bounded by the distinct custom names a process reloads, which
+/// the previous per-open leak multiplied by the number of opens.
+///
+/// `no_std` builds keep the historical per-open allocation: the crate
+/// carries no lock of its own, and the only `no_std` lock surface
+/// (`critical-section`) requires a target-provided impl that an `mmr`-only
+/// build cannot assume.
+#[cfg(any(feature = "mmr", feature = "merkle_tree"))]
+mod custom_names {
+    #[cfg(feature = "std")]
+    use alloc::string::ToString;
+    #[cfg(feature = "std")]
+    use alloc::vec::Vec;
+    #[cfg(feature = "std")]
+    use std::sync::{Mutex, OnceLock, PoisonError};
+
+    #[cfg(feature = "std")]
+    static INTERNED: OnceLock<Mutex<Vec<&'static str>>> = OnceLock::new();
+
+    /// Returns the canonical `&'static str` for `name`, allocating only on
+    /// first sight.
+    #[cfg(feature = "std")]
+    pub(super) fn intern(name: &str) -> &'static str {
+        let table = INTERNED.get_or_init(|| Mutex::new(Vec::new()));
+        // Entries are only ever appended; a poisoned lock still holds
+        // valid names.
+        let mut table = table.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(&known) = table.iter().find(|known| **known == name) {
+            return known;
+        }
+        let leaked = alloc::boxed::Box::leak(name.to_string().into_boxed_str());
+        table.push(leaked);
+        leaked
+    }
+
+    /// `no_std` fallback — see the module docs for the tradeoff.
+    #[cfg(not(feature = "std"))]
+    pub(super) fn intern(name: &str) -> &'static str {
+        use alloc::string::ToString;
+        alloc::boxed::Box::leak(name.to_string().into_boxed_str())
+    }
+
+    /// Table size, for test observability of the once-per-name guarantee.
+    #[cfg(all(feature = "std", test))]
+    pub(super) fn interned_len() -> usize {
+        INTERNED.get().map_or(0, |table| {
+            table.lock().unwrap_or_else(PoisonError::into_inner).len()
+        })
+    }
+}
+
+#[cfg(all(test, feature = "std", any(feature = "mmr", feature = "merkle_tree")))]
+mod custom_names_tests {
+    use super::{HasherId, custom_names};
+
+    /// Repeated decodes of one name land on a single interner entry — the
+    /// once-per-distinct-name guarantee that replaced the per-open leak.
+    #[test]
+    fn repeated_decodes_intern_one_entry() {
+        let before = custom_names::interned_len();
+        for _ in 0..64 {
+            assert_eq!(
+                HasherId::from_tag(4, Some("interner-repeat")),
+                Some(HasherId::Custom("interner-repeat")),
+            );
+        }
+        assert_eq!(custom_names::interned_len(), before + 1);
+    }
+
+    /// Distinct names get distinct entries, and comparison stays exact
+    /// string equality — decoded ids equal only matching names.
+    #[test]
+    fn distinct_names_intern_distinct_entries() {
+        let before = custom_names::interned_len();
+        assert_eq!(
+            HasherId::from_tag(4, Some("interner-alpha")),
+            Some(HasherId::Custom("interner-alpha")),
+        );
+        assert_eq!(
+            HasherId::from_tag(4, Some("interner-beta")),
+            Some(HasherId::Custom("interner-beta")),
+        );
+        assert_ne!(
+            HasherId::from_tag(4, Some("interner-alpha")),
+            Some(HasherId::Custom("interner-beta")),
+        );
+        assert_eq!(custom_names::interned_len(), before + 2);
     }
 }
 
