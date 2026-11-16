@@ -127,5 +127,9 @@ jobs:
 
       # Bounded smoke run from the committed seed corpus; a crash, OOM, or
       # timeout fails the job. Findings land in fuzz/artifacts (gitignored).
-      - run: cargo fuzz run proof_verification fuzz/seeds/proof_verification -- -max_total_time=60
+      # The seed corpus stays pristine: libfuzzer writes new units into the
+      # FIRST corpus dir, so the generated corpus lives in fuzz/corpus/ (a
+      # writable dir that starts empty and is gitignored) and seeds are
+      # read-only regression inputs.
+      - run: cargo fuzz run proof_verification fuzz/corpus/proof_verification fuzz/seeds/proof_verification -- -max_total_time=60
         timeout-minutes: 15
