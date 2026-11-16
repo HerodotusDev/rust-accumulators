@@ -164,6 +164,12 @@ MSRV: Rust **1.94** (`rust-version` in `Cargo.toml`).
 Test : `cargo test --features all`
 Bench : `cargo bench --features all`
 
+Measured numbers — store-backend and hasher comparisons, proof/multiproof
+costs at scale, per-op derivations, and the noise map — live in
+[`BENCHMARKS.md`](./BENCHMARKS.md). Criterion data is stored under
+`target/criterion/` (gitignored); the current comparison baseline is
+`1.0.0-rc.1-baseline`.
+
 Documentation is generated from the source (`cargo doc --features all --open`);
 the crate-level docs in `src/lib.rs` and the module docs in `src/mmr/` are the
 authoritative API guide.
