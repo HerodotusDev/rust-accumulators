@@ -692,6 +692,120 @@ mod open_stacked_tests {
     }
 }
 
+// ------------------------------------------------------ cross-store fan-out
+
+mod cross_store_fan_out {
+    use super::*;
+    use common::FaultyStore;
+
+    type FaultyMmr = Mmr<KeccakSolHasher, FaultyStore<InMemoryStore>>;
+    type FaultyStacked = Mmr<KeccakSolHasher, FaultyStore<InMemoryStore>, Stacked>;
+
+    /// A 3-layer stack over three distinct stores: root and proofs stay
+    /// byte-identical to the flat reference, and a spanning multiproof
+    /// issues exactly one batched read per distinct store (the fan-out's
+    /// one-call-per-store contract).
+    #[test]
+    fn three_distinct_stores_match_the_reference() {
+        let h = hasher();
+        let store_a = FaultyStore::new(InMemoryStore::shared("fanout-distinct-a"));
+        let store_b = FaultyStore::new(InMemoryStore::shared("fanout-distinct-b"));
+        let store_top = FaultyStore::new(InMemoryStore::shared("fanout-distinct-top"));
+
+        let mut a = FaultyMmr::create(h, store_a.clone(), id(1)).expect("create a");
+        for i in 0..4 {
+            a.append(&element(i)).expect("append must succeed");
+        }
+        let pin_a = a.pin();
+        let mut b = FaultyStacked::stack(h, store_b.clone(), id(2), [pin_a]).expect("stack b");
+        for i in 4..7 {
+            b.append(&element(i)).expect("append must succeed");
+        }
+
+        let pin_a = a.pin();
+        let pin_b = b.pin();
+        let mut c =
+            FaultyStacked::stack(h, store_top.clone(), id(3), [pin_a, pin_b]).expect("stack c");
+        for i in 7..11 {
+            c.append(&element(i)).expect("append must succeed");
+        }
+
+        assert_eq!(
+            c.root(),
+            reference_root(&h, &slices(&elements(11))),
+            "three distinct stores must equal one flat MMR over all eleven elements"
+        );
+        for leaf in [0_u64, 5, 10] {
+            let proof = c.proof(LeafIndex::new(leaf)).expect("proof across layers");
+            assert!(c.verify(&proof, &element(leaf)).expect("verify"));
+        }
+
+        let before = (
+            store_a.fault().read_calls(),
+            store_b.fault().read_calls(),
+            store_top.fault().read_calls(),
+        );
+        let leaves = [LeafIndex::new(1), LeafIndex::new(6), LeafIndex::new(9)];
+        let multi = c.multiproof(leaves).expect("cross-store multiproof");
+        assert!(
+            c.verify_multi(&multi, [&element(1), &element(6), &element(9)])
+                .expect("verify"),
+            "the spanning multiproof must verify"
+        );
+        assert_eq!(
+            (
+                store_a.fault().read_calls(),
+                store_b.fault().read_calls(),
+                store_top.fault().read_calls(),
+            ),
+            (before.0 + 1, before.1 + 1, before.2 + 1),
+            "one batched read per distinct store"
+        );
+    }
+
+    /// The same 3-layer shape on one shared store: the router merges every
+    /// layer into one group and a proof stays a single batched read (the
+    /// sequential fast path).
+    #[test]
+    fn one_shared_store_keeps_a_single_batched_read() {
+        let h = hasher();
+        let store = FaultyStore::new(InMemoryStore::shared("fanout-shared-one"));
+
+        let mut a = FaultyMmr::create(h, store.clone(), id(1)).expect("create a");
+        for i in 0..4 {
+            a.append(&element(i)).expect("append must succeed");
+        }
+        let pin_a = a.pin();
+        let mut b = FaultyStacked::stack(h, store.clone(), id(2), [pin_a]).expect("stack b");
+        for i in 4..7 {
+            b.append(&element(i)).expect("append must succeed");
+        }
+
+        let pin_a = a.pin();
+        let pin_b = b.pin();
+        let mut c = FaultyStacked::stack(h, store.clone(), id(3), [pin_a, pin_b]).expect("stack c");
+        for i in 7..11 {
+            c.append(&element(i)).expect("append must succeed");
+        }
+
+        assert_eq!(
+            c.root(),
+            reference_root(&h, &slices(&elements(11))),
+            "the shared-store stack must equal the flat reference"
+        );
+        let before = store.fault().read_calls();
+        let proof = c
+            .proof(LeafIndex::new(9))
+            .expect("proof through all layers");
+        assert!(c.verify(&proof, &element(9)).expect("verify"));
+        assert_eq!(
+            store.fault().read_calls(),
+            before + 1,
+            "the whole chain reads as one batched call"
+        );
+    }
+}
+
 // ------------------------------------------------ cross-layer validation
 
 mod cross_layer_validation {
