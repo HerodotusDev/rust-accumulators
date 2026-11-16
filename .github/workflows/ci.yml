@@ -128,10 +128,8 @@ jobs:
   semver:
     name: semver-checks vs published baseline
     runs-on: ubuntu-latest
-    # Intentionally breaking vs the published 0.5.1 until 1.0.0-rc.1 is on
-    # crates.io. Once published, REMOVE `continue-on-error` — this job then
-    # becomes the strict no-accidental-breaking gate for every PR.
-    continue-on-error: true
+    # Strict against the published baseline (the latest crates.io release).
+    # Breaking changes must come with a deliberate version bump.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
