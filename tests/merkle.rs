@@ -24,7 +24,8 @@ use accumulators::{
     ids::AccumulatorId,
     merkle::{
         IncrementalMerkleTree, TreeCorrupted, TreeError, TreeMultiProof, TreeProof,
-        TreeProofInconsistent, TreeVerifyError, heap_level_and_index, leaf_heap, multiproof_walk,
+        TreeProofInconsistent, TreeVerifyError,
+        math::{heap_level_and_index, leaf_heap, multiproof_walk},
         verify_multi_proof, verify_proof,
     },
     primitives::{Hash, LeafIndex},

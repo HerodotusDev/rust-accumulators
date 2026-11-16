@@ -109,7 +109,8 @@ stacking/branching (`stacked_mmr`), in-memory drafts with commit/discard
 `src/mmr/layout.rs` — peak counts, peak heights, path lengths, and
 child/parent index algebra are public `const fn`s — and the pure planners
 behind the shells (append engine, consistency planning, metadata validation)
-are public for custom stores.
+are public for custom stores. Both are collected, outside the main API,
+under `accumulators::utils::mmr`.
 
 ### - Incremental Merkle Tree — `features = ["incremental_merkle_tree"]`
 
@@ -117,9 +118,10 @@ An incremental Merkle tree accumulator with sparse storage and a zero-hash
 ladder (proofs for every index within capacity). Proofs are self-contained
 (each carries its root, so they verify anywhere with just the hasher —
 structural tampering is a typed error). The heap-index math (`leaf_heap`,
-`heap_level_and_index`) and the pure write/proof planners are public, so a
-custom store shell runs the exact code paths of the built-in one.
-`src/merkle.rs`.
+`heap_level_and_index`) and the pure write/proof planners are public through
+`accumulators::utils::merkle`, so a custom store shell runs the exact code
+paths of the built-in one.
+`src/merkle.rs` (math in `src/merkle/math.rs`).
 
 ## Utils
 

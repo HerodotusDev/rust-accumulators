@@ -22,12 +22,13 @@
 mod common;
 
 use accumulators::hashers::{Blake2sStarkHasher, Hasher, KeccakSolHasher};
+use accumulators::mmr::LeafCount;
 use accumulators::mmr::{
     ConsistencyProof, Mmr, MmrError, MmrSize, VerifyError, WithPeaks, verify_consistency_proof,
 };
-use accumulators::mmr::{LeafCount, size_of};
 use accumulators::primitives::{Hash, HashValue};
 use accumulators::store::memory::InMemoryStore;
+use accumulators::utils::mmr::size_of;
 
 use common::{FaultyStore, element, elements, id, leaf_hashes, root_of_hashes, slices};
 
@@ -624,7 +625,7 @@ mod async_sqlite {
         // Corrupt one of the earlier MMR's peak nodes straight through the
         // store: generation still succeeds (the value exists), verification
         // fails at the earlier-root check.
-        let prev_peak_node = accumulators::mmr::peaks_of(sizes[5])
+        let prev_peak_node = accumulators::utils::mmr::peaks_of(sizes[5])
             .first()
             .copied()
             .expect("a non-empty MMR has peaks")

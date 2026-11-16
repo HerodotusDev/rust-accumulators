@@ -655,8 +655,9 @@ pub struct ConsistencyProof<O: HashValue> {
 /// ```
 /// use accumulators::hashers::{Hasher, KeccakSolHasher};
 /// use accumulators::ids::AccumulatorId;
-/// use accumulators::mmr::{LeafCount, Mmr, size_of, verify_consistency_proof};
+/// use accumulators::mmr::{LeafCount, Mmr, verify_consistency_proof};
 /// use accumulators::store::memory::InMemoryStore;
+/// use accumulators::utils::mmr::size_of;
 ///
 /// let mut mmr: Mmr<KeccakSolHasher, _> =
 ///     Mmr::create(KeccakSolHasher, InMemoryStore::new(), AccumulatorId::ZERO).unwrap();

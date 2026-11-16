@@ -22,11 +22,12 @@ mod common;
 use accumulators::hashers::{Hasher, KeccakSolHasher};
 use accumulators::mmr::{
     AsyncDraft, AsyncMmr, ConsistencyProof, Editable, LeafCount, MmrError, MmrSize, Nullifying,
-    Optimise, Plain, WithPeaks, size_of, verify_consistency_proof,
+    Optimise, Plain, WithPeaks, verify_consistency_proof,
 };
 use accumulators::primitives::{Hash, HashValue, LeafIndex};
 use accumulators::store::memory::InMemoryStore;
 use accumulators::store::sqlite::SqliteStore;
+use accumulators::utils::mmr::size_of;
 
 use common::{FaultyStore, TempDb, element, elements, id, leaf_hashes, root_of_hashes, slices};
 

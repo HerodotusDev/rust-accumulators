@@ -17,16 +17,17 @@ mod common;
 
 use accumulators::hashers::{Hasher as _, KeccakSolHasher};
 use accumulators::ids::AccumulatorId;
+use accumulators::mmr::LeafCount;
 use accumulators::mmr::stacked::open_stacked_append_only;
 use accumulators::mmr::{
     Corrupted, InvalidSubViews, Mmr, MmrError, NullifierRecord, Nullifying, Plain, Stacked,
     StackedAppendMmr, StackedNullifyingMmr, StackingError, SubView,
 };
-use accumulators::mmr::{LeafCount, size_of};
 use accumulators::primitives::{Hash, LeafIndex};
 use accumulators::store::ErasedStore;
 use accumulators::store::keys::Table;
 use accumulators::store::memory::InMemoryStore;
+use accumulators::utils::mmr::size_of;
 
 use common::{element, elements, id, reference_root, slices};
 

@@ -163,6 +163,8 @@
     doc = "  adapter for foreign hash outputs (e.g. felts).\n"
 )]
 //!
+//! - [`utils`] — the toolbox, outside the main API: each accumulator's
+//!   pure math, planners, and custom-shell seam re-exported in one place.
 //! - **`Hash` is `[u8; 32]` behind a newtype** (field hashers use
 //!   `starknet_crypto::Felt`): bytes end-to-end, `Copy` semantics, no hex
 //!   parse/format per operation.
@@ -272,3 +274,7 @@ pub mod serde_impls;
 /// Storage abstraction: stores, batches, keys, erasure.
 #[cfg(feature = "store")]
 pub mod store;
+
+/// The toolbox: pure math, planning, and the custom-shell seam for every
+/// accumulator, outside the main API.
+pub mod utils;

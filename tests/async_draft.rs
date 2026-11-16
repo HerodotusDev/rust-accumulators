@@ -24,12 +24,13 @@ use accumulators::hashers::{Hasher, KeccakSolHasher};
 use accumulators::ids::AccumulatorId;
 use accumulators::mmr::{
     AsyncDraft, AsyncMmr, Editable, LeafCount, MmrError, NullifierRecord, Nullifying, Optimise,
-    Plain, Stacked, size_of,
+    Plain, Stacked,
 };
 use accumulators::primitives::{Hash, LeafIndex};
 use accumulators::store::AsyncStore as _;
 use accumulators::store::keys::{self, Table};
 use accumulators::store::sqlite::SqliteStore;
+use accumulators::utils::mmr::size_of;
 
 use common::{FaultyStore, TempDb, element, elements, id, reference_peaks, reference_root, slices};
 

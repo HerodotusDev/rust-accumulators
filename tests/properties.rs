@@ -503,7 +503,7 @@ proptest! {
         );
         assert_eq!(
             proof.siblings.len(),
-            accumulators::mmr::sibling_path(leaf, mmr.size()).len(),
+            accumulators::utils::mmr::sibling_path(leaf, mmr.size()).len(),
             "the sibling count is the proven node's peak height"
         );
 

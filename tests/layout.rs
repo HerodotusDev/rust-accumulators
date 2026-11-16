@@ -7,12 +7,12 @@
     reason = "tests and benches fail loudly by design: expect on fixtures is the contract"
 )]
 use accumulators::hashers::{Hasher, KeccakSolHasher};
-use accumulators::mmr::{
-    Height, LeafCount, MmrSize, NodeIndex, Side, bag_peaks, largest_mountain, max_peak_height,
-    merges_on_append, path_length, peak_count, peak_heights, peaks_of, root_from, sibling_path,
-    size_of,
-};
+use accumulators::mmr::{Height, LeafCount, MmrSize, NodeIndex, Side};
 use accumulators::primitives::{Hash, LeafIndex, MAX_LEAF_COUNT};
+use accumulators::utils::mmr::{
+    bag_peaks, largest_mountain, max_peak_height, merges_on_append, path_length, peak_count,
+    peak_heights, peaks_of, root_from, sibling_path, size_of,
+};
 
 /// Vector slot for a 1-based node index.
 fn slot(node: u64) -> usize {

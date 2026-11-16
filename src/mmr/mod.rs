@@ -49,7 +49,8 @@
 //!   *public* proof APIs speak ([`LeafIndex`](crate::primitives::LeafIndex)).
 //! - **peak** — root of one perfect subtree; count = `popcount(leaf count)`.
 //! - **bagging** — folding the peaks (right-to-left) with the size into the
-//!   root ([`bag_peaks`](crate::mmr::bag_peaks) / [`root_from`](crate::mmr::root_from)).
+//!   root ([`bag_peaks`](crate::utils::mmr::bag_peaks) /
+//!   [`root_from`](crate::utils::mmr::root_from)).
 //! - **pin size** — the node count a stacked layer is frozen at: reads
 //!   through a pin never exceed it
 //!   ([`SubView::pinned_size`](crate::mmr::SubView::pinned_size)).
@@ -136,8 +137,6 @@ pub use handle::{
 pub use kinds::{DeepNullifiable, EditableKind, Kind, Plain, Stacked, WithPeaks};
 pub use layout::{
     Height, InvalidMmrSize, LeafCount, MmrSize, NodeIndex, NodeIndexZero, PathStep, Side,
-    bag_peaks, largest_mountain, max_peak_height, merges_on_append, path_length, peak_count,
-    peak_heights, peaks_of, root_from, sibling_path, size_of,
 };
 pub use mode::{AppendOnly, Editable, Mode, Nullifying, Stackable};
 pub use nullifiers::{AsyncNullifierSet, NullifierError, NullifierRecord, NullifierSet};
@@ -145,15 +144,10 @@ pub use proof::encoding::{
     EncodedMultiProof, EncodedProof, EncodingError, FixedWidth, ProofEncoding,
 };
 pub use proof::{
-    ConsistencyPlan, ConsistencyProof, MultiProof, PrevSizeRejection, Proof, VerifyError,
-    build_sibling_pool, consistency_bridge_nodes, consistency_from_loaded, consistency_plan,
-    peak_position, verify_consistency_proof, verify_multi_proof, verify_multi_proof_hashed,
-    verify_proof, verify_proof_hashed,
+    ConsistencyProof, MultiProof, Proof, VerifyError, verify_consistency_proof, verify_multi_proof,
+    verify_multi_proof_hashed, verify_proof, verify_proof_hashed,
 };
 pub use stacked::SubView;
 #[cfg(feature = "stacked_mmr")]
 pub use stacked::{InvalidSubViews, StackingError};
-pub use state::{
-    AppendDelta, CounterCheck, Metadata, MmrState, Provenance, apply_append_many, checked_counters,
-    encode_provenance, parse_provenance, validate_metadata,
-};
+pub use state::Provenance;

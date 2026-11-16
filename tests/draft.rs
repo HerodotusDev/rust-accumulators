@@ -16,14 +16,15 @@ mod common;
 
 use accumulators::hashers::{Hasher, KeccakSolHasher};
 use accumulators::ids::AccumulatorId;
+use accumulators::mmr::LeafCount;
 use accumulators::mmr::{
     Editable, Mmr, MmrError, NullifierRecord, Nullifying, Optimise, Plain, Stacked,
 };
-use accumulators::mmr::{LeafCount, size_of};
 use accumulators::primitives::{Hash, LeafIndex};
 use accumulators::store::Store;
 use accumulators::store::keys::{self, Table};
 use accumulators::store::memory::InMemoryStore;
+use accumulators::utils::mmr::size_of;
 
 use common::{
     FaultyStore, element, elements, id, leaf_hashes, reference_peaks, reference_root,

@@ -34,11 +34,14 @@
 //! [`IncrementalMerkleTree`](super::IncrementalMerkleTree) with a sync store
 //! instead.
 
+use super::math::{
+    build_multiproof, build_proof, check_depth, check_index, create_batch, leaf_heap,
+    metadata_keys, parse_node_value, plan_multiproof, plan_set, proof_read_heaps, set_read_heaps,
+    validate_metadata,
+};
 use super::{
-    SetOutcome, TreeCorrupted, TreeError, TreeMultiProof, TreeProof, ZeroLadder, build_multiproof,
-    build_proof, check_depth, check_index, create_batch, leaf_heap, metadata_keys,
-    parse_node_value, plan_multiproof, plan_set, proof_read_heaps, set_read_heaps,
-    validate_metadata, verify_multi_proof, verify_proof,
+    SetOutcome, TreeCorrupted, TreeError, TreeMultiProof, TreeProof, ZeroLadder,
+    verify_multi_proof, verify_proof,
 };
 use crate::hashers::Hasher;
 use crate::ids::{AccumulatorId, TreeId};

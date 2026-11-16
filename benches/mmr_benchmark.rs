@@ -68,12 +68,12 @@ use accumulators::{
     ids::AccumulatorId,
     mmr::async_mmr::open_stacked_append_only,
     mmr::{
-        AppendOnly, AsyncMmr, LeafCount, Mmr, Nullifying, Optimise, bag_peaks, kinds, root_from,
-        size_of, verify_consistency_proof,
+        AppendOnly, AsyncMmr, LeafCount, Mmr, Nullifying, Optimise, kinds, verify_consistency_proof,
     },
     primitives::LeafIndex,
     store::memory::InMemoryStore,
     store::sqlite::SqliteStore,
+    utils::mmr::{bag_peaks, root_from, size_of},
 };
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 

@@ -28,11 +28,12 @@ use accumulators::mmr::{
     Plain, PlainAppendMmr, PlainEditableMmr, PlainNullifyingMmr, Proof, Provenance, UpdateOutcome,
     WithPeaks, WithPeaksAppendMmr, WithPeaksEditableMmr, WithPeaksNullifyingMmr,
 };
-use accumulators::mmr::{LeafCount, MmrSize, bag_peaks, peaks_of, root_from, size_of};
+use accumulators::mmr::{LeafCount, MmrSize};
 use accumulators::primitives::{Hash, LeafIndex};
 use accumulators::store::keys::{self, Table};
 use accumulators::store::memory::InMemoryStore;
 use accumulators::store::{Batch, Store};
+use accumulators::utils::mmr::{bag_peaks, peaks_of, root_from, size_of};
 
 use common::{element, elements, id, reference_peaks, reference_root, slices};
 

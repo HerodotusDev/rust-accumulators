@@ -439,7 +439,8 @@ pub fn peak_heights(size: MmrSize) -> Vec<Height> {
 /// MMR sizes (matching [`peaks_of`], which returns no peaks for them).
 ///
 /// ```
-/// use accumulators::mmr::{LeafCount, MmrSize, peak_count, size_of};
+/// use accumulators::mmr::{LeafCount, MmrSize};
+/// use accumulators::utils::mmr::{peak_count, size_of};
 ///
 /// // Five leaves decompose into mountains 4 + 1 → two peaks.
 /// assert_eq!(peak_count(size_of(LeafCount::new(5))), 2);
@@ -458,7 +459,8 @@ pub const fn peak_count(size: MmrSize) -> u32 {
 /// [`peak_heights`], which returns nothing for them).
 ///
 /// ```
-/// use accumulators::mmr::{LeafCount, MmrSize, max_peak_height, size_of};
+/// use accumulators::mmr::{LeafCount, MmrSize};
+/// use accumulators::utils::mmr::{max_peak_height, size_of};
 ///
 /// // Five leaves decompose into mountains 4 + 1 → the tallest is height 2.
 /// let size = size_of(LeafCount::new(5));
@@ -518,7 +520,7 @@ fn peak_walk(size: MmrSize) -> Option<(Vec<NodeIndex>, Vec<Height>)> {
 /// the size-to-leaf mapping.
 ///
 /// ```
-/// use accumulators::mmr::largest_mountain;
+/// use accumulators::utils::mmr::largest_mountain;
 ///
 /// assert_eq!(largest_mountain(5), 4);
 /// assert_eq!(largest_mountain(8), 8);
@@ -584,7 +586,8 @@ pub fn sibling_path(leaf: LeafIndex, size: MmrSize) -> Vec<PathStep> {
 /// concern and adds no steps.
 ///
 /// ```
-/// use accumulators::mmr::{LeafCount, MmrSize, path_length, sibling_path, size_of};
+/// use accumulators::mmr::{LeafCount, MmrSize};
+/// use accumulators::utils::mmr::{path_length, sibling_path, size_of};
 /// use accumulators::primitives::LeafIndex;
 ///
 /// let size = size_of(LeafCount::new(5));

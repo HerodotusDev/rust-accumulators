@@ -96,7 +96,8 @@ fn roots_track_the_reference<H: Hasher + Copy>(hasher: H, id_byte: u8) {
         let proof = proven.proof(LeafIndex::new(index as u64)).expect("proof");
         assert_eq!(
             proof.siblings.len(),
-            accumulators::mmr::sibling_path(LeafIndex::new(index as u64), proven.size()).len(),
+            accumulators::utils::mmr::sibling_path(LeafIndex::new(index as u64), proven.size())
+                .len(),
             "the sibling count is the proven node's peak height"
         );
         assert!(

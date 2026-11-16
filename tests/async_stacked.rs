@@ -29,11 +29,12 @@ use accumulators::mmr::{
     AsyncMmr, AsyncStackedAppendMmr, AsyncStackedNullifyingMmr, Corrupted, InvalidSubViews,
     MmrError, NullifierRecord, Nullifying, Plain, Stacked, StackingError, SubView,
 };
-use accumulators::mmr::{LeafCount, MmrSize, size_of};
+use accumulators::mmr::{LeafCount, MmrSize};
 use accumulators::primitives::{Hash, LeafIndex};
 use accumulators::store::keys::{self, Table};
 use accumulators::store::sqlite::SqliteStore;
 use accumulators::store::{AsyncStore as _, Batch, ErasedAsyncStore};
+use accumulators::utils::mmr::size_of;
 
 use common::{TempDb, element, elements, id, reference_root, slices};
 
