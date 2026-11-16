@@ -30,10 +30,15 @@
 //!   folded commit)
 //! - `MMR sqlite async` - async shell over the SQLite store (build via one
 //!   batched append; proof generation), driven through a tokio runtime
+//! - `MMR sqlite async stacked` - the async twin of the `Stacked MMR` group
+//!   over one SQLite file (a file is one store, so all layers share it):
+//!   chain build via one batched append per layer, proof/multiproof
+//!   generation, budgeted hot append, and `open_stacked` reopen
 //!
 //! MMR-logic benches use `InMemoryStore`, so numbers reflect MMR and hashing
-//! cost. The SQLite store is async-only, so it appears only in the
-//! `MMR sqlite async` group, driven through the `AsyncMmr` shell; drafts exist
+//! cost. The SQLite store is async-only, so it appears in the
+//! `MMR sqlite async` and `MMR sqlite async stacked` groups, driven through
+//! the `AsyncMmr` shell; drafts exist
 //! on the sync shell only, so there is no sqlite draft leg.
 //!
 //! Sizes are log-spaced; 1M-element legs are excluded by design (~1h for 10
@@ -61,6 +66,7 @@ use accumulators::{
         Blake2sStarkHasher, Hasher, KeccakSolHasher, PedersenStarkHasher, PoseidonStarkHasher,
     },
     ids::AccumulatorId,
+    mmr::async_mmr::open_stacked_append_only,
     mmr::{
         AppendOnly, AsyncMmr, LeafCount, Mmr, Nullifying, Optimise, bag_peaks, kinds, root_from,
         size_of, verify_consistency_proof,
@@ -89,6 +95,18 @@ const STACKED_HOT_LAYER_LEAVES: usize = 33_000;
 /// Appends one stacked fixture absorbs before the hot-append leg rebuilds
 /// it (~10% growth of the ~100k-leaf fixture).
 const STACKED_APPEND_BUDGET: usize = LIVE_APPEND_BATCH * 20;
+/// Layer leaf count of the async stacked fixtures: the proof/open fixture
+/// uses three layers of this size (10k total, same shape as the sync
+/// `Stacked MMR` fixture), the hot-append fixture three layers of
+/// [`SQLITE_STACKED_HOT_LAYER_LEAVES`].
+const SQLITE_STACKED_LAYER_LEAVES: usize = 3_300;
+/// Layer leaf count of the async stacked hot-append fixture (~30k total
+/// across the three base layers), sized so the leg's append budget stays
+/// ~10% growth between rebuilds.
+const SQLITE_STACKED_HOT_LAYER_LEAVES: usize = 10_000;
+/// Appends one async stacked fixture absorbs before the hot-append leg
+/// rebuilds it (~10% growth of the ~30k-leaf fixture).
+const SQLITE_STACKED_APPEND_BUDGET: usize = LIVE_APPEND_BATCH * 6;
 
 /// A valid element for every hasher: the 32-byte big-endian encoding of the
 /// index (left-zero-padded, so distinct indexes give distinct elements, and
@@ -780,6 +798,250 @@ fn bench_sqlite_async(c: &mut Criterion) {
     group.finish();
 }
 
+/// Async twin of [`build_stacked_sized`] over SQLite: three chained stacked
+/// layers of `layer_leaves` leaves each (the third takes the +100
+/// remainder, so the total is `3n + 100`), plus a top layer that starts at
+/// the largest pin. A single SQLite file is one store, so the layers always
+/// share it (distinct ids per layer) — the golden batching case.
+async fn build_stacked_sqlite(
+    store: &SqliteStore,
+    base_counter: u64,
+    layer_leaves: usize,
+) -> AsyncMmr<KeccakSolHasher, SqliteStore, kinds::Stacked> {
+    let id_of = |offset: u64| id_from_counter(base_counter + offset);
+
+    let mut base = AsyncMmr::<KeccakSolHasher, _, kinds::Plain>::create(
+        KeccakSolHasher,
+        store.clone(),
+        id_of(0),
+    )
+    .await
+    .expect("layer creation succeeds");
+    let elements: Vec<[u8; 32]> = (0..layer_leaves).map(element).collect();
+    base.append_batch(&elements)
+        .await
+        .expect("batch append succeeds");
+    let first = base.pin();
+
+    let mut second = AsyncMmr::<KeccakSolHasher, _, kinds::Stacked>::stack(
+        KeccakSolHasher,
+        store.clone(),
+        id_of(1),
+        [first.clone()],
+    )
+    .await
+    .expect("stacking succeeds");
+    let elements: Vec<[u8; 32]> = (layer_leaves..2 * layer_leaves).map(element).collect();
+    second
+        .append_batch(&elements)
+        .await
+        .expect("batch append succeeds");
+    let second_pin = second.pin();
+
+    let mut third = AsyncMmr::<KeccakSolHasher, _, kinds::Stacked>::stack(
+        KeccakSolHasher,
+        store.clone(),
+        id_of(2),
+        [first, second_pin],
+    )
+    .await
+    .expect("stacking succeeds");
+    let elements: Vec<[u8; 32]> = (2 * layer_leaves..3 * layer_leaves + 100)
+        .map(element)
+        .collect();
+    third
+        .append_batch(&elements)
+        .await
+        .expect("batch append succeeds");
+    let third_pin = third.pin();
+
+    AsyncMmr::<KeccakSolHasher, _, kinds::Stacked>::stack(
+        KeccakSolHasher,
+        store.clone(),
+        id_of(3),
+        [third_pin],
+    )
+    .await
+    .expect("stacking succeeds")
+}
+
+/// Stacked legs over the async SQLite store, mirroring the `Stacked MMR`
+/// sync group. All layers share one store file with distinct ids — a single
+/// SQLite file is one store, so the shared layout is the only one a file
+/// affords (and the golden batching case).
+#[expect(
+    clippy::too_many_lines,
+    reason = "one leg per benchmark; splitting would hide the shared-fixture structure"
+)]
+fn bench_sqlite_async_stacked(c: &mut Criterion) {
+    let mut group = c.benchmark_group("MMR sqlite async stacked");
+
+    // Build: the full stacked chain from one batched append per layer,
+    // into a fresh keyspace per iteration.
+    let leg = SqliteLeg::new("stacked-build");
+    let store = leg
+        .runtime
+        .block_on(SqliteStore::connect(&leg.path))
+        .expect("sqlite store opens");
+    let id_counter = AtomicU64::new(1);
+    group.throughput(Throughput::Elements(
+        (3 * SQLITE_STACKED_LAYER_LEAVES + 100) as u64,
+    ));
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(3));
+    group.bench_function("build-append_batch/3-stacks-10k-shared", |b| {
+        b.iter(|| {
+            let base = id_counter.fetch_add(4, Ordering::Relaxed);
+            let stacked = leg.runtime.block_on(build_stacked_sqlite(
+                &store,
+                base,
+                SQLITE_STACKED_LAYER_LEAVES,
+            ));
+            black_box(stacked)
+        });
+    });
+
+    // Proof/multiproof generation against a pre-built fixture (built once
+    // outside the timed loops).
+    let leg = SqliteLeg::new("stacked-proof");
+    let store = leg
+        .runtime
+        .block_on(SqliteStore::connect(&leg.path))
+        .expect("sqlite store opens");
+    let stacked = leg.runtime.block_on(build_stacked_sqlite(
+        &store,
+        1_000,
+        SQLITE_STACKED_LAYER_LEAVES,
+    ));
+    let proof = leg
+        .runtime
+        .block_on(stacked.proof(LeafIndex::new(5_000)))
+        .expect("proof succeeds");
+    assert!(
+        stacked
+            .verify(&proof, &element(5_000))
+            .expect("verification succeeds"),
+        "sqlite stacked proof for leaf 5000 must verify"
+    );
+    group.throughput(Throughput::Elements(PROOF_BATCH as u64));
+    let proof_counter = AtomicUsize::new(0);
+    group.bench_function("get_proof/3-stacks-10k-shared", |b| {
+        b.iter(|| {
+            let start = proof_counter.fetch_add(PROOF_BATCH, Ordering::Relaxed);
+            for i in start..start + PROOF_BATCH {
+                let proof = leg
+                    .runtime
+                    .block_on(stacked.proof(LeafIndex::new(u64::try_from(i % 10_000).unwrap())))
+                    .expect("proof succeeds");
+                black_box(proof);
+            }
+        });
+    });
+
+    for k in [1usize, 10, 100] {
+        let stride = (10_000 / k).max(1);
+        let indexes: Vec<LeafIndex> = (0..k)
+            .map(|i| LeafIndex::new((i * stride) as u64))
+            .collect();
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(format!("get_proofs/3-stacks-10k-shared/k-{k}"), |b| {
+            b.iter(|| {
+                black_box(
+                    leg.runtime
+                        .block_on(stacked.multiproof(indexes.iter().copied()))
+                        .expect("multiproof succeeds"),
+                );
+            });
+        });
+    }
+
+    // Steady-state hot append, bounded like the sync stacked leg: the
+    // fixture absorbs `SQLITE_STACKED_APPEND_BUDGET` appends (~10% of its
+    // ~30k leaves) and is then rebuilt untimed between timed chunks, so
+    // every measured append lands on a same-sized tree.
+    let leg = SqliteLeg::new("stacked-hot");
+    let store = leg
+        .runtime
+        .block_on(SqliteStore::connect(&leg.path))
+        .expect("sqlite store opens");
+    let mut hot = leg.runtime.block_on(build_stacked_sqlite(
+        &store,
+        1_000,
+        SQLITE_STACKED_HOT_LAYER_LEAVES,
+    ));
+    let mut budget = SQLITE_STACKED_APPEND_BUDGET;
+    let append_counter = AtomicUsize::new(3 * SQLITE_STACKED_HOT_LAYER_LEAVES + 100);
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_millis(100));
+    group.measurement_time(Duration::from_millis(500));
+    group.throughput(Throughput::Elements(LIVE_APPEND_BATCH as u64));
+    group.bench_function("append/hot/3-stacks-30k-shared", |b| {
+        b.iter_custom(|iters| {
+            let mut elapsed = Duration::ZERO;
+            for _ in 0..iters {
+                if budget == 0 {
+                    // Untimed: reset the fixture to its base size so the
+                    // next chunk measures the same steady-state tree.
+                    hot = leg.runtime.block_on(build_stacked_sqlite(
+                        &store,
+                        1_000,
+                        SQLITE_STACKED_HOT_LAYER_LEAVES,
+                    ));
+                    budget = SQLITE_STACKED_APPEND_BUDGET;
+                }
+                let start = Instant::now();
+                for _ in 0..LIVE_APPEND_BATCH {
+                    let i = append_counter.fetch_add(1, Ordering::Relaxed);
+                    leg.runtime
+                        .block_on(hot.append(&element(i)))
+                        .expect("append succeeds");
+                }
+                elapsed += start.elapsed();
+                budget -= LIVE_APPEND_BATCH;
+            }
+            elapsed
+        });
+    });
+
+    // Reopen: `open_stacked` rebuilds every layer from the persisted
+    // sub-view record and store locators — what the file-backed store is
+    // for (the in-memory stacked legs cannot reopen at all).
+    let leg = SqliteLeg::new("stacked-open");
+    let store = leg
+        .runtime
+        .block_on(SqliteStore::connect(&leg.path))
+        .expect("sqlite store opens");
+    let fixture = leg.runtime.block_on(build_stacked_sqlite(
+        &store,
+        1_000,
+        SQLITE_STACKED_LAYER_LEAVES,
+    ));
+    let id = id_from_counter(1_003); // the top layer's id
+    let reopened = leg
+        .runtime
+        .block_on(open_stacked_append_only(KeccakSolHasher, store.clone(), id))
+        .expect("reopen succeeds");
+    assert_eq!(
+        reopened.root(),
+        fixture.root(),
+        "sanity: reopen must reproduce the fixture root"
+    );
+    group.throughput(Throughput::Elements(1));
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(3));
+    group.bench_function("open_stacked/3-stacks-10k-shared", |b| {
+        b.iter(|| {
+            let reopened = leg
+                .runtime
+                .block_on(open_stacked_append_only(KeccakSolHasher, store.clone(), id))
+                .expect("reopen succeeds");
+            black_box(reopened)
+        });
+    });
+
+    group.finish();
+}
+
 fn bench(c: &mut Criterion) {
     bench_hashers(c);
     bench_build(c);
@@ -794,6 +1056,7 @@ fn bench(c: &mut Criterion) {
     bench_stacked(c);
     bench_draft(c);
     bench_sqlite_async(c);
+    bench_sqlite_async_stacked(c);
 }
 
 criterion_group!(name = benches; config = Criterion::default(); targets = bench);
