@@ -96,7 +96,36 @@ jobs:
 
       - run: typos
 
-  # cargo-fuzz smoke: intentionally absent — no fuzz/ targets exist yet.
-  # Add a nightly smoke job (cargo fuzz build + short fuzz run per target)
-  # once the first target lands; a stub job here would fail without
-  # targets.
+  fuzz:
+    name: cargo-fuzz smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # cargo-fuzz needs nightly (the run sanitizer flags are -Z-gated);
+    # RUSTUP_TOOLCHAIN overrides the repo's rust-toolchain.toml pin.
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: nightly
+
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-fuzz
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            .
+            fuzz
+
+      # The fuzz crate enables only `keccak_sol` + `serde` — no bindgen
+      # backends, so no libclang.
+      - run: cargo fuzz build
+
+      # Bounded smoke run from the committed seed corpus; a crash, OOM, or
+      # timeout fails the job. Findings land in fuzz/artifacts (gitignored).
+      - run: cargo fuzz run proof_verification fuzz/seeds/proof_verification -- -max_total_time=60
+        timeout-minutes: 15

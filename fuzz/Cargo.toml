@@ -1,0 +1,23 @@
+[package]
+name = "accumulators-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# The seams under test: proof verification (needs a hasher) and the serde
+# wire format (the untrusted decode path). No store backends — proofs
+# verify without one.
+accumulators = { path = "..", features = ["keccak_sol", "serde"] }
+serde_json = "1"
+
+[[bin]]
+name = "proof_verification"
+path = "fuzz_targets/proof_verification.rs"
+test = false
+doc = false
+bench = false
