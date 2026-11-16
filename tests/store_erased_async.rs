@@ -3,12 +3,11 @@
 //! suite, and an async MMR over erased stores round-trips the editable
 //! gate contract through the erased write path.
 //!
-//! The async shell has no `pin`/`stack` construction (see
-//! `src/mmr/async_mmr.rs` "sync-only surface"), so the erased pin/stack
-//! session-local flow lives in the sync suite (`tests/stacked.rs`,
-//! `an_erased_pin_builds_a_session_local_mixed_stack`, over the sync
-//! `ErasedStore`); here the erased async store is exercised where the async
-//! surface actually writes — editable updates through `DynAsyncStore`.
+//! The erased pin/stack session-local flow over the async shell lives in
+//! `tests/async_stacked.rs` (`an_erased_pin_builds_a_session_local_mixed_stack`,
+//! `SubView::erased_async` over `ErasedAsyncStore`); here the erased async
+//! store is exercised where the async surface actually writes — editable
+//! updates through `DynAsyncStore`.
 
 #![expect(
     clippy::expect_used,
@@ -142,4 +141,136 @@ async fn erased_handles_over_one_store_report_same_store() {
             .expect("connect"),
     );
     assert!(!erased_a.same_store(&other));
+}
+
+// --------------------------------------------------- erased wrapping per backend
+
+/// The async conformance suite over `ErasedAsyncStore` wrapping each new
+/// async backend: erasure must preserve every backend's read/write/atomicity
+/// contract through the boxed `DynAsyncStore` path. Identity checks run where
+/// clones are free (in-RAM backends); file backends already prove clone
+/// identity per-backend.
+#[cfg(all(feature = "memory", not(target_family = "wasm")))]
+#[tokio::test]
+async fn the_erased_async_store_wraps_the_memory_backend() {
+    use accumulators::store::memory::InMemoryStore;
+
+    let store = ErasedAsyncStore::new(InMemoryStore::new());
+    conformance::positional_reads_async(&store).await;
+    conformance::empty_key_list_async(&store).await;
+    conformance::put_delete_batch_async(&store).await;
+    conformance::last_op_wins_async(&store).await;
+    conformance::empty_batch_async(&store).await;
+    conformance::duplicate_keys_alignment_async(&store).await;
+    conformance::owned_ops_async(&store).await;
+
+    // Clones of one store erase to one storage.
+    let shared = InMemoryStore::shared("erased-async-memory");
+    assert!(ErasedAsyncStore::new(shared.clone()).same_store(&ErasedAsyncStore::new(shared)));
+}
+
+#[cfg(all(feature = "heapless", not(target_family = "wasm")))]
+#[tokio::test]
+async fn the_erased_async_store_wraps_the_heapless_backend() {
+    use accumulators::store::heapless::HeaplessStore;
+
+    let store = ErasedAsyncStore::new(HeaplessStore::<64>::new());
+    conformance::positional_reads_async(&store).await;
+    conformance::empty_key_list_async(&store).await;
+    conformance::put_delete_batch_async(&store).await;
+    conformance::last_op_wins_async(&store).await;
+    conformance::empty_batch_async(&store).await;
+    conformance::duplicate_keys_alignment_async(&store).await;
+    conformance::owned_ops_async(&store).await;
+}
+
+#[cfg(all(feature = "sled", not(target_family = "wasm")))]
+#[tokio::test]
+async fn the_erased_async_store_wraps_the_sled_backend() {
+    use accumulators::store::sled::SledStore;
+
+    let dir = common::TempDir::new("erased-async-sled");
+    let store = ErasedAsyncStore::new(SledStore::open_path(dir.path()).expect("sled store opens"));
+    conformance::positional_reads_async(&store).await;
+    conformance::empty_key_list_async(&store).await;
+    conformance::put_delete_batch_async(&store).await;
+    conformance::last_op_wins_async(&store).await;
+    conformance::empty_batch_async(&store).await;
+    conformance::duplicate_keys_alignment_async(&store).await;
+    conformance::owned_ops_async(&store).await;
+    conformance::error_preservation_before_backend_async(&common::FaultyStore::new(
+        ErasedAsyncStore::new(
+            SledStore::open_path(common::TempDir::new("erased-async-sled-fault").path())
+                .expect("opens"),
+        ),
+    ))
+    .await;
+}
+
+#[cfg(all(feature = "fjall", not(target_family = "wasm")))]
+#[tokio::test]
+async fn the_erased_async_store_wraps_the_fjall_backend() {
+    use accumulators::store::fjall::{FjallConfig, FjallStore};
+
+    let dir = common::TempDir::new("erased-async-fjall");
+    let store =
+        ErasedAsyncStore::new(FjallStore::open(FjallConfig::new(dir.path())).expect("opens"));
+    conformance::positional_reads_async(&store).await;
+    conformance::empty_key_list_async(&store).await;
+    conformance::put_delete_batch_async(&store).await;
+    conformance::last_op_wins_async(&store).await;
+    conformance::empty_batch_async(&store).await;
+    conformance::duplicate_keys_alignment_async(&store).await;
+    conformance::owned_ops_async(&store).await;
+    // fjall holds an exclusive lock file per folder: the fault seam wraps
+    // the same (erased) handle, no second open.
+    conformance::error_preservation_before_backend_async(&common::FaultyStore::new(store)).await;
+}
+
+#[cfg(all(feature = "redb", not(target_family = "wasm")))]
+#[tokio::test]
+async fn the_erased_async_store_wraps_the_redb_backend() {
+    use accumulators::store::redb::RedbStore;
+
+    let db = TempDb::new("erased-async-redb");
+    let store = ErasedAsyncStore::new(RedbStore::open_path(db.path()).expect("opens"));
+    conformance::positional_reads_async(&store).await;
+    conformance::empty_key_list_async(&store).await;
+    conformance::put_delete_batch_async(&store).await;
+    conformance::last_op_wins_async(&store).await;
+    conformance::empty_batch_async(&store).await;
+    conformance::duplicate_keys_alignment_async(&store).await;
+    conformance::owned_ops_async(&store).await;
+
+    // redb's exclusive file lock: the first handle is dropped before the
+    // fault handle opens the same file.
+    drop(store);
+    let faulted = ErasedAsyncStore::new(RedbStore::open_path(db.path()).expect("opens"));
+    conformance::error_preservation_before_backend_async(&common::FaultyStore::new(faulted)).await;
+}
+
+#[cfg(all(feature = "rocksdb", not(target_family = "wasm")))]
+#[tokio::test]
+async fn the_erased_async_store_wraps_the_rocksdb_backend() {
+    use accumulators::store::rocksdb::{RocksdbConfig, RocksdbStore};
+
+    let dir = common::TempDir::new("erased-async-rocksdb");
+    let store =
+        ErasedAsyncStore::new(RocksdbStore::open(RocksdbConfig::new(dir.path())).expect("opens"));
+    conformance::positional_reads_async(&store).await;
+    conformance::empty_key_list_async(&store).await;
+    conformance::put_delete_batch_async(&store).await;
+    conformance::last_op_wins_async(&store).await;
+    conformance::empty_batch_async(&store).await;
+    conformance::duplicate_keys_alignment_async(&store).await;
+    conformance::owned_ops_async(&store).await;
+    conformance::error_preservation_before_backend_async(&common::FaultyStore::new(
+        ErasedAsyncStore::new(
+            RocksdbStore::open(RocksdbConfig::new(
+                common::TempDir::new("erased-async-rocksdb-fault").path(),
+            ))
+            .expect("opens"),
+        ),
+    ))
+    .await;
 }

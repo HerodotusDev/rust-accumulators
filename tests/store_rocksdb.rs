@@ -214,3 +214,65 @@ mod rocksdb {
         );
     }
 }
+
+/// The async surface (scoped module, see `store_sled.rs`): the full async
+/// conformance suite plus the async locator round trip.
+mod async_surface {
+    use accumulators::store::rocksdb::{RocksdbConfig, RocksdbStore};
+    use accumulators::store::{AsyncRetrievable, AsyncStore, Batch};
+
+    use crate::common::{FaultyStore, TempDir};
+    use crate::conformance;
+
+    fn open_at(label: &str) -> (RocksdbStore, TempDir) {
+        let dir = TempDir::new(label);
+        let store = RocksdbStore::open(RocksdbConfig::new(dir.path()))
+            .expect("a fresh database always opens");
+        (store, dir)
+    }
+
+    #[tokio::test]
+    async fn the_rocksdb_store_satisfies_the_async_conformance_suite() {
+        let (store, _dir) = open_at("conformance-async");
+        conformance::positional_reads_async(&store).await;
+        conformance::empty_key_list_async(&store).await;
+        conformance::put_delete_batch_async(&store).await;
+        conformance::last_op_wins_async(&store).await;
+        conformance::empty_batch_async(&store).await;
+        conformance::duplicate_keys_alignment_async(&store).await;
+        conformance::owned_ops_async(&store).await;
+
+        let faulty = RocksdbStore::open(RocksdbConfig::new(
+            TempDir::new("conformance-async-fault").path(),
+        ))
+        .expect("a fresh database always opens");
+        conformance::error_preservation_before_backend_async(&FaultyStore::new(faulty)).await;
+    }
+
+    /// The async locator round trip: [`AsyncRetrievable::open`] offloads the
+    /// directory open to the blocking pool and never creates (the sync
+    /// locator contract).
+    #[tokio::test]
+    async fn async_reopen_from_locator_round_trips_the_data() {
+        let (store, _dir) = open_at("async-reopen");
+        let mut batch = Batch::new();
+        batch.put(b"key", b"value");
+        AsyncStore::write(&store, batch)
+            .await
+            .expect("rocksdb write");
+        let locator = <RocksdbStore as AsyncRetrievable>::canonical_locator(&store);
+        drop(store);
+
+        let reopened = <RocksdbStore as AsyncRetrievable>::open(&locator)
+            .await
+            .expect("open re-opens the path");
+        let results = AsyncStore::read(&reopened, &[b"key"])
+            .await
+            .expect("rocksdb read");
+        assert_eq!(
+            results[0].as_deref(),
+            Some(b"value".as_slice()),
+            "data persists across a close/reopen cycle"
+        );
+    }
+}

@@ -50,6 +50,13 @@
 //! [`Retrievable::open`] re-opens it, so `RocksDB` stores can back
 //! persistent stacked-MMR layers.
 //!
+//! # Async surface
+//!
+//! The engine is synchronous, so the [`AsyncStore`] impl routes every engine
+//! call through tokio's blocking pool ([`AsyncStore`] documents the trade) —
+//! one open database, two trait views. Re-opening from a locator is
+//! offloaded the same way through the [`AsyncRetrievable`] impl.
+//!
 //! # Building
 //!
 //! `librocksdb-sys` runs bindgen at build time, which needs a `libclang`
@@ -63,8 +70,11 @@ use std::sync::Arc;
 use rocksdb::{WriteBatch, WriteOptions};
 use thiserror::Error;
 
+use crate::store::internal::blocking;
 use crate::store::internal::os_path_bytes;
-use crate::store::{Batch, Op, Retrievable, Storage, Store, StoreLocator};
+use crate::store::{
+    AsyncRetrievable, AsyncStore, Batch, Op, Retrievable, Storage, Store, StoreLocator,
+};
 
 use alloc::vec::Vec;
 
@@ -225,6 +235,10 @@ pub enum RocksdbError {
     /// error carries `RocksDB`'s own status message.
     #[error("rocksdb operation failed: {0}")]
     Db(#[from] rocksdb::Error),
+    /// Spawning the blocking task failed — the async runtime is shutting
+    /// down. The sync [`Store`] surface never produces this.
+    #[error("the async runtime rejected the blocking task")]
+    Runtime(#[from] tokio::task::JoinError),
 }
 
 /// Shared engine behind every [`RocksdbStore`] clone.
@@ -353,7 +367,7 @@ impl Store for RocksdbStore {
     }
 
     fn locator(&self) -> Option<StoreLocator> {
-        Some(self.canonical_locator())
+        Some(Retrievable::canonical_locator(self))
     }
 }
 
@@ -371,5 +385,42 @@ impl Retrievable for RocksdbStore {
         Self::open(
             RocksdbConfig::new(os_path_bytes(locator.as_bytes())).with_create_if_missing(false),
         )
+    }
+}
+
+impl AsyncStore for RocksdbStore {
+    async fn read(&self, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>, Self::Error> {
+        blocking::offload_read(self.clone(), keys).await
+    }
+
+    async fn write(&self, batch: Batch<'_>) -> Result<(), Self::Error> {
+        blocking::offload_write(self.clone(), batch).await
+    }
+
+    fn identity(&self) -> usize {
+        Store::identity(self)
+    }
+
+    fn same_store(&self, other: &Self) -> bool {
+        Store::same_store(self, other)
+    }
+
+    fn locator(&self) -> Option<StoreLocator> {
+        Store::locator(self)
+    }
+}
+
+impl AsyncRetrievable for RocksdbStore {
+    fn canonical_locator(&self) -> StoreLocator {
+        Retrievable::canonical_locator(self)
+    }
+
+    async fn open(locator: &StoreLocator) -> Result<Self, Self::Error> {
+        // Re-opening never creates; see the sync [`Retrievable::open`].
+        let path = os_path_bytes(locator.as_bytes());
+        blocking::offload_result(move || {
+            Self::open(RocksdbConfig::new(path).with_create_if_missing(false))
+        })
+        .await
     }
 }

@@ -11,8 +11,15 @@
 //!
 //! The same-store hint is `Arc` pointer equality — clones of one store are
 //! recognized as one storage for cross-layer batching.
+//!
+//! The async surface needs no offload: the map is in RAM, so an engine call
+//! cannot block meaningfully — [`AsyncStore`] delegates to the sync paths
+//! directly, and [`AsyncRetrievable`] mirrors [`Retrievable`]'s registry
+//! semantics.
 
-use crate::store::{Batch, Op, Retrievable, Storage, Store, StoreLocator};
+use crate::store::{
+    AsyncRetrievable, AsyncStore, Batch, Op, Retrievable, Storage, Store, StoreLocator,
+};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use parking_lot::RwLock;
@@ -131,6 +138,12 @@ impl Store for InMemoryStore {
         Arc::ptr_eq(&self.map, &other.map)
     }
 
+    /// The backing map's `Arc` address — clones and same-locator shared
+    /// stores are one storage, so identity follows the map, not the handle.
+    fn identity(&self) -> usize {
+        Arc::as_ptr(&self.map).addr()
+    }
+
     fn locator(&self) -> Option<StoreLocator> {
         self.locator.clone()
     }
@@ -153,5 +166,43 @@ impl Retrievable for InMemoryStore {
         Ok(Self::shared(StoreLocator::from_bytes(
             locator.as_bytes().to_vec(),
         )))
+    }
+}
+
+impl AsyncStore for InMemoryStore {
+    // In-RAM data cannot block meaningfully — no offload, the sync paths
+    // under their bounded lock are the whole cost. (The trait's methods are
+    // async; these bodies have nothing to await.)
+    #[expect(clippy::unused_async_trait_impl)]
+    async fn read(&self, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>, Self::Error> {
+        Store::read(self, keys)
+    }
+
+    #[expect(clippy::unused_async_trait_impl)]
+    async fn write(&self, batch: Batch<'_>) -> Result<(), Self::Error> {
+        Store::write(self, batch)
+    }
+
+    fn identity(&self) -> usize {
+        Store::identity(self)
+    }
+
+    fn same_store(&self, other: &Self) -> bool {
+        Store::same_store(self, other)
+    }
+
+    fn locator(&self) -> Option<StoreLocator> {
+        Store::locator(self)
+    }
+}
+
+impl AsyncRetrievable for InMemoryStore {
+    fn canonical_locator(&self) -> StoreLocator {
+        Retrievable::canonical_locator(self)
+    }
+
+    #[expect(clippy::unused_async_trait_impl)]
+    async fn open(locator: &StoreLocator) -> Result<Self, Self::Error> {
+        Retrievable::open(locator)
     }
 }

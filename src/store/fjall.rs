@@ -47,9 +47,19 @@
 //! onto the same path (in-process or cross-process) cannot coexist — use
 //! [`Clone`] for a second handle, and re-open only after the previous store
 //! was dropped.
+//!
+//! # Async surface
+//!
+//! The engine is synchronous, so the [`AsyncStore`] impl routes every engine
+//! call through tokio's blocking pool ([`AsyncStore`] documents the trade) —
+//! one open database, two trait views. Re-opening from a locator is
+//! offloaded the same way through the [`AsyncRetrievable`] impl.
 
+use crate::store::internal::blocking;
 use crate::store::internal::os_path_bytes;
-use crate::store::{Batch, Op, Retrievable, Storage, Store, StoreLocator};
+use crate::store::{
+    AsyncRetrievable, AsyncStore, Batch, Op, Retrievable, Storage, Store, StoreLocator,
+};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -109,6 +119,10 @@ pub enum FjallError {
     /// or absurdly long paths — never through this store's own locators.
     #[error("malformed fjall store locator")]
     Locator,
+    /// Spawning the blocking task failed — the async runtime is shutting
+    /// down. The sync [`Store`] surface never produces this.
+    #[error("the async runtime rejected the blocking task")]
+    Runtime(#[from] tokio::task::JoinError),
 }
 
 /// Tuning knobs for [`FjallStore::open`]. Every knob defaults to fjall's own
@@ -423,5 +437,39 @@ impl Retrievable for FjallStore {
     fn open(locator: &StoreLocator) -> Result<Self, Self::Error> {
         let (path, keyspace) = decode_locator(locator.as_bytes())?;
         Self::open(FjallConfig::new(path).with_keyspace(keyspace))
+    }
+}
+
+impl AsyncStore for FjallStore {
+    async fn read(&self, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>, Self::Error> {
+        blocking::offload_read(self.clone(), keys).await
+    }
+
+    async fn write(&self, batch: Batch<'_>) -> Result<(), Self::Error> {
+        blocking::offload_write(self.clone(), batch).await
+    }
+
+    fn identity(&self) -> usize {
+        Store::identity(self)
+    }
+
+    fn same_store(&self, other: &Self) -> bool {
+        Store::same_store(self, other)
+    }
+
+    fn locator(&self) -> Option<StoreLocator> {
+        Store::locator(self)
+    }
+}
+
+impl AsyncRetrievable for FjallStore {
+    fn canonical_locator(&self) -> StoreLocator {
+        Retrievable::canonical_locator(self)
+    }
+
+    async fn open(locator: &StoreLocator) -> Result<Self, Self::Error> {
+        let (path, keyspace) = decode_locator(locator.as_bytes())?;
+        let config = FjallConfig::new(path).with_keyspace(keyspace);
+        blocking::offload_result(move || Self::open(config)).await
     }
 }

@@ -65,8 +65,13 @@
 //!   backends, where clones are handles onto one storage.
 //! - Session-local like every in-RAM backend: no locator, no re-opening,
 //!   nothing persisted; identity is the instance's address.
+//!
+//! The async surface delegates to the sync paths directly — the map is in
+//! RAM and its critical sections are bounded (see # Concurrency), so an
+//! engine call cannot block meaningfully and no runtime offload exists in
+//! `no_std`.
 
-use crate::store::{Batch, Op, Storage, Store};
+use crate::store::{AsyncStore, Batch, Op, Storage, Store};
 use alloc::vec::Vec;
 use core::cell::RefCell;
 use critical_section::Mutex;
@@ -370,5 +375,22 @@ impl<const N: usize, const KEY_CAP: usize, const VAL_CAP: usize> Store
                 }
             }
         })
+    }
+}
+
+impl<const N: usize, const KEY_CAP: usize, const VAL_CAP: usize> AsyncStore
+    for HeaplessStore<N, KEY_CAP, VAL_CAP>
+{
+    // In-RAM data cannot block meaningfully — the sync paths under their
+    // bounded critical sections are the whole cost. (The trait's methods are
+    // async; these bodies have nothing to await.)
+    #[expect(clippy::unused_async_trait_impl)]
+    async fn read(&self, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>, Self::Error> {
+        Store::read(self, keys)
+    }
+
+    #[expect(clippy::unused_async_trait_impl)]
+    async fn write(&self, batch: Batch<'_>) -> Result<(), Self::Error> {
+        Store::write(self, batch)
     }
 }

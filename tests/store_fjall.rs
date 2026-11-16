@@ -35,6 +35,55 @@ fn the_fjall_store_satisfies_the_conformance_suite() {
     conformance::error_preservation_before_backend(&FaultyStore::new(store));
 }
 
+/// The async surface (scoped module, see `store_sled.rs`): the full async
+/// conformance suite plus the async locator round trip —
+/// [`AsyncRetrievable::open`] decodes the (path, keyspace) locator off the
+/// async path and offloads the database open to the blocking pool.
+mod async_surface {
+    use accumulators::store::fjall::{FjallConfig, FjallStore};
+    use accumulators::store::{AsyncRetrievable, AsyncStore, Batch};
+
+    use crate::common::{FaultyStore, TempDir};
+    use crate::conformance;
+
+    #[tokio::test]
+    async fn the_fjall_store_satisfies_the_async_conformance_suite() {
+        let dir = TempDir::new("conformance-async");
+        let store = FjallStore::open(FjallConfig::new(dir.path())).expect("fjall store opens");
+        conformance::positional_reads_async(&store).await;
+        conformance::empty_key_list_async(&store).await;
+        conformance::put_delete_batch_async(&store).await;
+        conformance::last_op_wins_async(&store).await;
+        conformance::empty_batch_async(&store).await;
+        conformance::duplicate_keys_alignment_async(&store).await;
+        conformance::owned_ops_async(&store).await;
+        // Same-handle fault seam (see the sync suite's lock-file note).
+        conformance::error_preservation_before_backend_async(&FaultyStore::new(store)).await;
+    }
+
+    #[tokio::test]
+    async fn async_reopen_from_locator_round_trips_data() {
+        let dir = TempDir::new("async-reopen");
+        let locator = {
+            let store = FjallStore::open(FjallConfig::new(dir.path())).expect("fjall store opens");
+            let mut batch = Batch::new();
+            batch.put(b"async/key", b"value");
+            AsyncStore::write(&store, batch)
+                .await
+                .expect("write succeeds");
+            <FjallStore as AsyncRetrievable>::canonical_locator(&store)
+        };
+
+        let reopened = <FjallStore as AsyncRetrievable>::open(&locator)
+            .await
+            .expect("re-open from locator");
+        let results = AsyncStore::read(&reopened, &[b"async/key"])
+            .await
+            .expect("read succeeds");
+        assert_eq!(results[0].as_deref(), Some(b"value".as_slice()));
+    }
+}
+
 #[test]
 fn reopen_from_locator_round_trips_data() {
     let dir = TempDir::new("reopen");

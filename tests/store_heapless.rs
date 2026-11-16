@@ -36,6 +36,22 @@ fn the_heapless_store_satisfies_the_conformance_suite() {
     conformance::error_preservation_before_backend(&FaultyStore::new(HeaplessStore::<64>::new()));
 }
 
+#[tokio::test]
+async fn the_heapless_store_satisfies_the_async_conformance_suite() {
+    let store = HeaplessStore::<64>::new();
+    conformance::positional_reads_async(&store).await;
+    conformance::empty_key_list_async(&store).await;
+    conformance::put_delete_batch_async(&store).await;
+    conformance::last_op_wins_async(&store).await;
+    conformance::empty_batch_async(&store).await;
+    conformance::duplicate_keys_alignment_async(&store).await;
+    conformance::owned_ops_async(&store).await;
+    conformance::error_preservation_before_backend_async(&FaultyStore::new(
+        HeaplessStore::<64>::new(),
+    ))
+    .await;
+}
+
 // ------------------------------------------------------------- entry capacity
 
 #[test]

@@ -44,6 +44,120 @@ mod conformance_runner {
         let faulted = RedbStore::open_path(db.path()).expect("file redb opens");
         conformance::error_preservation_before_backend(&common::FaultyStore::new(faulted));
     }
+
+    #[tokio::test]
+    async fn the_redb_store_satisfies_the_async_conformance_suite() {
+        let db = TempDb::new("redb-conformance-async");
+        let store = RedbStore::open_path(db.path()).expect("file redb opens");
+        conformance::positional_reads_async(&store).await;
+        conformance::empty_key_list_async(&store).await;
+        conformance::put_delete_batch_async(&store).await;
+        conformance::last_op_wins_async(&store).await;
+        conformance::empty_batch_async(&store).await;
+        conformance::duplicate_keys_alignment_async(&store).await;
+        conformance::owned_ops_async(&store).await;
+        drop(store);
+
+        let faulted = RedbStore::open_path(db.path()).expect("file redb opens");
+        conformance::error_preservation_before_backend_async(&common::FaultyStore::new(faulted))
+            .await;
+    }
+}
+
+/// The async surface (scoped module, see `store_sled.rs`): the async locator
+/// round trip and the async twin of the in-backend mid-batch fault seam.
+mod async_surface {
+    use accumulators::store::redb::{RedbError, RedbStore};
+    use accumulators::store::{AsyncRetrievable, AsyncStore, Batch};
+
+    use crate::common::TempDb;
+
+    /// The async locator round trip: [`AsyncRetrievable::open`] offloads the
+    /// file open to the blocking pool and reattaches to the persisted data.
+    #[tokio::test]
+    async fn async_reopen_from_locator_round_trips_the_data() {
+        let db = TempDb::new("redb-async-reopen");
+        let locator = {
+            let store = RedbStore::open_path(db.path()).expect("file redb opens");
+            let mut batch = Batch::new();
+            batch.put(b"key", b"value");
+            AsyncStore::write(&store, batch).await.expect("redb write");
+            <RedbStore as AsyncRetrievable>::canonical_locator(&store)
+        };
+
+        let reopened = <RedbStore as AsyncRetrievable>::open(&locator)
+            .await
+            .expect("open re-opens the path");
+        let results = AsyncStore::read(&reopened, &[b"key"])
+            .await
+            .expect("redb read");
+        assert_eq!(
+            results[0].as_deref(),
+            Some(b"value".as_slice()),
+            "open reattaches to the persisted data"
+        );
+    }
+
+    /// The async twin of
+    /// [`a_backend_internal_failure_mid_batch_aborts_the_write_transaction`]: the
+    /// same seam through the [`AsyncStore`] path, which runs the write inside
+    /// redb's transaction on the blocking pool — the transaction boundary (and
+    /// its rollback) is the engine's, unchanged by the offload.
+    #[tokio::test]
+    async fn an_async_backend_internal_failure_mid_batch_aborts_the_write_transaction() {
+        const OVERSIZED: usize = 3 * 1024 * 1024 * 1024 + 1;
+
+        let db = TempDb::new("redb-mid-batch-async");
+        let store = RedbStore::open_path(db.path()).expect("file redb opens");
+
+        let (setup, prior, poisoned) = (b"redb-mid/setup", b"redb-mid/prior", b"redb-mid/poisoned");
+        let mut setup_batch = Batch::new();
+        setup_batch.put(setup, b"old");
+        AsyncStore::write(&store, setup_batch)
+            .await
+            .expect("the setup write succeeds");
+
+        let mut batch = Batch::new();
+        batch.put(prior, b"must-not-land");
+        batch.delete(setup);
+        batch.put_owned(poisoned, vec![0u8; OVERSIZED]);
+        match AsyncStore::write(&store, batch).await {
+            Err(RedbError::Storage(redb::StorageError::ValueTooLarge(len))) => {
+                assert_eq!(len, OVERSIZED, "the backend names the rejected op's size");
+            }
+            Err(other) => panic!("expected ValueTooLarge, got {other:?}"),
+            Ok(()) => panic!("the oversized write must fail inside the transaction"),
+        }
+
+        let results = AsyncStore::read(&store, &[prior, setup, poisoned])
+            .await
+            .expect("read succeeds");
+        assert_eq!(
+            results,
+            [None, Some(b"old".to_vec()), None],
+            "the failed batch must not partially apply — all-or-nothing"
+        );
+
+        let mut batch = Batch::new();
+        batch.put(prior, b"lands-now");
+        batch.delete(setup);
+        batch.put(poisoned, b"lands-now");
+        AsyncStore::write(&store, batch)
+            .await
+            .expect("the retry succeeds");
+        let results = AsyncStore::read(&store, &[prior, setup, poisoned])
+            .await
+            .expect("read succeeds");
+        assert_eq!(
+            results,
+            [
+                Some(b"lands-now".to_vec()),
+                None,
+                Some(b"lands-now".to_vec())
+            ],
+            "after the fault clears the batch applies whole"
+        );
+    }
 }
 
 /// The **in-backend** fault seam for redb: redb's own value-size limit

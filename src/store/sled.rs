@@ -45,6 +45,13 @@
 //! non-UTF-8 paths survive the round trip through the platform's byte
 //! encoding, never a lossy string.
 //!
+//! # Async surface
+//!
+//! The engine is synchronous, so the [`AsyncStore`] impl routes every engine
+//! call through tokio's blocking pool ([`AsyncStore`] documents the trade) —
+//! one open database, two trait views. `open_async`-equivalent re-opening
+//! (offloaded the same way) is the [`AsyncRetrievable`] impl.
+//!
 //! # Keys
 //!
 //! The crate's binary keys (see [`keys`](crate::store::keys)) are used
@@ -53,8 +60,11 @@
 //! (`Ord` of byte slices); the layout's big-endian subkeys make that ordering
 //! numerically meaningful should a backend ever need range scans.
 
+use crate::store::internal::blocking;
 use crate::store::internal::os_path_bytes;
-use crate::store::{Batch, Op, Retrievable, Storage, Store, StoreLocator};
+use crate::store::{
+    AsyncRetrievable, AsyncStore, Batch, Op, Retrievable, Storage, Store, StoreLocator,
+};
 use alloc::format;
 use alloc::vec::Vec;
 use std::path::{Path, PathBuf};
@@ -74,6 +84,10 @@ pub enum SledError {
     /// The backend reported an I/O error; the sled cause is the `source`.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// Spawning the blocking task failed — the async runtime is shutting
+    /// down. The sync [`Store`] surface never produces this.
+    #[error("the async runtime rejected the blocking task")]
+    Runtime(#[from] tokio::task::JoinError),
 }
 
 /// A durable sled-backed key-value store.
@@ -300,5 +314,38 @@ impl Retrievable for SledStore {
 
     fn open(locator: &StoreLocator) -> Result<Self, Self::Error> {
         Self::open_path(os_path_bytes(locator.as_bytes()))
+    }
+}
+
+impl AsyncStore for SledStore {
+    async fn read(&self, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>, Self::Error> {
+        blocking::offload_read(self.clone(), keys).await
+    }
+
+    async fn write(&self, batch: Batch<'_>) -> Result<(), Self::Error> {
+        blocking::offload_write(self.clone(), batch).await
+    }
+
+    fn identity(&self) -> usize {
+        Store::identity(self)
+    }
+
+    fn same_store(&self, other: &Self) -> bool {
+        Store::same_store(self, other)
+    }
+
+    fn locator(&self) -> Option<StoreLocator> {
+        Store::locator(self)
+    }
+}
+
+impl AsyncRetrievable for SledStore {
+    fn canonical_locator(&self) -> StoreLocator {
+        Retrievable::canonical_locator(self)
+    }
+
+    async fn open(locator: &StoreLocator) -> Result<Self, Self::Error> {
+        let path = os_path_bytes(locator.as_bytes());
+        blocking::offload_result(move || Self::open_path(path)).await
     }
 }

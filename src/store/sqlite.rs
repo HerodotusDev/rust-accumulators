@@ -13,12 +13,14 @@
 //!
 //! The locator is the database path (raw OS bytes — non-UTF-8 paths survive
 //! the round trip), so stacks built over SQLite carry re-openable metadata.
-//! Re-opening is async (`SqliteStore::open_async`); the sync `open_stacked`
-//! flow requires a store with a synchronous `Retrievable` impl (see the
-//! `stacked` module). In-memory databases (`:memory:`, exact match only)
-//! get a unique synthetic `memory:` locator per instance — they cannot be
-//! re-opened (and `open_async` rejects `memory:` locators outright),
-//! matching SQLite's semantics.
+//! Re-opening is async: the store implements
+//! [`AsyncRetrievable`](crate::store::AsyncRetrievable) (`open_async` is its
+//! inherent spelling), which the async `open_stacked` flow consumes; the
+//! sync `open_stacked` requires a synchronous `Retrievable` impl, which this
+//! backend deliberately does not provide. In-memory databases (`:memory:`,
+//! exact match only) get a unique synthetic `memory:` locator per instance —
+//! they cannot be re-opened (and `open_async` rejects `memory:` locators
+//! outright), matching SQLite's semantics.
 
 use crate::store::internal::os_path_bytes;
 use crate::store::{AsyncStore, Batch, Op, Storage, StoreLocator};
@@ -144,7 +146,9 @@ impl SqliteStore {
 
     /// Re-opens the database named by `locator` — the async counterpart of
     /// the sync [`crate::store::Retrievable::open`] contract, which this
-    /// async-only backend cannot provide.
+    /// async-only backend cannot provide. Exposed through the
+    /// [`AsyncRetrievable`](crate::store::AsyncRetrievable) impl, which is
+    /// what the async `open_stacked` flow consumes.
     ///
     /// Locators produced by [`SqliteStore::in_memory`] / `connect(":memory:")`
     /// are synthetic `memory:` ids, not paths — they are rejected here rather
@@ -277,5 +281,15 @@ impl AsyncStore for SqliteStore {
 
     fn same_store(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.pool, &other.pool) || self.locator == other.locator
+    }
+}
+
+impl crate::store::AsyncRetrievable for SqliteStore {
+    fn canonical_locator(&self) -> StoreLocator {
+        self.locator.clone()
+    }
+
+    async fn open(locator: &StoreLocator) -> Result<Self, Self::Error> {
+        Self::open_async(locator).await
     }
 }

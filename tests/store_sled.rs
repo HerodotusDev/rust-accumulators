@@ -51,6 +51,64 @@ fn the_sled_store_satisfies_the_conformance_suite() {
     ));
 }
 
+/// The async surface: the full async conformance suite plus the async
+/// locator round trip. Kept in its own module so `AsyncStore` (and its
+/// identically-named methods) stays out of the sync tests' scope.
+mod async_surface {
+    use accumulators::store::sled::SledStore;
+    use accumulators::store::{AsyncRetrievable, AsyncStore, Batch};
+
+    use crate::common::{FaultyStore, TempDir};
+    use crate::conformance;
+
+    #[tokio::test]
+    async fn the_sled_store_satisfies_the_async_conformance_suite() {
+        let dir = TempDir::new("conformance-async");
+        let store = SledStore::open_path(dir.path()).expect("sled store opens");
+        conformance::positional_reads_async(&store).await;
+        conformance::empty_key_list_async(&store).await;
+        conformance::put_delete_batch_async(&store).await;
+        conformance::last_op_wins_async(&store).await;
+        conformance::empty_batch_async(&store).await;
+        conformance::duplicate_keys_alignment_async(&store).await;
+        conformance::owned_ops_async(&store).await;
+        let fault_dir = TempDir::new("conformance-async-fault");
+        conformance::error_preservation_before_backend_async(&FaultyStore::new(
+            SledStore::open_path(fault_dir.path()).expect("opens"),
+        ))
+        .await;
+    }
+
+    /// The async locator round trip: [`AsyncRetrievable::open`] offloads the
+    /// directory open to the blocking pool and reattaches to the persisted
+    /// data.
+    #[tokio::test]
+    async fn async_reopen_from_locator_round_trips_the_data() {
+        let dir = TempDir::new("async-reopen");
+        let locator = {
+            let store = SledStore::open_path(dir.path()).expect("sled store opens");
+            let mut batch = Batch::new();
+            batch.put(b"key", b"value");
+            AsyncStore::write(&store, batch).await.expect("sled write");
+
+            // Dropping the last handle flushes; the locator survives the store.
+            <SledStore as AsyncRetrievable>::canonical_locator(&store)
+        };
+
+        let reopened = <SledStore as AsyncRetrievable>::open(&locator)
+            .await
+            .expect("open re-opens the path");
+        let results = AsyncStore::read(&reopened, &[b"key"])
+            .await
+            .expect("sled read");
+        assert_eq!(
+            results[0].as_deref(),
+            Some(b"value".as_slice()),
+            "open reattaches to the persisted data"
+        );
+    }
+}
+
 // ------------------------------------------------------- sled-specific behavior
 
 #[test]

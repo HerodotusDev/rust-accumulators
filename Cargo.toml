@@ -21,6 +21,7 @@ exclude = [
     ".typos.toml",
     "CHANGELOG.md",
     "banner.png",
+    "fuzz",
 ]
 
 [dependencies]
@@ -52,6 +53,13 @@ fjall = { version = "3.1", optional = true, default-features = false, features =
 ] } # Fjall store backend (native; lz4 data-block compression)
 redb = { version = "4.6", optional = true, default-features = false } # Redb store backend (native)
 rocksdb = { version = "0.25", optional = true } # RocksDB store backend (native)
+# Blocking-pool offload for the file-backed backends' async surface: the
+# engines are synchronous, so their `AsyncStore` impls run engine calls
+# through `tokio::task::spawn_blocking` instead of stalling the executor.
+# Shared by sled/fjall/redb/rocksdb; sqlite needs none (sqlx is async).
+tokio = { version = "1", optional = true, default-features = false, features = [
+    "rt",
+] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 # remember to use: export RUSTFLAGS='--cfg getrandom_backend="wasm_js"'
@@ -191,10 +199,10 @@ all = [
 store = []
 memory = ["std", "store", "dep:parking_lot"]
 sqlite = ["std", "store", "dep:sqlx"]
-sled = ["std", "store", "dep:sled"]
-fjall = ["std", "store", "dep:fjall"]
-redb = ["std", "store", "dep:redb"]
-rocksdb = ["std", "store", "dep:rocksdb"]
+sled = ["std", "store", "dep:sled", "dep:tokio"]
+fjall = ["std", "store", "dep:fjall", "dep:tokio"]
+redb = ["std", "store", "dep:redb", "dep:tokio"]
+rocksdb = ["std", "store", "dep:rocksdb", "dep:tokio"]
 # The no_std store backend: unlike every other store, it does NOT imply
 # `std` — the map is allocation-free, the global lock comes from
 # `critical-section` (impl selected by the target's support crate).

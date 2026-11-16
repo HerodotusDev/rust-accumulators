@@ -183,6 +183,13 @@ pub trait Store: Storage {
 ///
 /// Same contracts as [`Store`]; async variant for runtimes like tokio.
 /// Defined with native `async fn` in trait — no `async-trait` boxing.
+///
+/// Blocking engines never stall the executor here: the file-backed backends
+/// (sled, fjall, redb, rocksdb) run every engine call through
+/// `tokio::task::spawn_blocking`, so their async impls require a live tokio
+/// runtime context (spawning fails with a typed `Runtime` error when the
+/// runtime is shutting down). Purely in-memory backends (memory, heapless)
+/// cannot block and delegate to their sync paths directly.
 pub trait AsyncStore: Storage {
     /// Batched point read; see [`Store::read`].
     ///
@@ -385,6 +392,30 @@ pub trait Retrievable: Store + Sized {
     fn open(locator: &StoreLocator) -> Result<Self, Self::Error>;
 }
 
+/// Async counterpart of [`Retrievable`]: a store that can be re-opened from
+/// its persisted locator through [`AsyncStore`].
+///
+/// Required for stores used as **async** stacked-MMR layers: the async
+/// `open_stacked` reconstructs every layer's store from the persisted
+/// sub-view metadata, which only contains locators. Async-only backends
+/// (SQLite) implement this instead of [`Retrievable`]; a backend serving
+/// both contracts implements both.
+///
+/// Locator equality doubles as store identity, exactly as on
+/// [`Retrievable`] — see that trait and [`StoreLocator`] for the trust
+/// model.
+pub trait AsyncRetrievable: AsyncStore + Sized {
+    /// The canonical locator of this store instance.
+    fn canonical_locator(&self) -> StoreLocator;
+
+    /// Re-opens the store named by `locator`.
+    ///
+    /// # Errors
+    ///
+    /// Backend failures (missing file, unreachable server, …).
+    fn open(locator: &StoreLocator) -> impl Future<Output = Result<Self, Self::Error>> + Send;
+}
+
 /// Type-erased store error: the wrapped backend's error, boxed.
 ///
 /// A newtype because `Box<dyn Error>` does not itself implement `Error`
@@ -585,6 +616,7 @@ impl<S: AsyncStore + Send + Sync + 'static> DynAsyncStore for S {
 
 /// Async counterpart of [`ErasedStore`] — same costs, same session-local
 /// limitation.
+#[derive(Clone)]
 pub struct ErasedAsyncStore(alloc::sync::Arc<dyn DynAsyncStore>);
 
 impl ErasedAsyncStore {
@@ -937,6 +969,86 @@ pub(crate) mod internal {
         #[cfg(not(any(unix, windows)))]
         {
             std::path::PathBuf::from(alloc::string::String::from_utf8_lossy(bytes).into_owned())
+        }
+    }
+
+    /// Blocking-pool offload shared by the file-backed backends' async
+    /// surface (sled, fjall, redb, rocksdb — the engines are synchronous, and
+    /// calling them inline in an `async fn` would stall the executor for the
+    /// whole I/O). The async impls hand a clone of their store handle (the
+    /// same open engine behind both trait views) to
+    /// `tokio::task::spawn_blocking` and await the result; a spawn failure
+    /// surfaces as the backend's typed `Runtime` error rather than a panic.
+    #[cfg(any(
+        feature = "sled",
+        feature = "fjall",
+        feature = "redb",
+        feature = "rocksdb"
+    ))]
+    pub(crate) mod blocking {
+        use crate::store::{Batch, Op, Store};
+        use alloc::vec::Vec;
+
+        /// The sync [`Store::read`] of `store`, offloaded to the blocking
+        /// pool. Keys are copied into the task (the engines' batched reads
+        /// borrow them for `'static`); a spawn failure surfaces as the
+        /// backend's typed `Runtime` error.
+        pub(crate) async fn offload_read<S>(
+            store: S,
+            keys: &[&[u8]],
+        ) -> Result<Vec<Option<Vec<u8>>>, S::Error>
+        where
+            S: Store + Send + Sync + 'static,
+            S::Error: From<tokio::task::JoinError>,
+        {
+            let keys: Vec<Vec<u8>> = keys.iter().map(|key| key.to_vec()).collect();
+            let task = move || {
+                let keys: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+                Store::read(&store, &keys)
+            };
+            tokio::task::spawn_blocking(task)
+                .await
+                .map_err(S::Error::from)?
+        }
+
+        /// The sync [`Store::write`] of `store`, offloaded to the blocking
+        /// pool. The batch is owned by the task (ops arrive borrowed).
+        pub(crate) async fn offload_write<S>(store: S, batch: Batch<'_>) -> Result<(), S::Error>
+        where
+            S: Store + Send + Sync + 'static,
+            S::Error: From<tokio::task::JoinError>,
+        {
+            let batch = Batch {
+                ops: batch.ops.into_iter().map(owned_op).collect(),
+            };
+            tokio::task::spawn_blocking(move || Store::write(&store, batch))
+                .await
+                .map_err(S::Error::from)?
+        }
+
+        /// Any blocking fallible call offloaded to the pool — the re-opening
+        /// seam of the file-backed backends.
+        pub(crate) async fn offload_result<T, E, F>(task: F) -> Result<T, E>
+        where
+            F: FnOnce() -> Result<T, E> + Send + 'static,
+            T: Send + 'static,
+            E: From<tokio::task::JoinError> + Send + 'static,
+        {
+            tokio::task::spawn_blocking(task).await.map_err(E::from)?
+        }
+
+        /// Detaches an op from its borrow: the batch handed to the blocking
+        /// task must own its bytes.
+        fn owned_op(op: Op<'_>) -> Op<'static> {
+            match op {
+                Op::Put { key, value } => Op::Put {
+                    key: alloc::borrow::Cow::Owned(key.into_owned()),
+                    value: alloc::borrow::Cow::Owned(value.into_owned()),
+                },
+                Op::Delete { key } => Op::Delete {
+                    key: alloc::borrow::Cow::Owned(key.into_owned()),
+                },
+            }
         }
     }
 }

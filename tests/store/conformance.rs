@@ -445,6 +445,19 @@ mod memory_backend {
         owned_ops(&store);
         error_preservation_before_backend(&FaultyStore::new(InMemoryStore::new()));
     }
+
+    #[tokio::test]
+    async fn the_in_memory_store_satisfies_the_async_conformance_suite() {
+        let store = InMemoryStore::new();
+        positional_reads_async(&store).await;
+        empty_key_list_async(&store).await;
+        put_delete_batch_async(&store).await;
+        last_op_wins_async(&store).await;
+        empty_batch_async(&store).await;
+        duplicate_keys_alignment_async(&store).await;
+        owned_ops_async(&store).await;
+        error_preservation_before_backend_async(&FaultyStore::new(InMemoryStore::new())).await;
+    }
 }
 
 #[cfg(all(feature = "sqlite", not(target_family = "wasm")))]
