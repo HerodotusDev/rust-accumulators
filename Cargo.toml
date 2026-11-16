@@ -31,7 +31,7 @@ tiny-keccak = { version = "2.0.2", features = [
 ], optional = true } # Keccak hashing
 starknet-crypto = { version = "0.8.1", default-features = false, optional = true } # Starknet Pedersen/Poseidon hashing (no_std-compatible)
 blake2 = { version = "0.11.0", default-features = false, optional = true } # Blake2 hashing
-parking_lot = { version = "0.13.0", optional = true } # Synchronous locks (memory store)
+parking_lot = { version = "0.12.5", optional = true } # Synchronous locks (memory store)
 uuid = { version = "1.29.2", default-features = false, optional = true } # UUID generation for AccumulatorId
 ulid = { version = "3", default-features = false, optional = true } # ULID generation for AccumulatorId
 serde = { version = "1", default-features = false, features = [

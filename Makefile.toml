@@ -59,7 +59,10 @@ env = { "RUSTDOCFLAGS" = "-D warnings" }
 
 [tasks.typos]
 description = "Spell-check the repository"
-install_crate = "typos-cli"
+# The crate's binary is named `typos`, so cargo-make's install check looks
+# for a nonexistent `typos-cli` and re-installs over the existing binary.
+# CI provides it via the taiki-e install action; locally via brew/cargo.
+install_crate = false
 command = "typos"
 
 [tasks.each-feature]
