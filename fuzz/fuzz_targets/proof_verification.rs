@@ -27,10 +27,11 @@ use libfuzzer_sys::fuzz_target;
 
 use accumulators::hashers::KeccakSolHasher;
 use accumulators::mmr::{
-    LeafCount, MultiProof, Proof, size_of, verify_multi_proof, verify_multi_proof_hashed,
-    verify_proof, verify_proof_hashed,
+    LeafCount, MultiProof, Proof, verify_multi_proof, verify_multi_proof_hashed, verify_proof,
+    verify_proof_hashed,
 };
 use accumulators::primitives::{Hash, LeafIndex};
+use accumulators::utils::mmr::size_of;
 
 /// The raw element fed to the non-hashed verify variants. Its content is
 /// irrelevant to panic-safety; a fixed constant keeps the target minimal.
