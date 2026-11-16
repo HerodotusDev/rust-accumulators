@@ -71,6 +71,7 @@ mod hash_value {
 
     #[test]
     fn bytes_round_trip() {
+        assert_eq!(<Hash as HashValue>::LEN, 32);
         let bytes = digest_bytes(ELEMENT_VECTOR);
         let hash = Hash::from_bytes(bytes);
         assert_eq!(
@@ -79,6 +80,7 @@ mod hash_value {
             "as_bytes borrows the wrapped bytes"
         );
         assert_eq!(hash.to_bytes(), bytes, "to_bytes converts back");
+        assert_eq!(hash.to_vec(), bytes, "to_vec is the canonical encoding");
         assert_eq!(
             Hash::from(bytes),
             hash,
@@ -129,13 +131,6 @@ mod hash_value {
         assert!(<Hash as HashValue>::from_bytes(&[0; 31]).is_none());
         assert!(<Hash as HashValue>::from_bytes(&[0; 33]).is_none());
         assert!(<Hash as HashValue>::from_bytes(&[0; 32]).is_some());
-    }
-
-    #[test]
-    fn to_vec_is_the_canonical_encoding() {
-        assert_eq!(<Hash as HashValue>::LEN, 32);
-        let hash = hash_from_hex(ELEMENT_VECTOR);
-        assert_eq!(hash.to_vec(), hash.as_bytes().to_vec());
     }
 }
 
@@ -235,6 +230,8 @@ mod keccak_sol {
         );
     }
 
+    // Pins operand order: the golden is over (left, right) as listed, so any
+    // symmetric hash_pair swap breaks it.
     #[test]
     fn pair_of_distinct_elements_matches_the_pinned_golden() {
         let hasher = KeccakSolHasher;
@@ -321,18 +318,6 @@ mod keccak_sol {
             hasher.hash_pair(first, second),
             Hash::from_bytes(expected),
             "hash_pair is flat keccak over left || right"
-        );
-    }
-
-    #[test]
-    fn pair_hashing_is_order_sensitive() {
-        let hasher = KeccakSolHasher;
-        let left = hash_from_hex(ELEMENT_VECTOR);
-        let right = hash_from_hex(PAIR_LEFT_VECTOR);
-        assert_ne!(
-            hasher.hash_pair(left, right),
-            hasher.hash_pair(right, left),
-            "hash_pair(a, b) must differ from hash_pair(b, a)"
         );
     }
 

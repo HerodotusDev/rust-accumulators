@@ -45,6 +45,7 @@ fn the_sled_store_satisfies_the_conformance_suite() {
     conformance::empty_batch(&store);
     conformance::duplicate_keys_alignment(&store);
     conformance::owned_ops(&store);
+    conformance::binary_keys(&store);
     let fault_dir = TempDir::new("conformance-fault");
     conformance::error_preservation_before_backend(&FaultyStore::new(
         SledStore::open_path(fault_dir.path()).expect("opens"),
@@ -72,6 +73,7 @@ mod async_surface {
         conformance::empty_batch_async(&store).await;
         conformance::duplicate_keys_alignment_async(&store).await;
         conformance::owned_ops_async(&store).await;
+        conformance::binary_keys_async(&store).await;
         let fault_dir = TempDir::new("conformance-async-fault");
         conformance::error_preservation_before_backend_async(&FaultyStore::new(
             SledStore::open_path(fault_dir.path()).expect("opens"),
@@ -218,25 +220,6 @@ fn a_second_live_handle_on_one_path_is_rejected() {
         Err(error) => panic!("unexpected error kind: {error}"),
         Ok(_) => panic!("a second live handle on one path must fail"),
     }
-}
-
-#[test]
-fn binary_keys_round_trip_verbatim() {
-    let dir = TempDir::new("binary-keys");
-    let store = SledStore::open_path(dir.path()).expect("sled store opens");
-
-    let mut binary_key = vec![0u8, 255, 0, 1];
-    binary_key.extend_from_slice(&u64::MAX.to_be_bytes());
-    let mut batch = Batch::new();
-    batch.put_owned(binary_key.clone(), vec![0, 0, 255, 255]);
-    store.write(batch).expect("sled write");
-
-    let results = store.read(&[binary_key.as_slice()]).expect("sled read");
-    assert_eq!(
-        results[0].as_deref(),
-        Some([0, 0, 255, 255].as_slice()),
-        "keys are opaque bytes end-to-end"
-    );
 }
 
 #[test]

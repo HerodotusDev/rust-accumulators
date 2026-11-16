@@ -58,6 +58,7 @@ async fn the_erased_async_store_satisfies_the_conformance_suite() {
     conformance::empty_batch_async(&store).await;
     conformance::duplicate_keys_alignment_async(&store).await;
     conformance::owned_ops_async(&store).await;
+    conformance::binary_keys_async(&store).await;
 
     // The wrapper-level fault seam over the erased store: the wrapper's
     // typed error axis composes with the erased store's boxed `DynError`.

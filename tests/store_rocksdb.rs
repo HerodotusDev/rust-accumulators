@@ -38,6 +38,7 @@ mod rocksdb {
         conformance::empty_batch(&store);
         conformance::duplicate_keys_alignment(&store);
         conformance::owned_ops(&store);
+        conformance::binary_keys(&store);
 
         let faulty =
             RocksdbStore::open(RocksdbConfig::new(TempDir::new("conformance-fault").path()))
@@ -241,6 +242,7 @@ mod async_surface {
         conformance::empty_batch_async(&store).await;
         conformance::duplicate_keys_alignment_async(&store).await;
         conformance::owned_ops_async(&store).await;
+        conformance::binary_keys_async(&store).await;
 
         let faulty = RocksdbStore::open(RocksdbConfig::new(
             TempDir::new("conformance-async-fault").path(),

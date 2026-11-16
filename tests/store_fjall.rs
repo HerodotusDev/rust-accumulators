@@ -30,6 +30,7 @@ fn the_fjall_store_satisfies_the_conformance_suite() {
     conformance::empty_batch(&store);
     conformance::duplicate_keys_alignment(&store);
     conformance::owned_ops(&store);
+    conformance::binary_keys(&store);
     // The fault seam wraps the same handle — fjall holds an exclusive lock
     // file per database folder, so no second database open may happen here.
     conformance::error_preservation_before_backend(&FaultyStore::new(store));
@@ -57,6 +58,7 @@ mod async_surface {
         conformance::empty_batch_async(&store).await;
         conformance::duplicate_keys_alignment_async(&store).await;
         conformance::owned_ops_async(&store).await;
+        conformance::binary_keys_async(&store).await;
         // Same-handle fault seam (see the sync suite's lock-file note).
         conformance::error_preservation_before_backend_async(&FaultyStore::new(store)).await;
     }

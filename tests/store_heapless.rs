@@ -33,6 +33,7 @@ fn the_heapless_store_satisfies_the_conformance_suite() {
     conformance::empty_batch(&store);
     conformance::duplicate_keys_alignment(&store);
     conformance::owned_ops(&store);
+    conformance::binary_keys(&store);
     conformance::error_preservation_before_backend(&FaultyStore::new(HeaplessStore::<64>::new()));
 }
 
@@ -46,6 +47,7 @@ async fn the_heapless_store_satisfies_the_async_conformance_suite() {
     conformance::empty_batch_async(&store).await;
     conformance::duplicate_keys_alignment_async(&store).await;
     conformance::owned_ops_async(&store).await;
+    conformance::binary_keys_async(&store).await;
     conformance::error_preservation_before_backend_async(&FaultyStore::new(
         HeaplessStore::<64>::new(),
     ))

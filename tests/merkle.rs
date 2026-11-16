@@ -19,6 +19,9 @@
     clippy::expect_used,
     reason = "tests and benches fail loudly by design: expect on fixtures is the contract"
 )]
+#[path = "common/mod.rs"]
+mod common;
+
 use accumulators::{
     hashers::{Blake2sStarkHasher, Hasher, KeccakSolHasher},
     ids::AccumulatorId,
@@ -31,6 +34,8 @@ use accumulators::{
     primitives::{Hash, LeafIndex},
     store::memory::InMemoryStore,
 };
+
+use common::reference_merkle_root;
 
 /// A valid element for every hasher: the 32-byte big-endian encoding of
 /// `index` (left-zero-padded, so distinct indexes give distinct elements).
@@ -272,6 +277,22 @@ fn root_reflects_writes_and_reopens() {
         .expect("second write succeeds");
     assert_eq!(tree.root(), second.root, "root() must track set_leaf");
 
+    // Not just self-consistency: the incremental root is the naive
+    // level-wise reference root over the occupied set.
+    let reference = || {
+        reference_merkle_root(
+            &KeccakSolHasher,
+            8,
+            Hash::ZERO,
+            &[(2_u64, element(2)), (5, element(5))],
+        )
+    };
+    assert_eq!(
+        tree.root(),
+        reference(),
+        "the incremental root matches the independent reference construction"
+    );
+
     drop(tree);
     let reopened = IncrementalMerkleTree::open(KeccakSolHasher, store, AccumulatorId::ZERO)
         .expect("reopen succeeds");
@@ -279,6 +300,49 @@ fn root_reflects_writes_and_reopens() {
         reopened.root(),
         second.root,
         "open() must restore the persisted root"
+    );
+    assert_eq!(
+        reopened.root(),
+        reference(),
+        "the restored root matches the independent reference construction"
+    );
+}
+
+/// tiny-keccak golden of the reference construction: the root of a depth-4
+/// tree with leaves {0, 2, 7} occupied, each holding its big-endian index
+/// element (keccak256 over the leaf/pair folds).
+const GOLDEN_ROOT: [u8; 32] = [
+    0x8c, 0x75, 0xa6, 0x74, 0x7a, 0x2e, 0x8b, 0xa1, 0x17, 0xfc, 0x4e, 0xb4, 0x19, 0xc5, 0x77, 0x7e,
+    0x3f, 0x5f, 0xea, 0x95, 0xbf, 0xc2, 0xf5, 0x01, 0x55, 0xb5, 0xe7, 0x92, 0xe0, 0x35, 0x44, 0x2f,
+];
+
+/// A keccak golden for the whole tree construction: the root of the fixed
+/// depth-4 tree with leaves {0, 2, 7} occupied (each holding its big-endian
+/// index element). Pinned from an independent tiny-keccak fold of the
+/// reference construction — the same practice as the hashers' golden
+/// vectors — so the tree's root is anchored to a value outside the crate.
+#[test]
+fn root_matches_the_pinned_golden_tree() {
+    let mut tree = tree(4);
+    for leaf in [0_u64, 2, 7] {
+        tree.set_leaf(LeafIndex::new(leaf), &element(leaf), None)
+            .expect("leaf write succeeds");
+    }
+
+    assert_eq!(
+        tree.root(),
+        Hash::from_bytes(GOLDEN_ROOT),
+        "the tree's root is the pinned golden of the reference construction"
+    );
+    assert_eq!(
+        tree.root(),
+        reference_merkle_root(
+            &KeccakSolHasher,
+            4,
+            Hash::ZERO,
+            &[(0_u64, element(0)), (2, element(2)), (7, element(7))],
+        ),
+        "the reference oracle reproduces the pinned golden"
     );
 }
 
@@ -302,6 +366,16 @@ fn proofs_for_every_leaf_of_a_scattered_depth_10_tree() {
             .expect("leaf write succeeds");
         root = outcome.root;
     }
+
+    // Not just self-consistency: the incremental root is the naive
+    // level-wise reference root over the scattered occupancy.
+    let occupied_pairs: Vec<(u64, [u8; 32])> =
+        occupied.iter().map(|&leaf| (leaf, element(leaf))).collect();
+    assert_eq!(
+        root,
+        reference_merkle_root(&KeccakSolHasher, 10, Hash::ZERO, &occupied_pairs),
+        "the incremental root matches the independent reference construction"
+    );
 
     for leaf in 0..1024 {
         let index = LeafIndex::new(leaf);

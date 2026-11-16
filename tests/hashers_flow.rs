@@ -12,14 +12,14 @@
     clippy::expect_used,
     reason = "tests and benches fail loudly by design: expect on fixtures is the contract"
 )]
-#![cfg(all(feature = "mmr", feature = "memory", feature = "keccak_sol"))]
+#![cfg(all(feature = "mmr", feature = "memory"))]
 
 #[path = "common/mod.rs"]
 mod common;
 
 use std::borrow::Cow;
 
-use accumulators::hashers::{Blake2sStarkHasher, Hasher, HasherError, HasherId, KeccakSolHasher};
+use accumulators::hashers::{Blake2sStarkHasher, Hasher, HasherError, HasherId};
 use accumulators::ids::AccumulatorId;
 use accumulators::mmr::{Corrupted, Mmr, MmrError};
 use accumulators::primitives::{Hash, LeafIndex};
@@ -123,11 +123,6 @@ fn roots_track_the_reference<H: Hasher + Copy>(hasher: H, id_byte: u8) {
             .expect("verify"),
         "the multiproof must verify"
     );
-}
-
-#[test]
-fn keccak_sol_roots_track_the_reference() {
-    roots_track_the_reference(KeccakSolHasher, 1);
 }
 
 #[cfg(feature = "blake2s_stark")]

@@ -36,6 +36,7 @@ mod conformance_runner {
         conformance::empty_batch(&store);
         conformance::duplicate_keys_alignment(&store);
         conformance::owned_ops(&store);
+        conformance::binary_keys(&store);
         drop(store);
 
         // The fault seam is external to the store; a fresh handle on the
@@ -56,6 +57,7 @@ mod conformance_runner {
         conformance::empty_batch_async(&store).await;
         conformance::duplicate_keys_alignment_async(&store).await;
         conformance::owned_ops_async(&store).await;
+        conformance::binary_keys_async(&store).await;
         drop(store);
 
         let faulted = RedbStore::open_path(db.path()).expect("file redb opens");
@@ -313,6 +315,11 @@ fn reopen_from_locator_and_raw_path_round_trip() {
         Some(b"value".as_slice()),
         "Retrievable::open reattaches to the persisted data"
     );
+    assert_eq!(
+        Retrievable::canonical_locator(&reopened),
+        locator,
+        "the re-opened store reports the same locator"
+    );
 }
 
 /// redb locks the database file while a handle is open: a second open of
@@ -440,31 +447,6 @@ fn temp_database_files_are_cleaned_up_on_drop() {
     drop(store);
     drop(db);
     assert!(!path.exists(), "the guard removes the file on drop");
-}
-
-/// A persisted locator reconstructs the store with its data.
-#[test]
-fn locator_round_trips_through_retrievable_open() {
-    let db = TempDb::new("redb-retrievable");
-    let store = RedbStore::open_path(db.path()).expect("file redb opens");
-
-    let mut batch = Batch::new();
-    batch.put(b"meta", b"layer");
-    store.write(batch).expect("redb writes only fail on I/O");
-
-    let locator = Retrievable::canonical_locator(&store);
-    drop(store);
-
-    let reopened = <RedbStore as Retrievable>::open(&locator).expect("re-open succeeds");
-    let results = reopened
-        .read(&[b"meta"])
-        .expect("redb reads only fail on I/O");
-    assert_eq!(results[0].as_deref(), Some(b"layer".as_slice()));
-    assert_eq!(
-        Retrievable::canonical_locator(&reopened),
-        locator,
-        "the re-opened store reports the same locator"
-    );
 }
 
 /// A failed open surfaces as a typed [`RedbError`], never a panic.

@@ -91,8 +91,10 @@ mod lifecycle {
         assert_eq!(reopened.root(), created.root());
     }
 
+    /// The pure gates reject through the async shell: out-of-range depth at
+    /// create, out-of-range index on every leaf-addressing operation.
     #[tokio::test]
-    async fn create_rejects_depth_out_of_range() {
+    async fn pure_gates_reject_through_the_async_shell() {
         // Valid depth is 1..=63; both bounds must be rejected as invalid depth.
         for depth in [0_u8, 64, 255] {
             let db = TempDb::new("depth");
@@ -112,8 +114,53 @@ mod lifecycle {
                 "depth {depth} must be rejected as invalid depth, got {error:?}"
             );
         }
+
+        // The index gate guards every leaf-addressing operation.
+        let db = TempDb::new("bounds");
+        let mut tree = tree(&db, 4).await;
+        let index = LeafIndex::new(16);
+        let capacity = tree.capacity();
+
+        let error = tree
+            .set_leaf(index, &element(16), None)
+            .await
+            .expect_err("index at capacity is rejected");
+        match error {
+            TreeError::IndexOutOfRange {
+                index: got,
+                capacity: cap,
+            } => {
+                assert_eq!(got, index);
+                assert_eq!(cap, capacity);
+            }
+            other => panic!("expected IndexOutOfRange, got {other:?}"),
+        }
+        assert!(
+            matches!(
+                tree.proof(index).await,
+                Err(TreeError::IndexOutOfRange { .. })
+            ),
+            "proof beyond capacity is rejected"
+        );
+        assert!(
+            matches!(
+                tree.leaf_hash(index).await,
+                Err(TreeError::IndexOutOfRange { .. })
+            ),
+            "leaf_hash beyond capacity is rejected"
+        );
+        assert!(
+            matches!(
+                tree.multiproof([LeafIndex::new(0), index]).await,
+                Err(TreeError::IndexOutOfRange { .. })
+            ),
+            "multiproof with any out-of-range index is rejected"
+        );
     }
 
+    /// Open validation: a store without metadata is `MissingMetadata`;
+    /// tampered persisted metadata (a depth byte out of range) is
+    /// `MalformedMetadata`.
     #[tokio::test]
     async fn open_without_metadata_is_corrupted() {
         let db = TempDb::new("empty-store");
@@ -126,6 +173,23 @@ mod lifecycle {
             matches!(error, TreeError::Corrupted(TreeCorrupted::MissingMetadata)),
             "expected MissingMetadata, got {error:?}"
         );
+
+        // A present-but-unparsable metadata record: the depth byte is out
+        // of range, diagnosed as MalformedMetadata — never a silent open.
+        let db = TempDb::new("tampered-meta");
+        let path = db.path();
+        let store = SqliteStore::connect(path).await.expect("connect");
+        AsyncIncrementalMerkleTree::create(KeccakSolHasher, store.clone(), id(1), 8, Hash::ZERO)
+            .await
+            .expect("create succeeds");
+        poke(&store, id(1), Table::TreeMeta, &[0xff, 0x00]).await;
+
+        let reopened = SqliteStore::connect(path).await.expect("reconnect");
+        match TestTree::open(KeccakSolHasher, reopened, id(1)).await {
+            Err(TreeError::Corrupted(TreeCorrupted::MalformedMetadata)) => {}
+            Err(other) => panic!("expected MalformedMetadata, got {other:?}"),
+            Ok(_) => panic!("expected MalformedMetadata, but the tree opened"),
+        }
     }
 
     #[tokio::test]
@@ -251,50 +315,6 @@ mod set_leaf {
     }
 
     #[tokio::test]
-    async fn index_beyond_capacity_is_rejected() {
-        let db = TempDb::new("bounds");
-        let mut tree = tree(&db, 4).await;
-        let index = LeafIndex::new(16);
-        let capacity = tree.capacity();
-
-        let error = tree
-            .set_leaf(index, &element(16), None)
-            .await
-            .expect_err("index at capacity is rejected");
-        match error {
-            TreeError::IndexOutOfRange {
-                index: got,
-                capacity: cap,
-            } => {
-                assert_eq!(got, index);
-                assert_eq!(cap, capacity);
-            }
-            other => panic!("expected IndexOutOfRange, got {other:?}"),
-        }
-        assert!(
-            matches!(
-                tree.proof(index).await,
-                Err(TreeError::IndexOutOfRange { .. })
-            ),
-            "proof beyond capacity is rejected"
-        );
-        assert!(
-            matches!(
-                tree.leaf_hash(index).await,
-                Err(TreeError::IndexOutOfRange { .. })
-            ),
-            "leaf_hash beyond capacity is rejected"
-        );
-        assert!(
-            matches!(
-                tree.multiproof([LeafIndex::new(0), index]).await,
-                Err(TreeError::IndexOutOfRange { .. })
-            ),
-            "multiproof with any out-of-range index is rejected"
-        );
-    }
-
-    #[tokio::test]
     async fn leaf_hash_distinguishes_occupied_from_unoccupied() {
         let db = TempDb::new("leaf-hash");
         let mut tree = tree(&db, 6).await;
@@ -329,7 +349,8 @@ mod proofs {
 
     /// A scattered (non-power-of-2 occupancy) tree must prove *every* leaf:
     /// sibling paths crossing unoccupied sub-trees resolve through the zero
-    /// ladder, never a missing store record.
+    /// ladder, never a missing store record. The proof is self-contained —
+    /// the standalone verifier accepts it with no tree and no store.
     #[tokio::test]
     async fn every_leaf_of_a_scattered_tree_proves_and_verifies() {
         let db = TempDb::new("scattered");
@@ -369,6 +390,22 @@ mod proofs {
                 );
             }
         }
+
+        // Self-containment through the async shell: the standalone verifier
+        // needs no tree and no store.
+        let proof = tree
+            .proof(LeafIndex::new(42))
+            .await
+            .expect("proof succeeds");
+        drop(tree);
+        assert!(
+            verify_proof(&KeccakSolHasher, &proof, &element(42)).expect("verify succeeds"),
+            "the proof verifies against its own root with nothing else alive"
+        );
+        assert!(
+            !verify_proof(&KeccakSolHasher, &proof, &element(43)).expect("verify succeeds"),
+            "a foreign element must not verify standalone"
+        );
     }
 
     /// Structural truncation is a typed error; tamper is `Ok(false)`; the
@@ -412,31 +449,6 @@ mod proofs {
         assert!(
             verify_proof(&KeccakSolHasher, &proof, &element(3)).expect("verify succeeds"),
             "the captured proof remains a standalone commitment to its own root"
-        );
-    }
-
-    /// The point of self-containment: a proof verifies with no tree and no
-    /// store — the hasher and the proof are the whole verifier input.
-    #[tokio::test]
-    async fn proofs_verify_without_the_tree_or_the_store() {
-        let db = TempDb::new("self-contained");
-        let mut tree = tree(&db, 8).await;
-        tree.set_leaf(LeafIndex::new(42), &element(42), None)
-            .await
-            .expect("write succeeds");
-        let proof = tree
-            .proof(LeafIndex::new(42))
-            .await
-            .expect("proof succeeds");
-        drop(tree);
-
-        assert!(
-            verify_proof(&KeccakSolHasher, &proof, &element(42)).expect("verify succeeds"),
-            "the proof verifies against its own root with nothing else alive"
-        );
-        assert!(
-            !verify_proof(&KeccakSolHasher, &proof, &element(43)).expect("verify succeeds"),
-            "a foreign element must not verify standalone"
         );
     }
 
@@ -569,27 +581,6 @@ mod corruption {
         match tree.set_leaf(LeafIndex::new(1), &element(1), None).await {
             Err(TreeError::Corrupted(TreeCorrupted::MalformedNode)) => {}
             other => panic!("expected MalformedNode on the write path, got {other:?}"),
-        }
-    }
-
-    /// Tampered persisted metadata (a depth byte out of range) is diagnosed
-    /// as [`TreeCorrupted::MalformedMetadata`] on open.
-    #[tokio::test]
-    async fn tampered_metadata_is_malformed_metadata() {
-        let db = TempDb::new("tampered-meta");
-        let path = db.path();
-        let store = SqliteStore::connect(path).await.expect("connect");
-        AsyncIncrementalMerkleTree::create(KeccakSolHasher, store.clone(), id(1), 8, Hash::ZERO)
-            .await
-            .expect("create succeeds");
-
-        poke(&store, id(1), Table::TreeMeta, &[0xff, 0x00]).await;
-
-        let reopened = SqliteStore::connect(path).await.expect("reconnect");
-        match TestTree::open(KeccakSolHasher, reopened, id(1)).await {
-            Err(TreeError::Corrupted(TreeCorrupted::MalformedMetadata)) => {}
-            Err(other) => panic!("expected MalformedMetadata, got {other:?}"),
-            Ok(_) => panic!("expected MalformedMetadata, but the tree opened"),
         }
     }
 }

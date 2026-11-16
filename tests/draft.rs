@@ -27,8 +27,8 @@ use accumulators::store::memory::InMemoryStore;
 use accumulators::utils::mmr::size_of;
 
 use common::{
-    FaultyStore, element, elements, id, leaf_hashes, reference_peaks, reference_root,
-    root_of_hashes, slices,
+    FaultyStore, composed_hashes, element, elements, flipped, id, leaf_hashes, node_sizes,
+    prefix_roots, reference_peaks, reference_root, root_of_hashes, slices,
 };
 
 type TestMmr = Mmr<KeccakSolHasher, InMemoryStore>;
@@ -1016,56 +1016,9 @@ mod commit_as_stacked {
 mod consistency {
     use super::*;
     use accumulators::mmr::{MmrSize, WithPeaks, verify_consistency_proof};
-    use accumulators::primitives::HashValue;
 
     type TestDraftEdit<'m> =
         accumulators::mmr::Draft<'m, KeccakSolHasher, InMemoryStore, Plain, Editable>;
-
-    /// Effective leaf hashes of a composed view: base hashes with the
-    /// buffered edits applied (update → the new hash, delete → genesis)
-    /// and the buffered appends appended. The flat oracle for every prefix
-    /// root a composed view can serve — built only on `hash_leaf`, never
-    /// on the crate's state core.
-    fn composed_hashes(
-        h: KeccakSolHasher,
-        base: usize,
-        edits: &[(usize, Option<Vec<u8>>)],
-        appended: &[Vec<u8>],
-    ) -> Vec<Hash> {
-        let mut hashes: Vec<Hash> = leaf_hashes(&h, &slices(&elements(base as u64)))
-            .into_iter()
-            .collect();
-        for (leaf, replacement) in edits {
-            hashes[*leaf] = match replacement {
-                Some(el) => h.hash_leaf(el).expect("valid element"),
-                None => h.genesis(),
-            };
-        }
-        for el in appended {
-            hashes.push(h.hash_leaf(el).expect("valid element"));
-        }
-        hashes
-    }
-
-    /// Reference roots for every prefix of `hashes`.
-    fn prefix_roots(h: KeccakSolHasher, hashes: &[Hash]) -> Vec<Hash> {
-        (0..=hashes.len())
-            .map(|leaves| root_of_hashes(&h, &hashes[..leaves]))
-            .collect()
-    }
-
-    /// Node-count sizes for leaf counts `0..=count`.
-    fn node_sizes(count: usize) -> Vec<MmrSize> {
-        (0..=count)
-            .map(|leaves| size_of(LeafCount::new(leaves as u64)))
-            .collect()
-    }
-
-    fn flipped(root: Hash) -> Hash {
-        let mut bytes = root.to_vec();
-        bytes[0] ^= 0x01;
-        HashValue::from_bytes(&bytes).expect("32 bytes")
-    }
 
     /// Every prefix pair of an append-only draft verifies against the flat
     /// reference — including the degenerate empty and trivial prefixes. A
@@ -1081,8 +1034,8 @@ mod consistency {
             base.append(el).expect("append must succeed");
         }
 
-        let hashes = composed_hashes(h, TOTAL, &[], &[]);
-        let roots = prefix_roots(h, &hashes);
+        let hashes = composed_hashes(&h, TOTAL, &[], &[]);
+        let roots = prefix_roots(&h, &hashes);
         let sizes = node_sizes(TOTAL);
         for m in BASE..=TOTAL {
             let mut draft = base.start_draft();
@@ -1135,7 +1088,7 @@ mod consistency {
                 h.hash_leaf(&element(i as u64)).expect("valid element")
             });
         }
-        let roots = prefix_roots(h, &effective);
+        let roots = prefix_roots(&h, &effective);
         let sizes = node_sizes(TOTAL);
 
         for m in BASE..=TOTAL {
@@ -1175,7 +1128,7 @@ mod consistency {
         let unedited: Vec<Hash> = leaf_hashes(&h, &slices(&elements(TOTAL as u64)))
             .into_iter()
             .collect();
-        let flat = prefix_roots(h, &unedited);
+        let flat = prefix_roots(&h, &unedited);
         let mut draft = base.start_draft();
         draft
             .update(LeafIndex::new(2), b"updated-2", None)
@@ -1214,7 +1167,7 @@ mod consistency {
         for i in BASE..TOTAL - 1 {
             effective.push(h.hash_leaf(&element(i as u64)).expect("valid element"));
         }
-        let roots = prefix_roots(h, &effective);
+        let roots = prefix_roots(&h, &effective);
         let sizes = node_sizes(TOTAL);
 
         for m in (BASE + 1)..=TOTAL {
@@ -1273,7 +1226,7 @@ mod consistency {
         let mut composed: Vec<Hash> = leaf_hashes(&h, &slices(&elements(6))).into_iter().collect();
         composed.push(h.genesis());
         composed.push(h.hash_leaf(&element(7)).expect("valid element"));
-        let composed_roots = prefix_roots(h, &composed);
+        let composed_roots = prefix_roots(&h, &composed);
         let composed_sizes = node_sizes(8);
 
         // Off: the committed handle reproduces the composed shape
@@ -1308,7 +1261,7 @@ mod consistency {
         // is 7 leaves with element(7) at leaf 6, so the composed proofs no
         // longer match the handle's, and the handle's verify against the
         // folded oracle.
-        let folded_roots = prefix_roots(h, &composed_hashes(h, 6, &[], &[element(7)]));
+        let folded_roots = prefix_roots(&h, &composed_hashes(&h, 6, &[], &[element(7)]));
         let mut base_on = base_of_six(h, InMemoryStore::new(), 34);
         let mut draft = base_on.start_draft();
         buffer_annihilating_log(&mut draft);
@@ -1355,12 +1308,12 @@ mod consistency {
         }
 
         let hashes = composed_hashes(
-            h,
+            &h,
             10,
             &[(3, Some(b"updated-3".to_vec()))],
             &[element(10), element(11), element(12), element(13)],
         );
-        let roots = prefix_roots(h, &hashes);
+        let roots = prefix_roots(&h, &hashes);
         let sizes = node_sizes(14);
 
         // Empty prefix and trivial prefix, from the composed peaks alone.
@@ -1439,8 +1392,8 @@ mod consistency {
             draft.append(&element(i)).expect("draft append");
         }
 
-        let hashes = composed_hashes(h, 12, &[], &[]);
-        let roots = prefix_roots(h, &hashes);
+        let hashes = composed_hashes(&h, 12, &[], &[]);
+        let roots = prefix_roots(&h, &hashes);
         let sizes = node_sizes(12);
         // At the floor and above (including draft-only sizes), plus the
         // always-servable empty prefix.

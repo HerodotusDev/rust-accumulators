@@ -278,14 +278,6 @@ mod index_types {
     }
 
     #[test]
-    fn zero_constants_are_sane() {
-        assert_eq!(LeafIndex::FIRST.get(), 0);
-        assert_eq!(LeafCount::ZERO.get(), 0);
-        assert_eq!(MmrSize::ZERO.get(), 0);
-        assert_eq!(Height::LEAF.get(), 0);
-    }
-
-    #[test]
     fn index_display_is_the_raw_number() {
         assert_eq!(NodeIndex::try_new(12).expect("nonzero").to_string(), "12");
         assert_eq!(LeafIndex::new(3).to_string(), "3");
@@ -304,29 +296,6 @@ mod index_types {
 
 mod size_accounting {
     use super::*;
-
-    #[test]
-    fn size_of_follows_two_l_minus_popcount_up_to_600() {
-        for leaves in 0..=600_u64 {
-            let expected = 2 * leaves - u64::from(leaves.count_ones());
-            assert_eq!(
-                size_of(LeafCount::new(leaves)).get(),
-                expected,
-                "size_of({leaves})"
-            );
-        }
-    }
-
-    #[test]
-    fn merges_on_append_are_the_trailing_ones() {
-        for leaves in 0..=600_u64 {
-            assert_eq!(
-                merges_on_append(LeafCount::new(leaves)),
-                u64::from(leaves.trailing_ones()),
-                "appending to a {leaves}-leaf MMR"
-            );
-        }
-    }
 
     #[test]
     fn new_unchecked_skips_validation() {

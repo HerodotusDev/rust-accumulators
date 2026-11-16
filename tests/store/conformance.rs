@@ -183,6 +183,24 @@ pub fn owned_ops<S: Store>(store: &S) {
     assert_eq!(results[0], None, "the owned delete removes the key");
 }
 
+/// Keys are opaque bytes end-to-end: embedded NULs and high bytes round-trip
+/// verbatim. The key is sized to the tightest backend key bound (heapless's
+/// 8-byte cap) so one body stays valid for every store.
+pub fn binary_keys<S: Store>(store: &S) {
+    let mut binary_key = vec![0u8, 255, 0, 1];
+    binary_key.extend_from_slice(&u32::MAX.to_be_bytes());
+    let mut batch = Batch::new();
+    batch.put_owned(binary_key.clone(), vec![0, 0, 255, 255]);
+    store.write(batch).expect("write succeeds");
+
+    let results = store.read(&[binary_key.as_slice()]).expect("read succeeds");
+    assert_eq!(
+        results[0].as_deref(),
+        Some([0, 0, 255, 255].as_slice()),
+        "keys are opaque bytes end-to-end"
+    );
+}
+
 /// The wrapper-level error-preservation contract over the fault seam:
 /// the fault fires in the [`FaultyStore`] wrapper **before the backend is
 /// reached**, so this asserts the MMR-side contract — a failed write must
@@ -374,6 +392,25 @@ pub async fn owned_ops_async<S: AsyncStore>(store: &S) {
     assert_eq!(results[0], None, "the owned delete removes the key");
 }
 
+/// The async twin of [`binary_keys`].
+pub async fn binary_keys_async<S: AsyncStore>(store: &S) {
+    let mut binary_key = vec![0u8, 255, 0, 1];
+    binary_key.extend_from_slice(&u32::MAX.to_be_bytes());
+    let mut batch = Batch::new();
+    batch.put_owned(binary_key.clone(), vec![0, 0, 255, 255]);
+    store.write(batch).await.expect("write succeeds");
+
+    let results = store
+        .read(&[binary_key.as_slice()])
+        .await
+        .expect("read succeeds");
+    assert_eq!(
+        results[0].as_deref(),
+        Some([0, 0, 255, 255].as_slice()),
+        "keys are opaque bytes end-to-end"
+    );
+}
+
 /// The async twin of [`error_preservation_before_backend`]: the fault fires
 /// in the wrapper before the backend is reached; backend-internal atomicity
 /// is covered by the backend-specific in-backend tests.
@@ -443,6 +480,7 @@ mod memory_backend {
         empty_batch(&store);
         duplicate_keys_alignment(&store);
         owned_ops(&store);
+        binary_keys(&store);
         error_preservation_before_backend(&FaultyStore::new(InMemoryStore::new()));
     }
 
@@ -456,6 +494,7 @@ mod memory_backend {
         empty_batch_async(&store).await;
         duplicate_keys_alignment_async(&store).await;
         owned_ops_async(&store).await;
+        binary_keys_async(&store).await;
         error_preservation_before_backend_async(&FaultyStore::new(InMemoryStore::new())).await;
     }
 }
@@ -480,6 +519,7 @@ mod sqlite_backend {
         empty_batch_async(&store).await;
         duplicate_keys_alignment_async(&store).await;
         owned_ops_async(&store).await;
+        binary_keys_async(&store).await;
         error_preservation_before_backend_async(&FaultyStore::new(
             SqliteStore::connect(db.path()).await.expect("opens"),
         ))

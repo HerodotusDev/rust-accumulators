@@ -27,13 +27,13 @@ use accumulators::ids::AccumulatorId;
 use accumulators::mmr::async_mmr::open_stacked_append_only;
 use accumulators::mmr::{
     AsyncMmr, AsyncStackedAppendMmr, AsyncStackedNullifyingMmr, Corrupted, InvalidSubViews,
-    MmrError, NullifierRecord, Nullifying, Plain, Stacked, StackingError, SubView,
+    MmrError, NullifierError, NullifierRecord, Nullifying, Plain, Stacked, StackingError, SubView,
 };
 use accumulators::mmr::{LeafCount, MmrSize};
 use accumulators::primitives::{Hash, LeafIndex};
 use accumulators::store::keys::{self, Table};
 use accumulators::store::sqlite::SqliteStore;
-use accumulators::store::{AsyncStore as _, Batch, ErasedAsyncStore};
+use accumulators::store::{AsyncStore, Batch, ErasedAsyncStore};
 use accumulators::utils::mmr::size_of;
 
 use common::{TempDb, element, elements, id, reference_root, slices};
@@ -1225,5 +1225,296 @@ mod cross_store_fan_out {
         drop(b);
         drop(a);
         drop(db);
+    }
+}
+
+// ------------------------------------------------------- fanout contracts
+
+/// Pins `fanout::join_ordered`'s three documented contracts through the
+/// public stacked read path (the nullifier fan-out over distinct stores):
+/// per-store batches polled concurrently, futures driven to completion even
+/// when an earlier one failed, and the first error in input order winning.
+mod fanout_contracts {
+    use super::*;
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll};
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    type ProbeMmrNull = AsyncMmr<KeccakSolHasher, ProbeStore<SqliteStore>, Plain, Nullifying>;
+    type ProbeStackedNull = AsyncStackedNullifyingMmr<KeccakSolHasher, ProbeStore<SqliteStore>>;
+
+    type Events = Arc<Mutex<Vec<(&'static str, &'static str)>>>;
+
+    /// The injected read failure — the tag names the store whose read
+    /// failed, so two failing stores are distinguishable in the surfaced
+    /// error.
+    #[derive(Debug)]
+    struct TaggedError(&'static str);
+
+    impl core::fmt::Display for TaggedError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "injected read failure: {}", self.0)
+        }
+    }
+
+    impl core::error::Error for TaggedError {}
+
+    /// Yields to the executor exactly once: the read goes `Pending` after
+    /// its first poll and only re-polls itself on the next executor turn —
+    /// a driver that runs each store's read to completion before touching
+    /// the next store finishes this read before the peer is ever polled.
+    struct YieldOnce(bool);
+
+    impl Future for YieldOnce {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.0 {
+                return Poll::Ready(());
+            }
+            self.0 = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+
+    /// Behavior knobs for one probe store.
+    #[derive(Debug)]
+    struct ProbeInner {
+        tag: &'static str,
+        /// (store tag, phase) in poll order — the interleaving record the
+        /// concurrency assertion reads back.
+        events: Events,
+        fail_reads: AtomicBool,
+        completed_reads: AtomicUsize,
+        /// Parked reads yield one `Pending` turn after their first poll.
+        parked: bool,
+    }
+
+    /// A local async store seam for the fan-out contract tests: a
+    /// distinguishable read failure, a poll-order event record, and a
+    /// completed-read counter (the drop sensor for the no-cancellation
+    /// contract).
+    #[derive(Clone, Debug)]
+    struct ProbeStore<S> {
+        inner: S,
+        probe: Arc<ProbeInner>,
+    }
+
+    impl ProbeStore<SqliteStore> {
+        /// A healthy store that only records its polls and completions.
+        fn counted(inner: SqliteStore, tag: &'static str, events: &Events) -> Self {
+            Self::build(inner, tag, events, false)
+        }
+
+        /// A store whose reads park one turn after their first poll.
+        fn parked(inner: SqliteStore, tag: &'static str, events: &Events) -> Self {
+            Self::build(inner, tag, events, true)
+        }
+
+        fn build(inner: SqliteStore, tag: &'static str, events: &Events, parked: bool) -> Self {
+            Self {
+                inner,
+                probe: Arc::new(ProbeInner {
+                    tag,
+                    events: Arc::clone(events),
+                    fail_reads: AtomicBool::new(false),
+                    completed_reads: AtomicUsize::new(0),
+                    parked,
+                }),
+            }
+        }
+    }
+
+    impl<S> ProbeStore<S> {
+        fn arm_fail_reads(&self) {
+            self.probe.fail_reads.store(true, Ordering::Relaxed);
+        }
+
+        fn completed_reads(&self) -> usize {
+            self.probe.completed_reads.load(Ordering::Relaxed)
+        }
+
+        fn event(&self, phase: &'static str) {
+            self.probe
+                .events
+                .lock()
+                .expect("events lock")
+                .push((self.probe.tag, phase));
+        }
+    }
+
+    impl<S> accumulators::store::Storage for ProbeStore<S> {
+        type Error = TaggedError;
+    }
+
+    impl<S: AsyncStore + Sync> AsyncStore for ProbeStore<S> {
+        async fn read(&self, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>, TaggedError> {
+            self.event("polled");
+            if self.probe.parked {
+                YieldOnce(false).await;
+            }
+            if self.probe.fail_reads.load(Ordering::Relaxed) {
+                self.event("failed");
+                return Err(TaggedError(self.probe.tag));
+            }
+            let values = self
+                .inner
+                .read(keys)
+                .await
+                .expect("backend reads only fail on I/O");
+            self.probe.completed_reads.fetch_add(1, Ordering::Relaxed);
+            Ok(values)
+        }
+
+        async fn write(&self, batch: Batch<'_>) -> Result<(), TaggedError> {
+            self.inner
+                .write(batch)
+                .await
+                .expect("backend writes only fail on I/O");
+            Ok(())
+        }
+
+        fn same_store(&self, other: &Self) -> bool {
+            self.inner.same_store(&other.inner)
+        }
+
+        fn locator(&self) -> Option<accumulators::store::StoreLocator> {
+            self.inner.locator()
+        }
+    }
+
+    /// (a) + (b): the per-store batches are polled concurrently and every
+    /// future runs to completion even when an earlier one already failed.
+    /// The own store — first in the fan-out's input order — parks one turn
+    /// after its first poll, then fails; a sequential per-store driver would
+    /// finish (and surface) that failure before the second store is ever
+    /// polled, failing both the interleaving assertion and the second
+    /// store's completion counter.
+    #[tokio::test]
+    async fn store_batches_are_polled_concurrently_and_driven_to_completion() {
+        let h = hasher();
+        let events: Events = Arc::new(Mutex::new(Vec::new()));
+        let (_db_a, store_a) = fresh("astack-fanout-latch-a").await;
+        let (_db_top, store_top) = fresh("astack-fanout-latch-top").await;
+        let probe_sub = ProbeStore::counted(store_a, "sub-a", &events);
+        let probe_top = ProbeStore::parked(store_top, "top", &events);
+
+        let mut base = ProbeMmrNull::create_nullifying(h, probe_sub.clone(), id(1))
+            .await
+            .expect("create base");
+        for i in 0..4 {
+            base.append(&element(i)).await.expect("append must succeed");
+        }
+        let pin = base.pin();
+        let mut stacked = ProbeStackedNull::stack(h, probe_top.clone(), id(2), [pin])
+            .await
+            .expect("stack");
+        stacked
+            .append(&element(4))
+            .await
+            .expect("append must succeed");
+
+        probe_top.arm_fail_reads();
+        let completed_before = probe_sub.completed_reads();
+        events.lock().expect("events lock").clear();
+
+        match stacked.proof(LeafIndex::new(0)).await {
+            Err(MmrError::Nullifier(NullifierError::Store(error))) => {
+                assert_eq!(error.0, "top", "the first store in input order failed");
+            }
+            Err(other) => panic!("expected the own store's failure, got {other:?}"),
+            Ok(_) => panic!("expected the own store's failure, but the proof was issued"),
+        }
+
+        assert_eq!(
+            probe_sub.completed_reads(),
+            completed_before + 1,
+            "the second store's future must run to completion after the first one failed"
+        );
+        let events = events.lock().expect("events lock");
+        let polled_sub = events
+            .iter()
+            .position(|&(tag, phase)| tag == "sub-a" && phase == "polled")
+            .expect("the second store must be polled while the first is still pending");
+        let failed_top = events
+            .iter()
+            .position(|&(tag, phase)| tag == "top" && phase == "failed")
+            .expect("the first store's read failed");
+        assert!(
+            polled_sub < failed_top,
+            "the second store must be polled before the first store's read completes"
+        );
+        drop(events);
+        drop(stacked);
+        drop(base);
+    }
+
+    /// (c): with two failing stores in a multi-store stacked read, the
+    /// surfaced error is the FIRST store's in input order, not the later
+    /// one's.
+    #[tokio::test]
+    async fn the_first_store_failure_in_input_order_wins() {
+        let h = hasher();
+        let events: Events = Arc::new(Mutex::new(Vec::new()));
+        let (_db_a, store_a) = fresh("astack-fanout-order-a").await;
+        let (_db_b, store_b) = fresh("astack-fanout-order-b").await;
+        let (_db_top, store_top) = fresh("astack-fanout-order-top").await;
+        let probe_a = ProbeStore::counted(store_a, "sub-a", &events);
+        let probe_b = ProbeStore::counted(store_b, "sub-b", &events);
+        let probe_top = ProbeStore::counted(store_top, "top", &events);
+
+        let mut a = ProbeMmrNull::create_nullifying(h, probe_a.clone(), id(1))
+            .await
+            .expect("create a");
+        for i in 0..4 {
+            a.append(&element(i)).await.expect("append must succeed");
+        }
+        let pin_a = a.pin();
+        let mut b = ProbeStackedNull::stack(h, probe_b.clone(), id(2), [pin_a])
+            .await
+            .expect("stack b");
+        for i in 4..7 {
+            b.append(&element(i)).await.expect("append must succeed");
+        }
+
+        let pin_a = a.pin();
+        let pin_b = b.pin();
+        let mut c = ProbeStackedNull::stack(h, probe_top, id(3), [pin_a, pin_b])
+            .await
+            .expect("stack c");
+        for i in 7..9 {
+            c.append(&element(i)).await.expect("append must succeed");
+        }
+
+        probe_a.arm_fail_reads();
+        probe_b.arm_fail_reads();
+        events.lock().expect("events lock").clear();
+
+        match c.proof(LeafIndex::new(0)).await {
+            Err(MmrError::Store(error)) => {
+                assert_eq!(error.0, "sub-a", "the first store's failure must win");
+            }
+            Err(other) => panic!("expected the first store's failure, got {other:?}"),
+            Ok(_) => panic!("expected the first store's failure, but the proof was issued"),
+        }
+
+        let events = events.lock().expect("events lock");
+        assert!(
+            events
+                .iter()
+                .any(|&(tag, phase)| tag == "sub-a" && phase == "polled")
+                && events
+                    .iter()
+                    .any(|&(tag, phase)| tag == "sub-b" && phase == "polled"),
+            "both failing stores' reads must have been attempted"
+        );
+        drop(events);
+        drop(c);
+        drop(b);
+        drop(a);
     }
 }

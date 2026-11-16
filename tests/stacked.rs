@@ -18,7 +18,7 @@ mod common;
 use accumulators::hashers::{Hasher as _, KeccakSolHasher};
 use accumulators::ids::AccumulatorId;
 use accumulators::mmr::LeafCount;
-use accumulators::mmr::stacked::open_stacked_append_only;
+use accumulators::mmr::stacked::{open_stacked_append_only, open_stacked_nullifying};
 use accumulators::mmr::{
     Corrupted, InvalidSubViews, Mmr, MmrError, NullifierRecord, Nullifying, Plain, Stacked,
     StackedAppendMmr, StackedNullifyingMmr, StackingError, SubView,
@@ -689,6 +689,47 @@ mod open_stacked_tests {
             }
             Err(other) => panic!("expected MissingRecord(Subviews), got {other:?}"),
             Ok(_) => panic!("expected MissingRecord(Subviews), but the stack opened"),
+        }
+    }
+
+    /// The nullifying named variant re-opens a stack whose top layer is
+    /// [`Nullifying`] (the mode is validated against the persisted record):
+    /// opening the same stack under the append-only name is a typed
+    /// `ModeMismatch` rejection.
+    #[test]
+    fn open_stacked_nullifying_reopens_a_nullifying_top_layer() {
+        let h = hasher();
+        let store_a = InMemoryStore::shared("stacked-test-reopen-null-a");
+        let store_top = InMemoryStore::shared("stacked-test-reopen-null-top");
+        let mut base = TestMmrNull::create_nullifying(h, store_a, id(1)).expect("create");
+        for i in 0..4 {
+            base.append(&element(i)).expect("append must succeed");
+        }
+        let pin = base.pin();
+        let mut stacked =
+            TestStackedNull::stack(h, store_top.clone(), id(2), [pin]).expect("stack");
+        stacked.nullify_shallow(LeafIndex::new(1)).expect("nullify");
+        drop(stacked);
+        // `base` stays alive past the re-open: the shared-store registry
+        // holds weak handles, so dropping the last layer handle would prune
+        // the layer's data before the re-open reconstructs it.
+
+        let reopened = open_stacked_nullifying::<KeccakSolHasher, InMemoryStore, AccumulatorId>(
+            h,
+            store_top.clone(),
+            id(2),
+        )
+        .expect("re-open the nullifying stack");
+        expect_nullified(reopened.proof(LeafIndex::new(1)), LeafIndex::new(1));
+
+        match open_stacked_append_only::<KeccakSolHasher, InMemoryStore, AccumulatorId>(
+            h,
+            store_top,
+            id(2),
+        ) {
+            Err(MmrError::Corrupted(Corrupted::ModeMismatch { .. })) => {}
+            Err(other) => panic!("expected ModeMismatch, got {other:?}"),
+            Ok(_) => panic!("expected ModeMismatch, but the stack opened"),
         }
     }
 }

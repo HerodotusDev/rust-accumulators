@@ -481,8 +481,9 @@ proptest! {
     /// write-only), so the round-trip property is structural: hex words parse
     /// back to the exact hash bytes they encode (the real round trip),
     /// sibling/peak counts match the independent layout anchors (peak
-    /// count = popcount, sibling count = the proven node's peak height), and
-    /// encoding is deterministic.
+    /// count = popcount, sibling count = the proven node's path length from
+    /// the mountain-tiling closed form, not the sibling walk the builder
+    /// uses), and encoding is deterministic.
     #[test]
     fn encoded_proofs_parse_back_to_their_hashes_and_layout(
         leaf_count in 1..=64_u64,
@@ -503,8 +504,9 @@ proptest! {
         );
         assert_eq!(
             proof.siblings.len(),
-            accumulators::utils::mmr::sibling_path(leaf, mmr.size()).len(),
-            "the sibling count is the proven node's peak height"
+            usize::try_from(accumulators::utils::mmr::path_length(leaf, mmr.size()))
+                .expect("path lengths fit usize"),
+            "the sibling count is the proven node's path length"
         );
 
         // Solidity: 0x-prefixed fixed-width words that parse back to the

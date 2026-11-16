@@ -1,8 +1,8 @@
 //! Shared test fixtures — the suites' common spine.
 //!
-//! The brute-force reference oracle here is the one independent ground truth
+//! The brute-force reference oracles here are the independent ground truth
 //! every root/peaks assertion leans on (built purely on [`Hasher::hash_leaf`]
-//! and [`Hasher::hash_pair`] — never on the crate's state core), so it lives
+//! and [`Hasher::hash_pair`] — never on the crate's state core), so they live
 //! in exactly one place instead of drifting across per-suite copies.
 //!
 //! Also home to the fault-injection store wrapper (atomicity / error-
@@ -26,8 +26,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use accumulators::hashers::Hasher;
 use accumulators::ids::AccumulatorId;
-use accumulators::primitives::HashValue;
+#[cfg(feature = "mmr")]
+use accumulators::mmr::{LeafCount, MmrSize};
+use accumulators::primitives::{Hash, HashValue};
 use accumulators::store::{AsyncStore, Batch, Store};
+#[cfg(feature = "mmr")]
+use accumulators::utils::mmr::size_of;
 
 // ------------------------------------------------------------------ fixtures
 
@@ -109,6 +113,95 @@ pub fn reference_peaks<H: Hasher>(hasher: &H, elements: &[&[u8]]) -> Vec<H::Outp
 /// wrapper over [`root_of_hashes`]).
 pub fn reference_root<H: Hasher>(hasher: &H, elements: &[&[u8]]) -> H::Output {
     root_of_hashes(hasher, &leaf_hashes(hasher, elements))
+}
+
+/// Naive level-wise reference root for a fixed-capacity sparse Merkle tree:
+/// all `2^depth` leaf slots are materialized — `hash_leaf(element)` for each
+/// occupied index, the zero ladder's null leaf for the rest — then folded up
+/// level by level. Built only on the hasher primitives, never on the crate's
+/// tree or planner code.
+pub fn reference_merkle_root<H: Hasher, E: AsRef<[u8]>>(
+    hasher: &H,
+    depth: u8,
+    null_leaf: H::Output,
+    occupied: &[(u64, E)],
+) -> H::Output {
+    assert!(
+        (1..=63).contains(&depth),
+        "reference_merkle_root: depth {depth} is outside the valid range 1..=63"
+    );
+    let mut sorted: Vec<(u64, &E)> = occupied
+        .iter()
+        .map(|(index, element)| (*index, element))
+        .collect();
+    sorted.sort_unstable_by_key(|&(index, _)| index);
+
+    let capacity = 1_u64 << depth;
+    let mut level: Vec<H::Output> = Vec::with_capacity(1_usize << depth);
+    let mut cursor = 0;
+    for index in 0..capacity {
+        level.push(match sorted.get(cursor) {
+            Some(&(leaf_index, element)) if leaf_index == index => {
+                cursor += 1;
+                hasher
+                    .hash_leaf(element.as_ref())
+                    .expect("the suite's elements are valid for this hasher")
+            }
+            _ => null_leaf,
+        });
+    }
+    while level.len() > 1 {
+        level = level
+            .chunks(2)
+            .map(|pair| hasher.hash_pair(pair[0], pair[1]))
+            .collect();
+    }
+    level[0]
+}
+
+/// Effective leaf hashes of a composed draft view: the base hashes with the
+/// buffered edits applied (update → the new hash, delete → genesis) and the
+/// buffered appends appended. The flat oracle for every prefix root a
+/// composed view can serve — built only on `hash_leaf`, never on the crate's
+/// state core.
+pub fn composed_hashes<H: Hasher>(
+    hasher: &H,
+    base: usize,
+    edits: &[(usize, Option<Vec<u8>>)],
+    appended: &[Vec<u8>],
+) -> Vec<H::Output> {
+    let mut composed = leaf_hashes(hasher, &slices(&elements(base as u64)));
+    for (leaf, replacement) in edits {
+        composed[*leaf] = match replacement {
+            Some(element) => hasher.hash_leaf(element).expect("valid element"),
+            None => hasher.genesis(),
+        };
+    }
+    composed.extend(leaf_hashes(hasher, &slices(appended)));
+    composed
+}
+
+/// Reference roots for every prefix of `values`.
+pub fn prefix_roots<H: Hasher>(hasher: &H, values: &[H::Output]) -> Vec<H::Output> {
+    (0..=values.len())
+        .map(|leaves| root_of_hashes(hasher, &values[..leaves]))
+        .collect()
+}
+
+/// Node-count sizes for leaf counts `0..=count`.
+#[cfg(feature = "mmr")]
+pub fn node_sizes(count: usize) -> Vec<MmrSize> {
+    (0..=count)
+        .map(|leaves| size_of(LeafCount::new(leaves as u64)))
+        .collect()
+}
+
+/// The root with its first byte flipped — the tamper anchor for `Ok(false)`
+/// assertions.
+pub fn flipped(root: Hash) -> Hash {
+    let mut bytes = root.to_vec();
+    bytes[0] ^= 0x01;
+    HashValue::from_bytes(&bytes).expect("32 bytes")
 }
 
 // -------------------------------------------------------------------- faults
