@@ -103,6 +103,36 @@ impl NodeIndex {
         }
     }
 
+    /// The left child — `n − 2^height` — or `None` for a leaf node. Children
+    /// exist only below the leaf row: a leaf's children are phantom and no
+    /// index names them. The downward inverse of [`Self::parent`]: for every
+    /// internal node, `left_child().parent() == Some(self)`.
+    #[must_use]
+    pub const fn left_child(self) -> Option<Self> {
+        let h = self.height().get() as u32;
+        if h == 0 {
+            return None;
+        }
+        match self.get().checked_sub(1_u64 << h) {
+            Some(raw) => Self::try_new(raw),
+            None => None,
+        }
+    }
+
+    /// The right child — `n − 1` — or `None` for a leaf node (see
+    /// [`Self::left_child`]). For every internal node,
+    /// `right_child().parent() == Some(self)`.
+    #[must_use]
+    pub const fn right_child(self) -> Option<Self> {
+        if self.height().get() == 0 {
+            return None;
+        }
+        match self.get().checked_sub(1) {
+            Some(raw) => Self::try_new(raw),
+            None => None,
+        }
+    }
+
     /// The leaf this node wraps, if it is a leaf.
     ///
     /// A leaf node `n` satisfies `n − 1 = 2L − popcount(L)` — exactly the
@@ -404,6 +434,51 @@ pub fn peak_heights(size: MmrSize) -> Vec<Height> {
         .unwrap_or_default()
 }
 
+/// Number of peaks of an MMR of the given size — the popcount of its leaf
+/// count. Zero for the empty size and for sizes that are not well-formed
+/// MMR sizes (matching [`peaks_of`], which returns no peaks for them).
+///
+/// ```
+/// use accumulators::mmr::{LeafCount, MmrSize, peak_count, size_of};
+///
+/// // Five leaves decompose into mountains 4 + 1 → two peaks.
+/// assert_eq!(peak_count(size_of(LeafCount::new(5))), 2);
+/// ```
+#[must_use]
+pub const fn peak_count(size: MmrSize) -> u32 {
+    match size.leaf_count() {
+        Some(count) => count.get().count_ones(),
+        None => 0,
+    }
+}
+
+/// Height of the largest mountain of an MMR of the given size — the first
+/// peak's height, `floor(log2(leaf count))`. Zero when the size has no
+/// peaks at all: the empty MMR and malformed sizes (matching
+/// [`peak_heights`], which returns nothing for them).
+///
+/// ```
+/// use accumulators::mmr::{LeafCount, MmrSize, max_peak_height, size_of};
+///
+/// // Five leaves decompose into mountains 4 + 1 → the tallest is height 2.
+/// let size = size_of(LeafCount::new(5));
+/// assert_eq!(max_peak_height(size).get(), 2);
+/// ```
+#[must_use]
+pub const fn max_peak_height(size: MmrSize) -> Height {
+    match size.leaf_count() {
+        Some(count) if count.get() > 0 =>
+        {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a leaf count is at most MAX_LEAF_COUNT < 2^63, so its log2 fits in u8"
+            )]
+            Height::new(count.get().ilog2() as u8)
+        }
+        _ => Height::LEAF,
+    }
+}
+
 /// Shared peak walk: returns peak node indexes and their heights, or `None`
 /// for a malformed size.
 fn peak_walk(size: MmrSize) -> Option<(Vec<NodeIndex>, Vec<Height>)> {
@@ -437,8 +512,21 @@ fn peak_walk(size: MmrSize) -> Option<(Vec<NodeIndex>, Vec<Height>)> {
     Some((peaks, heights))
 }
 
-/// Highest power of two ≤ `bound` (0 for bound 0).
-const fn largest_mountain(bound: u64) -> u64 {
+/// The highest power of two ≤ `bound` (0 for bound 0) — the size in leaves
+/// of the largest perfect mountain that fits, and the first term of the
+/// binary mountain decomposition behind the peak walk, [`path_length`], and
+/// the size-to-leaf mapping.
+///
+/// ```
+/// use accumulators::mmr::largest_mountain;
+///
+/// assert_eq!(largest_mountain(5), 4);
+/// assert_eq!(largest_mountain(8), 8);
+/// assert_eq!(largest_mountain(0), 0);
+/// assert_eq!(largest_mountain(u64::MAX), 1 << 63);
+/// ```
+#[must_use]
+pub const fn largest_mountain(bound: u64) -> u64 {
     if bound == 0 { 0 } else { 1 << bound.ilog2() }
 }
 
@@ -486,6 +574,49 @@ pub fn sibling_path(leaf: LeafIndex, size: MmrSize) -> Vec<PathStep> {
     }
     steps.pop();
     steps
+}
+
+/// Length of a leaf's sibling path — the number of steps from the leaf to
+/// its own mountain's peak, which is the height of the mountain containing
+/// it. Zero when the leaf has no path: at or beyond the size, or a size
+/// that is not well-formed (matching [`sibling_path`], which returns an
+/// empty path for those). Bagging the peak into the root is a separate
+/// concern and adds no steps.
+///
+/// ```
+/// use accumulators::mmr::{LeafCount, MmrSize, path_length, sibling_path, size_of};
+/// use accumulators::primitives::LeafIndex;
+///
+/// let size = size_of(LeafCount::new(5));
+/// // Leaf 0 lives in the height-2 mountain covering leaves 0..4; leaf 4
+/// // is its own height-0 mountain.
+/// assert_eq!(path_length(LeafIndex::new(0), size), 2);
+/// assert_eq!(path_length(LeafIndex::new(4), size), 0);
+/// // Equals the built path's length, without building it.
+/// assert_eq!(
+///     path_length(LeafIndex::new(2), size),
+///     sibling_path(LeafIndex::new(2), size).len() as u32,
+/// );
+/// ```
+#[must_use]
+pub const fn path_length(leaf: LeafIndex, size: MmrSize) -> u32 {
+    let Some(count) = size.leaf_count() else {
+        return 0;
+    };
+    // The mountains tile the leaf space tallest-first, one per set bit of
+    // the leaf count; walk them until the one containing the leaf.
+    let mut remaining = count.get();
+    let mut offset = 0_u64;
+    let mut mountain = largest_mountain(remaining);
+    while mountain > 0 {
+        if leaf.get() < offset + mountain {
+            return mountain.ilog2();
+        }
+        offset += mountain;
+        remaining -= mountain;
+        mountain = largest_mountain(remaining);
+    }
+    0
 }
 
 /// Node count for an MMR holding `leaves` leaves: `2L − popcount(L)`.

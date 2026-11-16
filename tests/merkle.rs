@@ -24,7 +24,8 @@ use accumulators::{
     ids::AccumulatorId,
     merkle::{
         IncrementalMerkleTree, TreeCorrupted, TreeError, TreeMultiProof, TreeProof,
-        TreeProofInconsistent, TreeVerifyError, verify_multi_proof, verify_proof,
+        TreeProofInconsistent, TreeVerifyError, heap_level_and_index, leaf_heap, multiproof_walk,
+        verify_multi_proof, verify_proof,
     },
     primitives::{Hash, LeafIndex},
     store::memory::InMemoryStore,
@@ -79,6 +80,95 @@ fn create_open_round_trip_and_empty_root() {
     assert_eq!(reopened.capacity(), 1 << depth);
     assert_eq!(reopened.null_leaf(), Hash::ZERO);
     assert_eq!(reopened.root(), created.root());
+}
+
+/// The depth accessor reports the persisted shape parameter: the depth the
+/// tree was created at, identical after a reopen, with capacity derived
+/// from it.
+#[test]
+fn depth_accessor_matches_the_persisted_shape() {
+    let depth = 11;
+    let store = InMemoryStore::new();
+    let created = IncrementalMerkleTree::create(
+        KeccakSolHasher,
+        store.clone(),
+        AccumulatorId::ZERO,
+        depth,
+        Hash::ZERO,
+    )
+    .expect("create succeeds");
+    assert_eq!(created.depth(), depth);
+    assert_eq!(
+        created.capacity(),
+        1_u64 << created.depth(),
+        "capacity is 2^depth"
+    );
+
+    let reopened = IncrementalMerkleTree::open(KeccakSolHasher, store, AccumulatorId::ZERO)
+        .expect("open succeeds");
+    assert_eq!(reopened.depth(), depth, "depth persists across reopen");
+}
+
+/// `heap_level_and_index` decodes `leaf_heap` exactly: the leaf's heap index
+/// resolves back to `(depth, index)` at every depth, including the u64
+/// extremes of a depth-63 tree.
+#[test]
+fn heap_level_and_index_round_trips_leaf_heap() {
+    for depth in [1_u8, 8, 63] {
+        for index in [0_u64, 1, 42, (1_u64 << depth) - 1] {
+            // Only indexes within the tree's capacity `2^depth` are leaves.
+            if index >= 1_u64 << depth {
+                continue;
+            }
+            assert_eq!(
+                heap_level_and_index(leaf_heap(depth, LeafIndex::new(index))),
+                (depth, index),
+                "leaf {index} of a depth-{depth} tree"
+            );
+        }
+    }
+    assert_eq!(
+        heap_level_and_index(1),
+        (0, 0),
+        "the root is level 0, position 0"
+    );
+}
+
+/// The standalone walk is the exact plan the verifier consumes: the walk
+/// over the proof's own indexes reproduces the sibling budget
+/// `verify_multi_proof` checks, and the proof it plans verifies standalone
+/// (the scattered-set analogue of
+/// `multiproof_over_a_shared_parent_set_dedups_siblings`).
+#[test]
+fn multiproof_walk_matches_what_the_verifier_consumes() {
+    let mut tree = tree(6);
+    let scattered = [0_u64, 1, 7, 8, 20, 41, 63];
+    for &index in &scattered {
+        tree.set_leaf(LeafIndex::new(index), &element(index), None)
+            .expect("leaf write succeeds");
+    }
+    let indexes: Vec<LeafIndex> = scattered.iter().copied().map(LeafIndex::new).collect();
+    let multi = tree
+        .multiproof(indexes.iter().copied())
+        .expect("multiproof succeeds");
+    assert_eq!(multi.indexes, indexes, "indexes stay ascending and unique");
+
+    let plan = multiproof_walk(multi.depth, &multi.indexes);
+    assert_eq!(
+        plan.len(),
+        multi.siblings.len(),
+        "the walk over the proof's own indexes is its sibling budget"
+    );
+    assert!(
+        plan.iter().all(|&heap| heap != 1),
+        "the root is never a proof sibling"
+    );
+
+    let elements: Vec<[u8; 32]> = scattered.iter().copied().map(element).collect();
+    assert!(
+        verify_multi_proof(&KeccakSolHasher, &multi, elements).expect("verify succeeds"),
+        "the proof the walk planned verifies standalone"
+    );
 }
 
 #[test]

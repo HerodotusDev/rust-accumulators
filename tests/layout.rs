@@ -8,8 +8,9 @@
 )]
 use accumulators::hashers::{Hasher, KeccakSolHasher};
 use accumulators::mmr::{
-    Height, LeafCount, MmrSize, NodeIndex, Side, bag_peaks, merges_on_append, peak_heights,
-    peaks_of, root_from, sibling_path, size_of,
+    Height, LeafCount, MmrSize, NodeIndex, Side, bag_peaks, largest_mountain, max_peak_height,
+    merges_on_append, path_length, peak_count, peak_heights, peaks_of, root_from, sibling_path,
+    size_of,
 };
 use accumulators::primitives::{Hash, LeafIndex, MAX_LEAF_COUNT};
 
@@ -209,6 +210,29 @@ fn assert_layout_at(brute: &BruteMmr, leaves: u64) {
         "peak heights of an MMR with {leaves} leaves"
     );
 
+    // The closed forms over the same snapshot: peak count is the popcount,
+    // the tallest peak is the first mountain, and the largest mountain is
+    // that height as a power of two.
+    assert_eq!(
+        peak_count(size) as usize,
+        expected_peaks.len(),
+        "peak count of an MMR with {leaves} leaves"
+    );
+    assert_eq!(
+        max_peak_height(size).get(),
+        expected_heights.first().copied().unwrap_or(0),
+        "the tallest peak of an MMR with {leaves} leaves"
+    );
+    if leaves == 0 {
+        assert_eq!(largest_mountain(0), 0, "no leaves, no mountain");
+    } else {
+        assert_eq!(
+            largest_mountain(leaves),
+            1_u64 << u32::from(expected_heights[0]),
+            "the largest mountain at {leaves} leaves"
+        );
+    }
+
     for leaf in 0..leaves {
         let (expected_steps, peak_height) = brute_sibling_path(brute, leaf, size.get());
         let actual: Vec<(u64, Side)> = sibling_path(LeafIndex::new(leaf), size)
@@ -223,6 +247,11 @@ fn assert_layout_at(brute: &BruteMmr, leaves: u64) {
             actual.len(),
             usize::from(peak_height),
             "path length of leaf {leaf} must equal its mountain's peak height"
+        );
+        assert_eq!(
+            path_length(LeafIndex::new(leaf), size) as usize,
+            actual.len(),
+            "the closed-form path length of leaf {leaf} at {leaves} leaves"
         );
     }
 }
@@ -356,6 +385,69 @@ mod brute_force_layout {
     }
 
     #[test]
+    fn children_compose_with_parents_up_to_600_leaves() {
+        let brute = BruteMmr::build(601);
+        for index in 0..brute.heights.len() {
+            let value = u64::try_from(index + 1).expect("node counts fit u64");
+            let node = NodeIndex::try_new(value).expect("node indexes are nonzero");
+            let height = brute.heights[index];
+
+            // Leaf nodes have phantom children — no index names them.
+            if height == 0 {
+                assert_eq!(node.left_child(), None, "leaf node {value} has no children");
+                assert_eq!(
+                    node.right_child(),
+                    None,
+                    "leaf node {value} has no children"
+                );
+                continue;
+            }
+
+            let left = node.left_child().expect("internal nodes have children");
+            let right = node.right_child().expect("internal nodes have children");
+            assert_eq!(
+                u64::from(left.height().get()),
+                u64::from(height) - 1,
+                "the left child of node {value} sits one level down"
+            );
+            assert_eq!(
+                u64::from(right.height().get()),
+                u64::from(height) - 1,
+                "the right child of node {value} sits one level down"
+            );
+            assert_eq!(right.get(), value - 1, "the right child is n − 1");
+            assert_eq!(
+                left.parent(),
+                Some(node),
+                "the left child of {value} climbs back to it"
+            );
+            assert_eq!(
+                right.parent(),
+                Some(node),
+                "the right child of {value} climbs back to it"
+            );
+
+            // A recorded parent edge must invert through the matching child
+            // accessor: the parent of a right child is n + 1; any other
+            // recorded parent makes the node its left child.
+            if let Some(parent) = brute.parents[index] {
+                let parent_node =
+                    NodeIndex::try_new(parent).expect("recorded parents are valid nodes");
+                let expected_child = if parent == value + 1 {
+                    parent_node.right_child()
+                } else {
+                    parent_node.left_child()
+                };
+                assert_eq!(
+                    expected_child,
+                    Some(node),
+                    "the recorded edge {parent} → {value} must invert"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn layout_math_matches_brute_force_for_every_size_up_to_600_leaves() {
         let brute = BruteMmr::build(601);
         assert_eq!(
@@ -409,6 +501,16 @@ mod brute_force_layout {
                     peak_heights(MmrSize::new_unchecked(raw)).is_empty(),
                     "invalid size {raw} has no peak heights"
                 );
+                assert_eq!(
+                    peak_count(MmrSize::new_unchecked(raw)),
+                    0,
+                    "invalid size {raw} has no peak count"
+                );
+                assert_eq!(
+                    max_peak_height(MmrSize::new_unchecked(raw)).get(),
+                    0,
+                    "invalid size {raw} has no tallest peak"
+                );
             }
         }
         assert_eq!(
@@ -439,6 +541,11 @@ mod brute_force_layout {
                 assert!(
                     sibling_path(LeafIndex::new(leaf), size).is_empty(),
                     "leaf {leaf} does not exist at {leaves} leaves"
+                );
+                assert_eq!(
+                    path_length(LeafIndex::new(leaf), size),
+                    0,
+                    "leaf {leaf} beyond {leaves} leaves has no path"
                 );
             }
         }
@@ -564,5 +671,24 @@ fn u64_extreme_layout_is_closed_form() {
     assert_eq!(
         NodeIndex::try_new(u64::MAX).expect("nonzero").parent(),
         None
+    );
+
+    // The largest mountain of any bound is its leading power of two.
+    assert_eq!(largest_mountain(u64::MAX), 1 << 63);
+    assert_eq!(largest_mountain(0), 0);
+
+    // A leaf of the maximal MMR: leaf 0 sits in the single 2^62-leaf
+    // mountain, so its path is 62 steps; the index at MAX_LEAF_COUNT is one
+    // past the last leaf and has no path.
+    assert_eq!(
+        path_length(LeafIndex::FIRST, size_of(LeafCount::new(MAX_LEAF_COUNT))),
+        62
+    );
+    assert_eq!(
+        path_length(
+            LeafIndex::new(MAX_LEAF_COUNT),
+            size_of(LeafCount::new(MAX_LEAF_COUNT))
+        ),
+        0
     );
 }

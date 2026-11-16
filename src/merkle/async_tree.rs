@@ -144,6 +144,14 @@ impl<H: Hasher, S: AsyncStore, Id: TreeId> AsyncIncrementalMerkleTree<H, S, Id> 
         1_u64 << self.depth
     }
 
+    /// The tree's depth — the persisted shape parameter; capacity is
+    /// `2^depth`. See
+    /// [`IncrementalMerkleTree::depth`](super::IncrementalMerkleTree::depth).
+    #[must_use]
+    pub const fn depth(&self) -> u8 {
+        self.depth
+    }
+
     /// The null leaf — the hash unoccupied leaves contribute.
     #[must_use]
     pub const fn null_leaf(&self) -> H::Output {

@@ -176,10 +176,12 @@ impl<H: Hasher> MmrState<H> {
 /// Cross-checks persisted leaf/node counters.
 ///
 /// Pure load-path validation shared by the sync shell, the async shell, and
-/// the stacked opener: the node counter must be a well-formed MMR size, and
-/// its implied leaf count must equal the stored leaf counter.
+/// the stacked opener — and part of the custom-shell seam: any shell reading
+/// the same persisted records runs them through this check. The node counter
+/// must be a well-formed MMR size, and its implied leaf count must equal the
+/// stored leaf counter.
 #[must_use]
-pub(crate) fn checked_counters(leaf_count: u64, node_count: u64) -> CounterCheck {
+pub fn checked_counters(leaf_count: u64, node_count: u64) -> CounterCheck {
     let Some(leaves) = MmrSize::new_unchecked(node_count).leaf_count() else {
         return CounterCheck::MalformedNodeCount;
     };
@@ -191,7 +193,7 @@ pub(crate) fn checked_counters(leaf_count: u64, node_count: u64) -> CounterCheck
 
 /// Outcome of [`checked_counters`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CounterCheck {
+pub enum CounterCheck {
     /// Consistent counters: the validated leaf and node counts.
     Ok(LeafCount, MmrSize),
     /// The node counter is not a well-formed MMR size.
@@ -201,9 +203,10 @@ pub(crate) enum CounterCheck {
 }
 
 /// Metadata validated by [`validate_metadata`]: the counters and the
-/// persisted provenance.
+/// persisted provenance. Part of the custom-shell seam — a shell opening an
+/// MMR accumulator's records ends here, with the validated view.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Metadata {
+pub struct Metadata {
     /// Validated leaf count.
     pub leaf_count: LeafCount,
     /// Validated node count.
@@ -214,15 +217,26 @@ pub(crate) struct Metadata {
 }
 
 /// The one shared load-path metadata validation (hasher, mode, counters,
-/// provenance) used by every MMR shell. The root check stays with the
-/// callers: it compares against the recomputed root, whose peak loading
-/// differs per shell (routed for stacks).
+/// provenance) used by every MMR shell — and available to custom shells over
+/// the same records. The root check stays with the callers: it compares
+/// against the recomputed root, whose peak loading differs per shell
+/// (routed for stacks).
 ///
 /// `values` holds the raw records in table order `HasherInfo, Mode,
 /// LeafCount, NodeCount, Provenance` (the `store::keys::Table` tags) —
 /// absence and malformed content are both [`Corrupted`](super::Corrupted)
 /// findings, distinguished by table.
-pub(crate) fn validate_metadata<H: Hasher>(
+///
+/// The record byte layouts are the persisted wire spec (see the
+/// `store::keys` module docs); this function is their shared decoder and its
+/// acceptance is byte-compatible with every shell.
+///
+/// # Errors
+///
+/// [`Corrupted`](super::Corrupted) findings distinguished by table: missing
+/// or malformed records, hasher and mode mismatches, inconsistent counters,
+/// an out-of-range seed.
+pub fn validate_metadata<H: Hasher>(
     hasher: &H,
     values: [&[u8]; 5],
     declared_mode: &'static str,
@@ -289,7 +303,12 @@ pub(crate) fn validate_metadata<H: Hasher>(
 
 /// Encodes the `Provenance` record: `[kind: u8]` (`0` = full history, `1` =
 /// peaks-only) and, for peaks-only, `[size_at_creation: u64 BE]`.
-pub(crate) fn encode_provenance(provenance: Provenance) -> Vec<u8> {
+///
+/// Persisted format: the byte layout is fixed by the `store::keys` wire
+/// spec — a change would strand every persisted accumulator, so this
+/// encoding is a compatibility commitment, not an implementation detail.
+#[must_use]
+pub fn encode_provenance(provenance: Provenance) -> Vec<u8> {
     match provenance {
         Provenance::Full => alloc::vec![0],
         Provenance::FromPeaks { size_at_creation } => {
@@ -300,8 +319,10 @@ pub(crate) fn encode_provenance(provenance: Provenance) -> Vec<u8> {
     }
 }
 
-/// Decodes the `Provenance` record (see [`encode_provenance`]).
-pub(crate) fn parse_provenance(bytes: &[u8]) -> Option<Provenance> {
+/// Decodes the `Provenance` record (see [`encode_provenance`] for the fixed
+/// byte layout).
+#[must_use]
+pub fn parse_provenance(bytes: &[u8]) -> Option<Provenance> {
     match *bytes.first()? {
         0 => Some(Provenance::Full),
         1 => Some(Provenance::FromPeaks {
@@ -359,7 +380,18 @@ pub fn apply_append_batch<H: Hasher>(
 
 /// The shared append engine: folds every element hash into the state and
 /// collects the nodes written along the way.
-fn apply_append_many<H: Hasher>(
+///
+/// Public for custom shells: this is the engine behind [`apply_append`] and
+/// [`apply_append_batch`] — a shell committing straight to the store appends
+/// through it. The element is *already* hashed; merging is infallible (it
+/// folds [`Hasher::hash_pair`] calls).
+///
+/// # Panics
+///
+/// Panics only on u64 node-counter overflow — unreachable for any state
+/// within the layout bound ([`MAX_LEAF_COUNT`](crate::primitives::MAX_LEAF_COUNT)).
+#[must_use]
+pub fn apply_append_many<H: Hasher>(
     hasher: &H,
     state: &MmrState<H>,
     element_hashes: &[H::Output],

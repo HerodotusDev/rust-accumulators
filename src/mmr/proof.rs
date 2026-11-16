@@ -12,8 +12,8 @@
 //! hasher's output type are first-class.
 
 use super::layout::{
-    LeafCount, MmrSize, NodeIndex, PathStep, Side, bag_peaks, peak_heights, peaks_of, root_from,
-    sibling_path,
+    LeafCount, MmrSize, NodeIndex, PathStep, Side, bag_peaks, path_length, peak_heights, peaks_of,
+    root_from, sibling_path,
 };
 use crate::hashers::{Hasher, HasherError};
 use crate::primitives::{HashValue, LeafIndex};
@@ -94,11 +94,16 @@ impl<O: HashValue> IntoIterator for Proof<O> {
 /// Builds the deduplicated sibling pool for `paths` and the flattened
 /// per-leaf reference list into it, in first-discovery order (so proofs are
 /// byte-comparable). Returns `(pool_indexes, pool_refs)`.
+///
+/// Public for custom shells: this is the pool construction behind
+/// [`MultiProof`] — a shell assembling multiproofs from its own paths uses
+/// the same canonical order, keeping proofs byte-comparable across shells.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "sibling pool indexes are bounded by u32 in the wire contract; a pool beyond it could not be addressed by any proof"
 )]
-pub(crate) fn build_sibling_pool(paths: &[Vec<PathStep>]) -> (Vec<NodeIndex>, Vec<u32>) {
+#[must_use]
+pub fn build_sibling_pool(paths: &[Vec<PathStep>]) -> (Vec<NodeIndex>, Vec<u32>) {
     let mut pool_indexes: Vec<NodeIndex> = Vec::new();
     let mut pool_refs: Vec<u32> = Vec::new();
     // First-discovery position per sibling — a BTreeMap keeps the no_std
@@ -298,7 +303,13 @@ fn check_multi_shape<O: HashValue>(proof: &MultiProof<O>) -> Result<(), VerifyEr
 
 /// Locates the index of the peak that contains `leaf`'s subtree, plus that
 /// peak's height. Walks up beside the path until the node lands on a peak.
-fn peak_position(leaf: LeafIndex, size: MmrSize) -> Option<(usize, u8)> {
+///
+/// `None` when the leaf has no containing peak: at or beyond the size, or a
+/// size that is not well-formed. The index addresses the peak list of
+/// [`peaks_of`] / [`Proof::peaks`] positionally; the height is the leaf's
+/// path length (see [`super::layout::path_length`]).
+#[must_use]
+pub fn peak_position(leaf: LeafIndex, size: MmrSize) -> Option<(usize, u8)> {
     let peaks = peaks_of(size);
     let mut leaf_index = leaf.get();
     let mut node = leaf.node().get();
@@ -528,10 +539,12 @@ where
     // therefore never mask an over-long (or under-long) ref list — a
     // malformed ref count is an `Err` even when the replayed prefix already
     // failed to commit.
+    // `path_length` is at most 63, so the conversion's fallback is never
+    // taken (32-bit targets lack `From<u32> for usize`).
     let expected_refs: usize = proof
         .leaves
         .iter()
-        .map(|leaf| sibling_path(*leaf, proof.size).len())
+        .map(|leaf| usize::try_from(path_length(*leaf, proof.size)).unwrap_or(usize::MAX))
         .sum();
     if proof.sibling_refs.len() != expected_refs {
         return Err(VerifyError::Inconsistent(
@@ -764,7 +777,16 @@ pub fn verify_consistency_proof<H: Hasher>(
 /// the walk is then pure layout and terminates — each step moves to the
 /// parent, and every non-peak node of a well-formed MMR has its containing
 /// peak as an ancestor.
-pub(crate) fn consistency_bridge_nodes(prev_size: MmrSize, size: MmrSize) -> Vec<NodeIndex> {
+///
+/// Public for custom shells: this is the canonical bridge-list layout, the
+/// same walk every shell's consistency proofs follow.
+///
+/// # Panics
+///
+/// Panics when either size is not a well-formed MMR size — a caller bug,
+/// not runtime data (every shell validates before walking).
+#[must_use]
+pub fn consistency_bridge_nodes(prev_size: MmrSize, size: MmrSize) -> Vec<NodeIndex> {
     #[expect(
         clippy::expect_used,
         reason = "every caller validates well-formed MMR sizes before walking"
@@ -806,25 +828,27 @@ pub(crate) fn consistency_bridge_nodes(prev_size: MmrSize, size: MmrSize) -> Vec
     path
 }
 
-/// The sibling of `node` under `parent`: the parent's other child. Children
-/// of `parent` are `parent − 2^height(parent)` (left) and `parent − 1`
-/// (right).
+/// The sibling of `node` under `parent`: the parent's other child (see
+/// [`NodeIndex::left_child`] / [`NodeIndex::right_child`] for the geometry).
 fn merge_sibling(node: NodeIndex, parent: NodeIndex) -> NodeIndex {
     if parent.get() == node.get() + 1 {
         // `node` is the right child; the sibling is the left one.
         #[expect(
             clippy::expect_used,
-            reason = "the left child of a real MMR parent is a positive node index"
+            reason = "the parent of a real MMR node is internal, and internal nodes have children"
         )]
-        NodeIndex::try_new(parent.get() - (1_u64 << u32::from(parent.height().get())))
+        parent
+            .left_child()
             .expect("the left child of a real MMR parent is a valid node")
     } else {
         // `node` is the left child; the sibling is the right one.
         #[expect(
             clippy::expect_used,
-            reason = "parent − 1 is a positive node index: the parent is a real merge node"
+            reason = "the parent of a real MMR node is internal, and internal nodes have children"
         )]
-        NodeIndex::try_new(parent.get() - 1).expect("parent − 1 is a valid node")
+        parent
+            .right_child()
+            .expect("the right child of a real MMR parent is a valid node")
     }
 }
 
@@ -832,7 +856,8 @@ fn merge_sibling(node: NodeIndex, parent: NodeIndex) -> NodeIndex {
 /// `prev_size` sits outside the provable range. The three sizes are the
 /// payload of the typed [`MmrError::InvalidPrevSize`](super::MmrError::InvalidPrevSize) rejection every shell
 /// raises from it.
-pub(crate) struct PrevSizeRejection {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrevSizeRejection {
     /// The rejected size.
     pub prev_size: MmrSize,
     /// The smallest servable size.
@@ -844,7 +869,8 @@ pub(crate) struct PrevSizeRejection {
 /// The generation plan for a consistency proof from `prev_size` to
 /// `current`: either the pair is degenerate and the proof is complete from
 /// the caller's cached peaks, or one positional node fetch is required.
-pub(crate) enum ConsistencyPlan<O: HashValue> {
+#[derive(Debug)]
+pub enum ConsistencyPlan<O: HashValue> {
     /// The proof is complete: the trivial prefix (`prev_size == current`)
     /// or the empty prefix (`prev_size == 0`) — no node access.
     Ready(ConsistencyProof<O>),
@@ -853,16 +879,22 @@ pub(crate) enum ConsistencyPlan<O: HashValue> {
     Fetch {
         /// The earlier peaks, then the bridge nodes, in order.
         indexes: Vec<NodeIndex>,
-        /// How many of [`Self::indexes`] head the earlier peaks.
+        /// How many of the `indexes` head the earlier peaks.
         peak_count: usize,
     },
 }
 
 /// Pure consistency-proof planning shared by every shell (sync handle,
-/// async handle, both drafts): validation, the degenerate pairs, and the
-/// fetch list. Callers supply their own node resolution and assemble via
-/// [`consistency_from_loaded`].
-pub(crate) fn consistency_plan<O: HashValue>(
+/// async handle, both drafts) and available to custom shells: validation,
+/// the degenerate pairs, and the fetch list. Callers supply their own node
+/// resolution and assemble via [`consistency_from_loaded`].
+///
+/// # Errors
+///
+/// [`PrevSizeRejection`] when `prev_size` is not a well-formed MMR size,
+/// exceeds `current`, or sits below the provenance `floor` — the shell
+/// raises it as [`MmrError::InvalidPrevSize`](super::MmrError::InvalidPrevSize).
+pub fn consistency_plan<O: HashValue>(
     prev_size: MmrSize,
     current: MmrSize,
     floor: MmrSize,
@@ -912,8 +944,14 @@ pub(crate) fn consistency_plan<O: HashValue>(
 
 /// Assembles the proof from the fetched node values: the first `peak_count`
 /// entries are the earlier peaks, the rest the bridge nodes (positional —
-/// see [`ConsistencyPlan::Fetch`]).
-pub(crate) fn consistency_from_loaded<O: HashValue>(
+/// see [`ConsistencyPlan::Fetch`]). The custom-shell half of
+/// [`consistency_plan`].
+///
+/// # Errors
+///
+/// [`Corrupted`](super::Corrupted)::`MissingRecord` when a fetched slot is
+/// absent — a store that lost a node the plan requires.
+pub fn consistency_from_loaded<O: HashValue>(
     prev_size: MmrSize,
     current: MmrSize,
     loaded: &[Option<O>],
@@ -953,23 +991,25 @@ fn resolve_frontier_node<H: Hasher>(
     if let Some(value) = known.get(&node) {
         return Ok(*value);
     }
-    let height = u32::from(node.height().get());
-    if height == 0 {
+    if node.height().get() == 0 {
         return Err(VerifyError::Inconsistent(
             ProofInconsistency::MissingPathNode { node },
         ));
     }
     #[expect(
         clippy::expect_used,
-        reason = "the left child of a real MMR node is a positive node index"
+        reason = "an internal MMR node's children are real nodes below the leaf row"
     )]
-    let left = NodeIndex::try_new(node.get() - (1_u64 << height))
-        .expect("the left child of a real MMR node is a valid node");
+    let left = node
+        .left_child()
+        .expect("an internal MMR node has a left child");
     #[expect(
         clippy::expect_used,
-        reason = "node − 1 is a positive node index: internal nodes are ≥ 3"
+        reason = "an internal MMR node's children are real nodes below the leaf row"
     )]
-    let right = NodeIndex::try_new(node.get() - 1).expect("node − 1 is a valid node");
+    let right = node
+        .right_child()
+        .expect("an internal MMR node has a right child");
     let left_hash = resolve_frontier_node(hasher, left, known)?;
     let right_hash = resolve_frontier_node(hasher, right, known)?;
     Ok(hasher.hash_pair(left_hash, right_hash))
