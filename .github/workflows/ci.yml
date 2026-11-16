@@ -145,6 +145,10 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libclang-dev
 
       # The public API is feature-conditional; check both surfaces.
-      - run: cargo semver-checks check-release
+      # The default baseline is the newest *stable* release — prereleases are
+      # excluded, so without this pin the job compares against 0.5.1 (whose
+      # dependency tree no longer compiles). Bump on every release; once a
+      # stable 1.0.0 is out the pin can be dropped.
+      - run: cargo semver-checks check-release --baseline-version 1.0.0-rc.1
 
-      - run: cargo semver-checks check-release --features all
+      - run: cargo semver-checks check-release --baseline-version 1.0.0-rc.1 --features all
